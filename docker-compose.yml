@@ -1,0 +1,64 @@
+# Local dev + single-VM cloud deployment.
+# Usual dev loop: `docker compose up -d db` and run the app natively.
+# The ib-gateway service needs TWS_USERID/TWS_PASSWORD in .env and a human to
+# approve 2FA (weekly) — see docs/ibkr/05-running-in-docker.md.
+
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-trader}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trader}
+      POSTGRES_DB: ${POSTGRES_DB:-ibkr_trader}
+    ports:
+      # host 5433 because a local PostgreSQL already occupies 5432 on the dev machine
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-trader} -d ${POSTGRES_DB:-ibkr_trader}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  ib-gateway:
+    # Docs: https://github.com/gnzsnz/ib-gateway-docker
+    # Verify env var names against the image README before first run.
+    image: ghcr.io/gnzsnz/ib-gateway:stable
+    restart: unless-stopped
+    profiles: ["ibkr"] # opt-in: `docker compose --profile ibkr up -d`
+    environment:
+      # Empty credentials just make the gateway container fail its login loop;
+      # set TWS_USERID/TWS_PASSWORD in .env before using the ibkr profile.
+      TWS_USERID: ${TWS_USERID:-}
+      TWS_PASSWORD: ${TWS_PASSWORD:-}
+      TRADING_MODE: ${TRADING_MODE:-paper}
+      READ_ONLY_API: ${READ_ONLY_API:-yes}
+      TWOFA_TIMEOUT_ACTION: restart
+      AUTO_RESTART_TIME: "11:59 PM"
+      TIME_ZONE: America/Montreal
+      VNC_SERVER_PASSWORD: ${VNC_SERVER_PASSWORD:-}
+    ports:
+      # NEVER expose these beyond localhost / the compose network.
+      - "127.0.0.1:4003:4003" # live API (socat forward)
+      - "127.0.0.1:4004:4004" # paper API (socat forward)
+      - "127.0.0.1:5900:5900" # VNC (debugging the gateway UI)
+
+  app:
+    build: .
+    profiles: ["app"] # opt-in while the service is still a skeleton
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-trader}:${POSTGRES_PASSWORD:-trader}@db:5432/${POSTGRES_DB:-ibkr_trader}
+      IBKR_HOST: ib-gateway
+      IBKR_PORT: "4004"
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["ibkr-trader", "serve"]
+
+volumes:
+  pgdata:

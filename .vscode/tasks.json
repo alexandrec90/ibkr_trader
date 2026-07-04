@@ -1,0 +1,96 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "db: up",
+      "type": "shell",
+      "command": "docker compose up -d db",
+      "problemMatcher": []
+    },
+    {
+      "label": "db: migrate",
+      "type": "shell",
+      "command": "alembic upgrade head",
+      "problemMatcher": []
+    },
+    {
+      "label": "db: new migration",
+      "type": "shell",
+      "command": "alembic revision --autogenerate -m \"${input:migrationMessage}\"",
+      "problemMatcher": []
+    },
+    {
+      "label": "stack: up (db + ib-gateway)",
+      "type": "shell",
+      "command": "docker compose --profile ibkr up -d",
+      "problemMatcher": []
+    },
+    {
+      "label": "stack: down",
+      "type": "shell",
+      "command": "docker compose --profile ibkr --profile app down",
+      "problemMatcher": []
+    },
+    {
+      "label": "stack: logs",
+      "type": "shell",
+      "command": "docker compose logs -f --tail=100",
+      "problemMatcher": []
+    },
+    {
+      "label": "test",
+      "type": "shell",
+      "command": "pytest",
+      "group": { "kind": "test", "isDefault": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "lint",
+      "type": "shell",
+      "command": "ruff check src tests && ruff format --check src tests",
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "typecheck",
+      "type": "shell",
+      "command": "mypy src",
+      "problemMatcher": []
+    },
+    {
+      "label": "check: all (lint + type + test)",
+      "dependsOrder": "sequence",
+      "dependsOn": ["lint", "typecheck", "test"],
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "agents: sync from claude",
+      "type": "shell",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": [
+        "${workspaceFolder}\\.vscode\\sync_claude_to_agents.py"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "ibkr: connection check",
+      "type": "shell",
+      "command": "ibkr-trader ibkr-check",
+      "problemMatcher": []
+    },
+    {
+      "label": "app: docker build",
+      "type": "shell",
+      "command": "docker compose build app",
+      "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {
+      "id": "migrationMessage",
+      "type": "promptString",
+      "description": "Alembic migration message"
+    }
+  ]
+}
