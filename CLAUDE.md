@@ -5,6 +5,9 @@ backtest → trade via IBKR **paper account**. Owner is in Québec, Canada.
 
 Naming: the repo folder is `ibrk_trader` (typo, kept); the Python package is `ibkr_trader`.
 
+Implementation status lives in [TODO.md](TODO.md) — check it at session start, tick items off
+as they land, and add newly discovered work there.
+
 ## Hard rules
 
 1. **Never enable or suggest enabling live trading.** `ENVIRONMENT=paper` is the ceiling until

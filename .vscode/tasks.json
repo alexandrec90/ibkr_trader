@@ -9,14 +9,47 @@
     },
     {
       "label": "db: migrate",
-      "type": "shell",
-      "command": "alembic upgrade head",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": [
+        "${workspaceFolder}\\.vscode\\task_artifact_runner.py",
+        "--artifact",
+        "db-migrate",
+        "--",
+        "-m",
+        "alembic",
+        "upgrade",
+        "head"
+      ],
+      "options": {
+        "env": {
+          "DATABASE_URL": "postgresql+psycopg://trader:trader@127.0.0.1:5433/ibkr_trader?connect_timeout=5"
+        }
+      },
+      "presentation": {
+        "reveal": "silent",
+        "panel": "dedicated",
+        "clear": false
+      },
       "problemMatcher": []
     },
     {
       "label": "db: new migration",
       "type": "shell",
-      "command": "alembic revision --autogenerate -m \"${input:migrationMessage}\"",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": [
+        "-m",
+        "alembic",
+        "revision",
+        "--autogenerate",
+        "-m",
+        "${input:migrationMessage}"
+      ],
+      "options": {
+        "env": {
+          "DATABASE_URL": "postgresql+psycopg://trader:trader@127.0.0.1:5433/ibkr_trader?connect_timeout=5"
+        }
+      },
       "problemMatcher": []
     },
     {
@@ -39,28 +72,94 @@
     },
     {
       "label": "test",
-      "type": "shell",
-      "command": "pytest",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": [
+        "${workspaceFolder}\\.vscode\\task_artifact_runner.py",
+        "--artifact",
+        "test",
+        "--",
+        "-m",
+        "pytest"
+      ],
       "group": { "kind": "test", "isDefault": true },
+      "presentation": {
+        "reveal": "silent",
+        "panel": "dedicated",
+        "clear": false
+      },
       "problemMatcher": []
     },
     {
       "label": "lint",
-      "type": "shell",
-      "command": "ruff check src tests && ruff format --check src tests",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": [
+        "${workspaceFolder}\\.vscode\\task_artifact_runner.py",
+        "--artifact",
+        "lint",
+        "--",
+        "-m",
+        "ruff",
+        "check",
+        "src",
+        "tests"
+      ],
       "group": "build",
+      "presentation": {
+        "reveal": "silent",
+        "panel": "dedicated",
+        "clear": false
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "format: check",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": [
+        "${workspaceFolder}\\.vscode\\task_artifact_runner.py",
+        "--artifact",
+        "format-check",
+        "--",
+        "-m",
+        "ruff",
+        "format",
+        "--check",
+        "src",
+        "tests"
+      ],
+      "presentation": {
+        "reveal": "silent",
+        "panel": "dedicated",
+        "clear": false
+      },
       "problemMatcher": []
     },
     {
       "label": "typecheck",
-      "type": "shell",
-      "command": "mypy src",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": [
+        "${workspaceFolder}\\.vscode\\task_artifact_runner.py",
+        "--artifact",
+        "typecheck",
+        "--",
+        "-m",
+        "mypy",
+        "src"
+      ],
+      "presentation": {
+        "reveal": "silent",
+        "panel": "dedicated",
+        "clear": false
+      },
       "problemMatcher": []
     },
     {
       "label": "check: all (lint + type + test)",
       "dependsOrder": "sequence",
-      "dependsOn": ["lint", "typecheck", "test"],
+      "dependsOn": ["lint", "format: check", "typecheck", "test"],
       "group": { "kind": "build", "isDefault": true },
       "problemMatcher": []
     },
@@ -76,7 +175,140 @@
     {
       "label": "ibkr: connection check",
       "type": "shell",
-      "command": "ibkr-trader ibkr-check",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\ibkr-trader.exe",
+      "args": [
+        "ibkr-check"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "ingest: fmp prices (one symbol)",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": [
+        "${workspaceFolder}\\.vscode\\task_artifact_runner.py",
+        "--artifact",
+        "ingest-fmp-price",
+        "--",
+        "-m",
+        "ibkr_trader.cli",
+        "ingest",
+        "prices",
+        "${input:priceSymbol}",
+        "--source",
+        "fmp"
+      ],
+      "options": {
+        "env": {
+          "DATABASE_URL": "postgresql+psycopg://trader:trader@127.0.0.1:5433/ibkr_trader?connect_timeout=5"
+        }
+      },
+      "presentation": {
+        "reveal": "silent",
+        "panel": "dedicated",
+        "clear": false
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "ingest: fmp fx (USDCAD)",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": [
+        "${workspaceFolder}\\.vscode\\task_artifact_runner.py",
+        "--artifact",
+        "ingest-fmp-fx",
+        "--",
+        "-m",
+        "ibkr_trader.cli",
+        "ingest",
+        "fx",
+        "--pair",
+        "${input:fxPair}"
+      ],
+      "options": {
+        "env": {
+          "DATABASE_URL": "postgresql+psycopg://trader:trader@127.0.0.1:5433/ibkr_trader?connect_timeout=5"
+        }
+      },
+      "presentation": {
+        "reveal": "silent",
+        "panel": "dedicated",
+        "clear": false
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "ingest: fmp prices (tickers-fmp.txt)",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": [
+        "${workspaceFolder}\\.vscode\\task_artifact_runner.py",
+        "--artifact",
+        "ingest-fmp-prices",
+        "--",
+        "${workspaceFolder}\\.vscode\\ingest_fmp_tickers.py",
+        "--tickers",
+        "tickers-fmp.txt"
+      ],
+      "options": {
+        "env": {
+          "DATABASE_URL": "postgresql+psycopg://trader:trader@127.0.0.1:5433/ibkr_trader?connect_timeout=5"
+        }
+      },
+      "presentation": {
+        "reveal": "silent",
+        "panel": "dedicated",
+        "clear": false
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "ingest: yahoo prices (tickers-yahoo.txt)",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": [
+        "${workspaceFolder}\\.vscode\\task_artifact_runner.py",
+        "--artifact",
+        "ingest-yahoo-prices",
+        "--",
+        "${workspaceFolder}\\.vscode\\ingest_fmp_tickers.py",
+        "--source",
+        "yahoo",
+        "--tickers",
+        "tickers-yahoo.txt"
+      ],
+      "options": {
+        "env": {
+          "DATABASE_URL": "postgresql+psycopg://trader:trader@127.0.0.1:5433/ibkr_trader?connect_timeout=5"
+        }
+      },
+      "presentation": {
+        "reveal": "silent",
+        "panel": "dedicated",
+        "clear": false
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "tickers: aggregate universe (tickers.txt)",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": [
+        "${workspaceFolder}\\.vscode\\aggregate_tickers.py"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "ingest: setup db + all prices",
+      "dependsOrder": "sequence",
+      "dependsOn": [
+        "db: up",
+        "db: migrate",
+        "ingest: fmp prices (tickers-fmp.txt)",
+        "ingest: yahoo prices (tickers-yahoo.txt)",
+        "tickers: aggregate universe (tickers.txt)"
+      ],
       "problemMatcher": []
     },
     {
@@ -91,6 +323,18 @@
       "id": "migrationMessage",
       "type": "promptString",
       "description": "Alembic migration message"
+    },
+    {
+      "id": "priceSymbol",
+      "type": "promptString",
+      "description": "Ticker symbol to pull from FMP",
+      "default": "NVDA"
+    },
+    {
+      "id": "fxPair",
+      "type": "promptString",
+      "description": "FX pair to pull from FMP (close = quote currency per 1 base)",
+      "default": "USDCAD"
     }
   ]
 }

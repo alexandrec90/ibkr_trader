@@ -19,6 +19,7 @@ dependencies = [
     "APScheduler>=3.10",
     "typer>=0.12",
     "tenacity>=8.2",
+    "yfinance>=0.2.50",
 ]
 
 [project.optional-dependencies]

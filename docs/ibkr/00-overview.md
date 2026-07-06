@@ -59,6 +59,7 @@ Reasons:
 - [03-market-data-and-historical.md](03-market-data-and-historical.md) — historical bars, pacing, delayed data
 - [04-orders.md](04-orders.md) — order lifecycle, IDs, callbacks
 - [05-running-in-docker.md](05-running-in-docker.md) — headless IB Gateway in Docker, 2FA, restarts
+- [06-products-and-contracts.md](06-products-and-contracts.md) — product families, contract types, repo implications
 
 ## Sources
 

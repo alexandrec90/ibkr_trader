@@ -1,0 +1,5 @@
+# FMP ingest list — free-tier-friendly symbols only (GOOG and TSX symbols come back
+# HTTP 402 on the free plan; XEQT is ingested via tickers-yahoo.txt instead).
+NVDA
+GOOGL
+MSFT

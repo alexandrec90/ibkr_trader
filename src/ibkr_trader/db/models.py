@@ -15,6 +15,7 @@ from datetime import datetime
 from sqlalchemy import (
     JSON,
     BigInteger,
+    Boolean,
     DateTime,
     Enum,
     Float,
@@ -48,6 +49,11 @@ class Instrument(Base):
     sec_type: Mapped[str] = mapped_column(String(8), default="STK")
     ibkr_con_id: Mapped[int | None] = mapped_column(BigInteger)  # cached from qualifyContracts
     name: Mapped[str | None] = mapped_column(String(256))
+    # Eligibility metadata (signals.eligibility): IBKR sec_type is "STK" for both stocks and
+    # ETFs, so asset_class distinguishes them; `leveraged` flags leveraged/inverse/volatility
+    # ETPs excluded from registered-account trading.
+    asset_class: Mapped[str | None] = mapped_column(String(8))  # "STK" | "ETF"
+    leveraged: Mapped[bool | None] = mapped_column(Boolean)
 
 
 class PriceBar(Base):
@@ -187,7 +193,7 @@ class Execution(Base):
 class BacktestRun(Base):
     __tablename__ = "backtest_runs"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    id: Mapped[int] = mapped_column(SqliteFriendlyBigInt, primary_key=True)
     strategy: Mapped[str] = mapped_column(String(64))
     params: Mapped[dict | None] = mapped_column(JSON)
     start: Mapped[datetime] = mapped_column(DateTime(timezone=True))

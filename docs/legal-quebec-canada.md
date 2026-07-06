@@ -32,11 +32,29 @@
   (100% taxable). Frequent, short-holding-period, automated trading with significant time
   invested looks like **business income**. Expect it; keep clean records (the `orders`/
   `executions` tables + IBKR Flex reports are the audit trail).
-- **Never run this in a TFSA/RRSP/FHSA**: carrying on a day-trading business inside a TFSA is
-  taxed as business income and draws audits. Registered accounts also generally can't hold the
-  needed margin/short positions. Use a non-registered (margin) account.
+- **Registered accounts (RRSP / TFSA / FHSA / LIRA): long-term only, never day-trading.** The
+  danger is *frequency and intent*, not the account itself. CRA can deem a TFSA to be *carrying
+  on a business* — taxed as business income, with audits — based on holding period, trade
+  frequency, time spent, security knowledge, and speculative/margin use. A **low-turnover,
+  quality-only, long-only, buy-and-hold** strategy is the normal, intended, tax-advantaged use
+  of these accounts and sits well clear of that line. The registered-account strategy in this
+  repo is designed to *stay* clear of it: a hard per-account annual trade cap, minimum
+  eligibility (no penny stocks, no leverage/inverse, liquid names only), long-only, no margin.
+  See [registered-account-strategy.md](registered-account-strategy.md). **[verify]** the
+  "carrying on a business in a TFSA" factors with a CPA before funding — this is engineering,
+  not tax advice.
+- **Foreign (US) dividend withholding** differs by account and by the security's domicile — the
+  only tax difference the simulator models:
+  - Canadian-domiciled securities (TSX): **no** withholding in any account.
+  - US-domiciled securities held **directly**: **RRSP / LIRA** are treaty-exempt (Canada-US
+    treaty, Art. XVIII → ~0); **TFSA / FHSA** suffer 15% **non-recoverable** withholding;
+    **non-registered** suffers 15% but it is **recoverable** via the foreign tax credit.
+  - Holding US exposure through a *Canadian-listed* ETF breaks the RRSP treaty exemption (an
+    intermediary sits in the way). **[verify]** FHSA and LIRA treaty status specifically —
+    both are modelled conservatively (FHSA like TFSA; LIRA like RRSP).
 - Currency: gains on US-listed trades must be reported in CAD; IBKR reports help. Québec files
-  both CRA and Revenu Québec returns.
+  both CRA and Revenu Québec returns. (The backtester reports everything in CAD, so US holdings
+  carry FX as both return and risk.)
 - If it becomes a real business, incorporation may matter someday — talk to a professional
   first.
 
@@ -60,7 +78,9 @@
 ## Practical checklist
 
 - [ ] Confirm IBKR account is with IB Canada and understand its margin rules.
-- [ ] Non-registered account only; never registered accounts.
+- [ ] Match strategy to account: **registered (RRSP/TFSA/FHSA/LIRA) only for the long-term,
+      low-turnover, quality-only strategy**; any higher-turnover/speculative work stays in a
+      **non-registered (margin)** account. Never day-trade inside a registered account.
 - [ ] Keep every order/execution in Postgres + archive IBKR Flex statements (tax records).
 - [ ] Track data-source ToS for each connector in `docs/data-sources.md` before going beyond
       free-tier personal use.

@@ -4,11 +4,11 @@ Free tier ~250 req/day. Docs:
 https://site.financialmodelingprep.com/developer/docs/stable/historical-price-eod-full
 """
 
-from datetime import UTC, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ibkr_trader.config import get_settings
@@ -17,6 +17,12 @@ from ibkr_trader.db.session import get_session
 from ibkr_trader.ingestion.base import Connector
 
 BASE_URL = "https://financialmodelingprep.com/stable"
+FULL_EOD_PATH = "/historical-price-eod/full"
+LIGHT_EOD_PATH = "/historical-price-eod/light"
+
+
+class FmpProviderError(RuntimeError):
+    """FMP rejected the request or returned a provider-side failure."""
 
 
 def _instrument_defaults(fmp_symbol: str) -> tuple[str, str, str]:
@@ -30,6 +36,10 @@ def _instrument_defaults(fmp_symbol: str) -> tuple[str, str, str]:
 def _daily_ts(value: str) -> datetime:
     day = datetime.strptime(value, "%Y-%m-%d").date()
     return datetime.combine(day, time.min, tzinfo=UTC)
+
+
+def _date_from_ymd(value: str) -> date:
+    return datetime.strptime(value, "%Y-%m-%d").date()
 
 
 def _historical_rows(payload: Any) -> list[dict[str, Any]]:
@@ -49,12 +59,16 @@ def _historical_rows(payload: Any) -> list[dict[str, Any]]:
 def _bar_values(row: dict[str, Any]) -> dict[str, Any]:
     try:
         volume = row.get("volume")
+        close = row["close"] if "close" in row else row["price"]
+        open_ = row.get("open", close)
+        high = row.get("high", close)
+        low = row.get("low", close)
         return {
             "ts": _daily_ts(str(row["date"])),
-            "open": float(row["open"]),
-            "high": float(row["high"]),
-            "low": float(row["low"]),
-            "close": float(row["close"]),
+            "open": float(open_),
+            "high": float(high),
+            "low": float(low),
+            "close": float(close),
             "volume": None if volume is None else float(volume),
         }
     except (KeyError, TypeError, ValueError) as exc:
@@ -79,6 +93,37 @@ def _get_or_create_instrument(session: Session, fmp_symbol: str) -> Instrument:
     return instrument
 
 
+def _get_instrument(session: Session, fmp_symbol: str) -> Instrument | None:
+    symbol, exchange, currency = _instrument_defaults(fmp_symbol)
+    return session.scalar(
+        select(Instrument).where(
+            Instrument.symbol == symbol,
+            Instrument.exchange == exchange,
+            Instrument.currency == currency,
+        )
+    )
+
+
+def _next_missing_date(
+    session: Session,
+    instrument: Instrument,
+    bar_size: str,
+    source: str,
+    what_to_show: str,
+) -> date | None:
+    latest_ts = session.scalar(
+        select(func.max(PriceBar.ts)).where(
+            PriceBar.instrument_id == instrument.id,
+            PriceBar.bar_size == bar_size,
+            PriceBar.source == source,
+            PriceBar.what_to_show == what_to_show,
+        )
+    )
+    if latest_ts is None:
+        return None
+    return latest_ts.date() + timedelta(days=1)
+
+
 class FmpConnector(Connector):
     name = "fmp"
 
@@ -99,16 +144,43 @@ class FmpConnector(Connector):
             raise ValueError("symbol is required")
 
         params = {"symbol": fmp_symbol, "apikey": settings.fmp_key}
-        if date_from:
-            params["from"] = date_from
+        effective_date_from = date_from
+        if not effective_date_from:
+            with get_session() as session:
+                instrument = _get_instrument(session, fmp_symbol)
+                if instrument:
+                    next_missing_date = _next_missing_date(
+                        session=session,
+                        instrument=instrument,
+                        bar_size=bar_size,
+                        source=self.name,
+                        what_to_show=what_to_show,
+                    )
+                    if next_missing_date:
+                        effective_date_from = next_missing_date.isoformat()
+
+        if effective_date_from:
+            params["from"] = effective_date_from
         if date_to:
             params["to"] = date_to
-        response = httpx.get(
-            f"{BASE_URL}/historical-price-eod/full",
-            params=params,
-            timeout=30,
-        )
-        response.raise_for_status()
+        if (
+            effective_date_from
+            and date_to
+            and _date_from_ymd(effective_date_from) > _date_from_ymd(date_to)
+        ):
+            return 0
+
+        response = _get_fmp_eod(params=params, use_light_endpoint=False)
+        if response.status_code == 402:
+            response = _get_fmp_eod(params=params, use_light_endpoint=True)
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            raise FmpProviderError(
+                f"FMP request failed with HTTP {status}. Check FMP_KEY, plan access, "
+                "quota, and the FMP dashboard. API key omitted from error."
+            ) from None
         rows = sorted(_historical_rows(response.json()), key=lambda row: str(row.get("date", "")))
 
         with get_session() as session:
@@ -148,3 +220,15 @@ class FmpConnector(Connector):
                     )
                 count += 1
             return count
+
+
+def _get_fmp_eod(params: dict[str, str], use_light_endpoint: bool) -> httpx.Response:
+    path = LIGHT_EOD_PATH if use_light_endpoint else FULL_EOD_PATH
+    api_key = params["apikey"]
+    request_params = {key: value for key, value in params.items() if key != "apikey"}
+    return httpx.get(
+        f"{BASE_URL}{path}",
+        params=request_params,
+        headers={"apikey": api_key},
+        timeout=30,
+    )

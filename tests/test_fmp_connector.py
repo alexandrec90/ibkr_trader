@@ -11,14 +11,24 @@ from ibkr_trader.ingestion.market import fmp
 
 
 class FakeResponse:
-    def __init__(self, payload: object):
+    def __init__(self, payload: object, status_code: int = 200):
         self.payload = payload
+        self.status_code = status_code
 
     def raise_for_status(self) -> None:
         return None
 
     def json(self) -> object:
         return self.payload
+
+
+class FakeHttpErrorResponse(FakeResponse):
+    def raise_for_status(self) -> None:
+        request = fmp.httpx.Request("GET", "https://financialmodelingprep.com/sanitized")
+        response = fmp.httpx.Response(self.status_code, request=request)
+        raise fmp.httpx.HTTPStatusError(
+            "sanitized provider error", request=request, response=response
+        )
 
 
 @pytest.fixture(autouse=True)
@@ -66,10 +76,12 @@ def test_fmp_fetch_upserts_price_bars(monkeypatch):
     ]
     session_cm = _make_session_scope()
 
-    def fake_get(url, params, timeout):
-        assert url == f"{fmp.BASE_URL}/historical-price-eod/full"
+    def fake_get(url, params, headers, timeout):
+        assert url == f"{fmp.BASE_URL}{fmp.FULL_EOD_PATH}"
         assert params["symbol"] == "AAPL"
-        assert params["apikey"] == "test-fmp-key"
+        assert "from" not in params
+        assert "apikey" not in params
+        assert headers["apikey"] == "test-fmp-key"
         assert timeout == 30
         return FakeResponse(payload)
 
@@ -104,7 +116,36 @@ def test_fmp_fetch_updates_existing_price_bar(monkeypatch):
     payloads = [first_payload, second_payload]
     session_cm = _make_session_scope()
 
-    def fake_get(url, params, timeout):
+    def fake_get(url, params, headers, timeout):
+        return FakeResponse(payloads.pop(0))
+
+    monkeypatch.setenv("FMP_KEY", "test-fmp-key")
+    monkeypatch.setattr(fmp.httpx, "get", fake_get)
+    monkeypatch.setattr(fmp, "get_session", session_cm)
+
+    assert fmp.FmpConnector().fetch(symbol="AAPL") == 1
+    assert fmp.FmpConnector().fetch(symbol="AAPL", date_from="2024-01-02") == 1
+
+    with session_cm() as session:
+        bars = session.scalars(select(PriceBar)).all()
+        assert len(bars) == 1
+        assert bars[0].high == 190.0
+        assert bars[0].close == 189.5
+
+
+def test_fmp_fetch_starts_from_next_missing_date(monkeypatch):
+    first_payload = [
+        {"date": "2024-01-02", "open": 187.1, "high": 189.4, "low": 186.8, "close": 188.9}
+    ]
+    second_payload = [
+        {"date": "2024-01-03", "open": 189.0, "high": 191.0, "low": 188.5, "close": 190.2}
+    ]
+    payloads = [first_payload, second_payload]
+    params_seen: list[dict[str, str]] = []
+    session_cm = _make_session_scope()
+
+    def fake_get(url, params, headers, timeout):
+        params_seen.append(dict(params))
         return FakeResponse(payloads.pop(0))
 
     monkeypatch.setenv("FMP_KEY", "test-fmp-key")
@@ -114,8 +155,88 @@ def test_fmp_fetch_updates_existing_price_bar(monkeypatch):
     assert fmp.FmpConnector().fetch(symbol="AAPL") == 1
     assert fmp.FmpConnector().fetch(symbol="AAPL") == 1
 
+    assert "from" not in params_seen[0]
+    assert params_seen[1]["from"] == "2024-01-03"
     with session_cm() as session:
-        bars = session.scalars(select(PriceBar)).all()
-        assert len(bars) == 1
-        assert bars[0].high == 190.0
-        assert bars[0].close == 189.5
+        assert len(session.scalars(select(PriceBar)).all()) == 2
+
+
+def test_fmp_fetch_skips_request_when_incremental_range_is_after_date_to(monkeypatch):
+    session_cm = _make_session_scope()
+
+    def fail_get(url, params, headers, timeout):
+        raise AssertionError("FMP should not be called when local data already covers date_to")
+
+    monkeypatch.setenv("FMP_KEY", "test-fmp-key")
+    monkeypatch.setattr(fmp.httpx, "get", fail_get)
+    monkeypatch.setattr(fmp, "get_session", session_cm)
+
+    with session_cm() as session:
+        instrument = Instrument(symbol="AAPL", exchange="SMART", currency="USD")
+        session.add(instrument)
+        session.flush()
+        session.add(
+            PriceBar(
+                instrument_id=instrument.id,
+                ts=fmp._daily_ts("2024-01-02"),
+                bar_size="1 day",
+                source="fmp",
+                what_to_show="TRADES",
+                open=187.1,
+                high=189.4,
+                low=186.8,
+                close=188.9,
+                volume=1000,
+            )
+        )
+
+    assert fmp.FmpConnector().fetch(symbol="AAPL", date_to="2024-01-02") == 0
+
+
+def test_fmp_fetch_falls_back_to_light_eod_when_full_is_gated(monkeypatch):
+    payload = [{"date": "2024-01-02", "price": 188.9, "volume": 1000}]
+    urls: list[str] = []
+    session_cm = _make_session_scope()
+
+    class GatedResponse(FakeResponse):
+        def raise_for_status(self) -> None:
+            return None
+
+    def fake_get(url, params, headers, timeout):
+        urls.append(url)
+        if url.endswith(fmp.FULL_EOD_PATH):
+            return GatedResponse({"error": "payment required"}, status_code=402)
+        return FakeResponse(payload)
+
+    monkeypatch.setenv("FMP_KEY", "test-fmp-key")
+    monkeypatch.setattr(fmp.httpx, "get", fake_get)
+    monkeypatch.setattr(fmp, "get_session", session_cm)
+
+    assert fmp.FmpConnector().fetch(symbol="GOOG") == 1
+    assert urls == [f"{fmp.BASE_URL}{fmp.FULL_EOD_PATH}", f"{fmp.BASE_URL}{fmp.LIGHT_EOD_PATH}"]
+
+    with session_cm() as session:
+        bar = session.scalar(select(PriceBar))
+        assert bar is not None
+        assert bar.open == 188.9
+        assert bar.high == 188.9
+        assert bar.low == 188.9
+        assert bar.close == 188.9
+
+
+def test_fmp_fetch_sanitizes_provider_http_errors(monkeypatch):
+    session_cm = _make_session_scope()
+
+    def fake_get(url, params, headers, timeout):
+        return FakeHttpErrorResponse({"error": "payment required"}, status_code=402)
+
+    monkeypatch.setenv("FMP_KEY", "test-fmp-key")
+    monkeypatch.setattr(fmp.httpx, "get", fake_get)
+    monkeypatch.setattr(fmp, "get_session", session_cm)
+
+    with pytest.raises(fmp.FmpProviderError) as exc_info:
+        fmp.FmpConnector().fetch(symbol="GOOG")
+
+    assert "HTTP 402" in str(exc_info.value)
+    assert "API key omitted" in str(exc_info.value)
+    assert exc_info.value.__cause__ is None
