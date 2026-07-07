@@ -52,7 +52,10 @@ select = ["E", "F", "I", "UP", "B"]
 "src/ibkr_trader/cli.py" = ["B008"]
 
 [tool.mypy]
-python_version = "3.11"
+# Analysis target must be >= the highest stub floor of our installed deps: numpy 2.5's bundled
+# stubs use 3.12+ syntax, so a 3.11 target makes mypy choke parsing them before it reaches our
+# code. 3.12 is a safe floor (the venv runs 3.14) while `requires-python = ">=3.11"` still holds.
+python_version = "3.12"
 mypy_path = "src"
 ignore_missing_imports = true
 

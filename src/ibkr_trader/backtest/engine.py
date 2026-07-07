@@ -490,17 +490,20 @@ def _pick_source(
     end: datetime,
 ) -> str | None:
     """The single source to load this instrument's bars from (None if it has no bars)."""
-    counts = session.execute(
-        select(PriceBar.source, func.count())
-        .where(
-            PriceBar.instrument_id == instrument_id,
-            PriceBar.bar_size == bar_size,
-            PriceBar.what_to_show == what_to_show,
-            PriceBar.ts >= start,
-            PriceBar.ts <= end,
-        )
-        .group_by(PriceBar.source)
-    ).all()
+    counts: list[tuple[str, int]] = [
+        (source, n_bars)
+        for source, n_bars in session.execute(
+            select(PriceBar.source, func.count())
+            .where(
+                PriceBar.instrument_id == instrument_id,
+                PriceBar.bar_size == bar_size,
+                PriceBar.what_to_show == what_to_show,
+                PriceBar.ts >= start,
+                PriceBar.ts <= end,
+            )
+            .group_by(PriceBar.source)
+        ).all()
+    ]
     if not counts:
         return None
 
