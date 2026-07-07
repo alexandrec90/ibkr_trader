@@ -62,13 +62,20 @@ Keep this file updated as items land — check things off, don't delete them.
 - [ ] Questrade API connector — **candidate** (owner is a Questrade client; API free for
       clients, OHLC candles capped at 2 000/request, OAuth refresh-token flow). Evaluate as
       an official-API replacement for the Yahoo scraper if Yahoo starts blocking us.
-- [ ] **Yahoo fundamentals connector** — probed 2026-07: free yfinance serves statements
-      (income/balance/cashflow) but only **~4-5 annual periods / ~5-7 quarters** deep;
-      dividends (decades) and share counts (2015+) are full-history; earnings report dates
-      back to 2001 (use for point-in-time lagging). ETFs return nothing. Start snapshotting
-      statements quarterly NOW so fundamental history accrues forward; `.info` ratios are
-      current-only → live eligibility/solvency screen, never backtest features. Deep US
-      history if ever needed: SEC EDGAR XBRL (free, US-only) or paid FMP.
+- [x] **Yahoo fundamentals connector** ([yahoo_fundamentals.py](src/ibkr_trader/ingestion/market/yahoo_fundamentals.py)) —
+      `ingest fundamentals AAPL` upserts dividends / share counts / income-balance-cashflow
+      statements / sector+industry / earnings dates; ETFs (e.g. XEQT.TO) ingest dividends only,
+      gracefully. Snapshot-forward: statements re-upserted each run with `fetched_at` refreshed
+      while `first_seen` (set on insert) is never touched, and each period's `report_date` is
+      inferred from the nearest earnings event within 120 days for point-in-time lagging.
+      Shares the module-level Yahoo throttle (refactored into
+      [yahoo_common.py](src/ibkr_trader/ingestion/market/yahoo_common.py)). Migration
+      `c2d3e4f5a6b7` (Instrument.sector/industry + `dividends`, `share_counts`,
+      `fundamental_snapshots`, `earnings_events`) applied to dev DB. Tested
+      (`tests/test_yahoo_fundamentals_connector.py`); VS Code task
+      `ingest: yahoo fundamentals (tickers-yahoo.txt)` + `--source yahoo-fundamentals` batch path.
+      `.info` ratios are current-only → live eligibility/solvency screen, never backtest features.
+      Deep US history if ever needed: SEC EDGAR XBRL (free, US-only) or paid FMP.
 - [ ] Shared connector plumbing: retry/backoff via tenacity, structured logging, per-source
       rate-limit config
 - [ ] `serve` command ([cli.py](src/ibkr_trader/cli.py)) — APScheduler jobs: daily FMP refresh

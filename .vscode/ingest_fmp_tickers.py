@@ -5,7 +5,8 @@ artifacts/tasks/ingest-*-prices.log instead of flooding the terminal.
 
 Default source is FMP (tickers.txt, canonical symbols). `--source yahoo` reads Yahoo-style
 symbols (e.g. XEQT.TO) — used for symbols FMP's free tier gates; the connector throttles
-itself between requests.
+itself between requests. `--source yahoo-fundamentals` pulls corporate data (dividends, share
+counts, statements, sector, earnings dates) for the same Yahoo-style symbols.
 """
 
 from __future__ import annotations
@@ -24,8 +25,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--source",
         default="fmp",
-        choices=("fmp", "yahoo"),
-        help="Which price connector to use for every symbol in the file.",
+        choices=("fmp", "yahoo", "yahoo-fundamentals"),
+        help="Which connector to use for every symbol in the file.",
     )
     return parser.parse_args()
 
@@ -35,6 +36,10 @@ def make_connector(source: str):
         from ibkr_trader.ingestion.market.yahoo import YahooConnector
 
         return YahooConnector()
+    if source == "yahoo-fundamentals":
+        from ibkr_trader.ingestion.market.yahoo_fundamentals import YahooFundamentalsConnector
+
+        return YahooFundamentalsConnector()
     from ibkr_trader.ingestion.market.fmp import FmpConnector
 
     return FmpConnector()
@@ -59,6 +64,7 @@ def main() -> int:
         return 1
 
     connector = make_connector(args.source)
+    unit = "rows" if args.source == "yahoo-fundamentals" else "bars"
     failures: list[str] = []
     print(f"source: {args.source}")
     print(f"ticker_file: {ticker_path}")
@@ -72,7 +78,7 @@ def main() -> int:
             failures.append(symbol)
             print(f"{symbol}: failed: {type(exc).__name__}: {exc}")
         else:
-            print(f"{symbol}: upserted {count} bars")
+            print(f"{symbol}: upserted {count} {unit}")
 
     if failures:
         print("")

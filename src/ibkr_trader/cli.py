@@ -78,6 +78,20 @@ def ingest_prices(
     typer.echo(f"upserted {count} bars")
 
 
+@ingest_app.command("fundamentals")
+def ingest_fundamentals(symbol: str):
+    """Upsert Yahoo corporate data (dividends, share counts, statements, sector, earnings dates)
+    for one symbol (e.g. AAPL, RY.TO). ETFs ingest dividends only, gracefully."""
+    from ibkr_trader.ingestion.market.yahoo_fundamentals import YahooFundamentalsConnector
+
+    try:
+        count = YahooFundamentalsConnector().fetch(symbol=symbol)
+    except RuntimeError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(f"upserted {count} rows")
+
+
 @ingest_app.command("fx")
 def ingest_fx(
     pair: str = typer.Option("USDCAD", help="currency pair, e.g. USDCAD (close = CAD per 1 USD)"),
