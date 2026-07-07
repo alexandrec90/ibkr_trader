@@ -256,6 +256,23 @@ def test_yahoo_fetch_wraps_provider_errors(monkeypatch):
     assert "XEQT.TO" in str(exc_info.value)
 
 
+def test_download_within_timeout_raises_on_hang(monkeypatch):
+    """A download that outruns the ceiling is abandoned and surfaced as a provider error,
+    rather than hanging the batch (yfinance has no timeout of its own)."""
+    import time as _time
+
+    def slow_download(symbol, start, end, auto_adjust):
+        _time.sleep(5.0)  # never returns within the tiny ceiling below
+        raise AssertionError("should have been abandoned")
+
+    monkeypatch.setattr(yahoo, "_download_history", slow_download)
+
+    with pytest.raises(yahoo.YahooProviderError) as exc_info:
+        yahoo._download_within_timeout("XOM", None, None, True, timeout=0.2)
+    assert "XOM" in str(exc_info.value)
+    assert "0s" in str(exc_info.value) or "exceeded" in str(exc_info.value)
+
+
 def test_throttle_spaces_out_consecutive_requests(monkeypatch):
     clock = {"now": 0.0}
     sleeps: list[float] = []

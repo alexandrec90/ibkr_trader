@@ -3,7 +3,7 @@
 Personal algo-trading service: ingest news/social/market data → features → predictions →
 backtest → trade via IBKR **paper account**. Owner is in Québec, Canada.
 
-Naming: the repo folder is `ibrk_trader` (typo, kept); the Python package is `ibkr_trader`.
+Naming: the repo folder is `ibkr_trader`; the Python package is `ibkr_trader`.
 
 Implementation status lives in [TODO.md](TODO.md) — check it at session start, tick items off
 as they land, and add newly discovered work there.
