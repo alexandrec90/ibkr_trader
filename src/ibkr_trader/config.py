@@ -57,9 +57,7 @@ class Settings(BaseSettings):
     def assert_trading_allowed(self) -> None:
         """Guard called before any order is transmitted to the broker."""
         if self.environment == "live" and not self.live_trading_acknowledged:
-            raise RuntimeError(
-                "ENVIRONMENT=live but LIVE_TRADING_ACKNOWLEDGED is not true."
-            )
+            raise RuntimeError("ENVIRONMENT=live but LIVE_TRADING_ACKNOWLEDGED is not true.")
         if self.environment == "dev":
             raise RuntimeError("Trading is disabled in ENVIRONMENT=dev (use paper).")
 
