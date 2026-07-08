@@ -1,7 +1,7 @@
 # Local dev + single-VM cloud deployment.
 # Usual dev loop: `docker compose up -d db` and run the app natively.
 # The ib-gateway service needs TWS_USERID/TWS_PASSWORD in .env and a human to
-# approve 2FA (weekly) — see docs/ibkr/05-running-in-docker.md.
+# approve 2FA periodically.
 
 services:
   db:

@@ -29,6 +29,12 @@ dev = [
     "ruff>=0.4",
     "mypy>=1.10",
 ]
+# ML training extra (ML-03): the core package must import without it — training modules
+# guard these imports and tests importorskip them.
+ml = [
+    "lightgbm>=4.5",
+    "scikit-learn>=1.5",
+]
 
 [project.scripts]
 ibkr-trader = "ibkr_trader.cli:app"

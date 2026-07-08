@@ -1,8 +1,8 @@
 """Reddit connector (PRAW) — r/wallstreetbets, r/investing, r/stocks, r/CanadianInvestor.
 
 Setup: create a "script" app at https://www.reddit.com/prefs/apps, put the id/secret in .env.
-Privacy: authors are stored as `stable_hash(username)` only (Québec Law 25 — see
-docs/legal-quebec-canada.md). Respect Reddit Data API terms for retention/redistribution.
+Privacy: authors are stored as `stable_hash(username)` only. Respect Reddit Data API terms
+for retention/redistribution.
 """
 
 from ibkr_trader.config import get_settings

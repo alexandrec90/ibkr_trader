@@ -89,10 +89,16 @@ def get_allocator(name: str) -> Allocator:
 
 @register
 class EqualWeightAllocator(Allocator):
-    """Equal weight across all eligible names (capped by ``max_names``). Honest, dumb baseline."""
+    """Equal weight across all eligible names (capped by ``max_names``). Honest, dumb baseline.
+
+    15 names, same book size as ``momentum_lt``/``ml_lt`` so the leaderboard compares like
+    with like. It must not be 20: a 1/20 = 5% target equals the default 5% rebalance band
+    exactly, and the engine only trades drifts *past* the band — the baseline would never buy.
+    """
 
     name = "equal_weight"
-    version = "1"
+    version = "2"
+    max_names = 15
 
     def allocate(self, candidates: Sequence[Candidate], features: Features) -> Weights:
         chosen = sorted(candidates, key=lambda c: c.instrument_id)[: self.max_names]
@@ -184,3 +190,23 @@ class ScoreAllocator(Allocator):
             if score > 0 and math.isfinite(score):
                 scores[candidate.instrument_id] = score
         return normalize_weights(scores, max_names=self.max_names, max_weight=self.max_weight)
+
+
+@register
+class MlLtAllocator(ScoreAllocator):
+    """The trained ``ml_lt`` predictor as a first-class strategy, resolvable by name.
+
+    Thin registered wrapper so ``backtest run --strategy ml_lt`` works like any other
+    allocator. Same concentration discipline as ``momentum_lt`` (top 15, 20% cap).
+    Constructing it resolves the newest trained artifact (see signals.predictor.MlLongTerm)
+    — no artifact or no ``[ml]`` extra raises there with a clear message.
+    """
+
+    name = "ml_lt"
+
+    def __init__(self):
+        super().__init__("ml_lt", max_names=15, max_weight=0.20)
+        # ScoreAllocator renames itself "score:ml_lt"; keep the registry name so
+        # backtest_runs.strategy matches --strategy ml_lt. version stays the artifact's
+        # (e.g. "v1") — the engine pins it into params as model_version.
+        self.name = MlLtAllocator.name

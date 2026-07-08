@@ -5,7 +5,7 @@ Conventions:
 - External payloads are preserved in a `raw` JSON column for reprocessing.
 - Upsert keys: (source, external_id) for text content; (instrument, ts, bar_size, source,
   what_to_show) for bars.
-- Privacy (Québec Law 25, see docs/legal-quebec-canada.md): social authors are stored as
+- Privacy (Québec Law 25): social authors are stored as
   hashes, never usernames.
 """
 
@@ -147,6 +147,24 @@ class EarningsEvent(Base):
     instrument_id: Mapped[int] = mapped_column(ForeignKey("instruments.id"))
     report_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     source: Mapped[str] = mapped_column(String(32))  # yahoo
+
+
+class Feature(Base):
+    """One instrument's feature snapshot for one day under one feature-set version.
+
+    Written by signals.features.build_daily_features so training (ML-03) and backtests read
+    identical inputs; `feature_set_version` pins what a saved model was trained on. `payload`
+    is the numeric feature dict plus the categorical `sector` string.
+    """
+
+    __tablename__ = "features"
+    __table_args__ = (UniqueConstraint("instrument_id", "ts", "feature_set_version"),)
+
+    id: Mapped[int] = mapped_column(SqliteFriendlyBigInt, primary_key=True)
+    instrument_id: Mapped[int] = mapped_column(ForeignKey("instruments.id"))
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True))  # as-of day, midnight UTC
+    feature_set_version: Mapped[str] = mapped_column(String(16))
+    payload: Mapped[dict] = mapped_column(JsonVariant)
 
 
 class NewsArticle(Base):

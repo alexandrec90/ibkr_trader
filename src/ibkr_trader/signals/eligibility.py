@@ -12,10 +12,9 @@ Design:
   cleanly between the backtester and the pre-trade risk check.
 - As-of by construction: the caller computes ``last_price`` / ``avg_dollar_volume`` /
   ``history_days`` using only data at or before the evaluation date (no look-ahead).
-- Fundamental solvency screening (market cap, distress/default risk for individual names) is a
-  documented next step: it needs fundamentals ingested first. Until then, the price + liquidity +
-  history + curated-universe proxy carries the "nothing likely to default" intent — see
-  docs/registered-account-strategy.md.
+- Fundamental solvency screening (market cap, distress/default risk for individual names) needs
+  fundamentals ingested first. Until then, the price + liquidity + history + curated-universe
+  proxy carries the "nothing likely to default" intent.
 """
 
 from collections.abc import Sequence

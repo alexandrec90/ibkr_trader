@@ -4,8 +4,8 @@ Québec/Canada registered accounts (RRSP, TFSA, FHSA, LIRA) shelter growth and C
 dividends entirely. What differs between them — and the only thing the simulator needs — is how
 **foreign (US) dividends** are treated at source, plus whether the account is locked-in.
 
-Key facts (engineering research, not tax advice — see docs/legal-quebec-canada.md, chase the
-``[verify]`` markers there before funding anything):
+Key facts (engineering research, not tax advice — re-check official/current sources before
+funding anything):
 
 - Canadian-domiciled securities: **no** dividend withholding in any account.
 - US-domiciled securities held **directly**:
@@ -15,7 +15,7 @@ Key facts (engineering research, not tax advice — see docs/legal-quebec-canada
     - Non-registered — 15% withholding applies but is **recoverable** via the foreign tax
       credit, so we treat its dividend drag as ≈ 0 in this pre-withdrawal model.
   Holding US exposure through a *Canadian-listed* ETF breaks the treaty exemption (an
-  intermediary sits in the way); modelling that layering is future work — see the strategy doc.
+  intermediary sits in the way); modelling that layering is future work.
 
 The IBKR **paper** account has no notion of "registered": these rules are simulated here, in
 our own cost model, layered on top of paper trading. Nothing in this module transmits an order.
@@ -65,7 +65,7 @@ class AccountTaxProfile:
         return 0.0 if self.withholding_recoverable else self.us_dividend_withholding
 
 
-# `[verify]` FHSA and LIRA treaty treatment (see docs/registered-account-strategy.md):
+# `[verify]` FHSA and LIRA treaty treatment:
 #   - FHSA is a newer plan; whether the IRS/treaty treats it like an RRSP for the US-dividend
 #     exemption is unsettled — modelled as NOT exempt (15%), the conservative assumption.
 #   - LIRA is a locked-in retirement plan; treated like an RRSP (exempt), but confirm.

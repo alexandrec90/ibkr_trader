@@ -1,18 +1,19 @@
 # TODO
 
-Status of the build-out (order matches [docs/architecture.md](docs/architecture.md)).
+Status of the build-out.
 Keep this file updated as items land — check things off, don't delete them.
 
 ## ✅ Done
 
 - [x] Project skeleton: config (paper-by-default gate), DB models, Alembic (initial migration
       applied), Docker compose (Postgres 5433 + opt-in ib-gateway), CLI, CLAUDE.md, tasks.json
-- [x] IBKR research docs ([docs/ibkr/](docs/ibkr/)) + Québec legal notes + data-source survey
-- [x] Multi-asset implementation roadmap ([docs/multi-asset-roadmap.md](docs/multi-asset-roadmap.md))
+- [x] IBKR research pass + Québec legal notes + data-source survey (docs removed from repo;
+      re-check official/current sources before changing those areas)
+- [x] Multi-asset implementation roadmap completed
 - [x] **FMP price connector end-to-end** — `ingest prices <SYM> --source fmp`, upserts
       `price_bars`, handles `.TO` symbols, tested (`tests/test_fmp_connector.py`);
       `tickers.txt` universe + VS Code ingest tasks
-- [x] **Registered-account long-term strategy — vertical slice** (docs/registered-account-strategy.md):
+- [x] **Registered-account long-term strategy — vertical slice**:
       account tax profiles ([accounts.py](src/ibkr_trader/accounts.py), RRSP/TFSA/FHSA/LIRA/nonreg
       US-withholding), eligibility screen ([eligibility.py](src/ibkr_trader/signals/eligibility.py)),
       portfolio `Allocator` layer + registry + `ScoreAllocator` adapter
@@ -55,8 +56,7 @@ Keep this file updated as items land — check things off, don't delete them.
 - [ ] **Google Trends connector** ([google_trends.py](src/ibkr_trader/ingestion/social/google_trends.py)) —
       pytrends, tiny volume + long backoff, consistent timeframe windows
 - [ ] **IBKR historical connector** ([ibkr_historical.py](src/ibkr_trader/ingestion/market/ibkr_historical.py)) —
-      ib_async, token-bucket throttle for pacing rules
-      ([docs/ibkr/03](docs/ibkr/03-market-data-and-historical.md)); cache `conId` on instruments
+      ib_async, token-bucket throttle for official IBKR pacing rules; cache `conId` on instruments
 - [ ] Alpha Vantage / Finnhub candles — **optional**, only if FMP+Yahoo coverage proves
       insufficient (free tiers are tight; verify Finnhub candle access first)
 - [ ] Questrade API connector — **candidate** (owner is a Questrade client; API free for
@@ -89,8 +89,35 @@ Keep this file updated as items land — check things off, don't delete them.
       VADER; persist into `news_articles.sentiment` / `social_posts.sentiment`
 - [ ] Ticker extraction: stoplist for WSB false positives (CEO/YOLO/DD…), validate against
       `instruments`; backfill `symbols` arrays on stored posts/articles
-- [ ] `build_daily_features()` — per symbol/day: returns, volume z-score, mention counts,
-      mean sentiment, trends delta
+- [x] **`build_daily_features()` — shared, versioned feature pipeline (ML-02)**
+      ([features.py](src/ibkr_trader/signals/features.py)): pure core `build_features_asof`
+      (`FEATURE_SET_VERSION="1"`: returns 1/3/6/12m, `momentum_12_1`, `volatility`
+      (semantics identical to the old engine version) + 60d, downside deviation, 252d max
+      drawdown, % off 52w high, volume z-score 60d, excess returns vs benchmark, dividend
+      yield TTM / 3y growth, log market cap; `sector` string in the persisted payload only)
+      + thin DB wrapper `build_daily_features(session, instrument_ids, dates)` upserting
+      `features` snapshots keyed `(instrument_id, ts, feature_set_version)`. Engine
+      `_features_asof` now delegates to the core — ML-01 corporate data used when ingested,
+      price-only degradation otherwise; `momentum_lt` 2015→2025 dev-DB metrics verified
+      **byte-identical** pre/post refactor. Migration `d4e5f6a7b8c9` applied. Tests:
+      `tests/test_features.py` (no-look-ahead property, legacy parity, upsert idempotency).
+- [x] **Training harness (ML-03)** — supervised dataset + walk-forward validation + LightGBM:
+      [dataset.py](src/ibkr_trader/signals/dataset.py) (`build_dataset`: one row per
+      (instrument, month-end), feature set v1 + eligibility screen as-of t, label = 12m forward
+      CAD total return in excess of XEQT percentile-ranked per date; USD names convert through
+      the stored USDCAD series; rows without a full 12m forward window excluded),
+      [validation.py](src/ibkr_trader/signals/validation.py) (expanding walk-forward with a
+      **12-month purge**, Spearman rank IC per test date; no random splits),
+      [train.py](src/ibkr_trader/signals/train.py) (LightGBM + ridge sanity floor, versioned
+      artifacts `models/ml_lt/<vN>/` with model + metadata.json + `latest` marker; sector =
+      LightGBM native categorical). CLI `train run` / `train report`; `[ml]` extra
+      (lightgbm, scikit-learn) — core package imports without it. Tests: `tests/test_dataset.py`,
+      `tests/test_validation.py`, `tests/test_train.py` (purge, no-look-ahead, rank-label
+      uniformity, end-to-end smoke). First real run (180 names, 2019-08→2025-07 labels,
+      6 folds): OOS rank IC lightgbm +0.035 ±0.112, ridge +0.121 ±0.168 — decision metric
+      stays the after-cost backtest (ML-04).
+- [ ] Mention-count / mean-sentiment / trends-delta features — blocked on news/social
+      ingestion (§1); fold into a future feature-set version when data exists
 - [x] **Predictor registry** ([predictor.py](src/ibkr_trader/signals/predictor.py)) —
       `@register` / `get_predictor` / `available`; `MomentumBaseline` registered so models
       (long-term vs short-term, ML vs baseline) resolve by name. Tests:
@@ -129,10 +156,9 @@ Keep this file updated as items land — check things off, don't delete them.
 
 **Human prerequisites (can't be automated):**
 - [ ] Request paper account in Client Portal; note the `DU…` username → `.env`
-      ([docs/ibkr/02](docs/ibkr/02-paper-trading.md))
 - [ ] Decide market data: free delayed vs. share live subscriptions with paper (24 h to apply)
 - [ ] First `docker compose --profile ibkr up -d` login + 2FA approval; plan for the ~weekly
-      Sunday re-auth ([docs/ibkr/05](docs/ibkr/05-running-in-docker.md))
+      Sunday re-auth
 
 **Code:**
 - [ ] `ibkr-check` CLI — connect, print server time, managed accounts, one delayed quote
@@ -150,7 +176,7 @@ Keep this file updated as items land — check things off, don't delete them.
 
 ## 5 · Cloud deployment (after paper loop works locally)
 
-- [ ] Pick host (Canadian region preferred — see [docs/legal-quebec-canada.md](docs/legal-quebec-canada.md));
+- [ ] Pick host (Canadian region preferred);
       provision Docker VM
 - [ ] Secrets management (not `.env` on disk), Postgres backups, log shipping
 - [ ] Alerting: broker disconnected / 2FA needed / job failures (email or push)
@@ -158,7 +184,7 @@ Keep this file updated as items land — check things off, don't delete them.
 
 ## Housekeeping
 
-- [ ] Chase the `[verify]` markers in [docs/ibkr/](docs/ibkr/) as each area gets touched
+- [ ] Re-check official/current IBKR and deployment details as each area gets touched
       (gnzsnz env-var names before first gateway run; TSX exchange naming before trading CAD)
 - [ ] `mypy src` isn't clean-guaranteed yet — run and fix once implementations start landing
 - [ ] Commit cadence: working tree currently has uncommitted tweaks (127.0.0.1 DB URL,
