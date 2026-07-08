@@ -9,8 +9,7 @@ predictions, backtests them, and trades programmatically through Interactive Bro
 ## Status
 
 Work in progress. Structure, config, DB schema, ingestion, feature, training and backtest
-pieces are in place; paper-trading execution remains guarded and incomplete. See
-[TODO.md](TODO.md) for the build order.
+pieces are in place; paper-trading execution remains guarded and incomplete.
 
 ## Quickstart (dev)
 
