@@ -13,14 +13,12 @@ Naming: the repo folder is `ibkr_trader`; the Python package is `ibkr_trader`.
    `RiskChecker.check()` in every order path.
 2. **Secrets stay in `.env`** (gitignored). Never hardcode keys, never print them, never commit
    `.env`. New config goes through `Settings` + `.env.example`.
-3. **Don't invent IBKR API facts.** Consult [docs/ibkr/](docs/ibkr/) first; if the answer isn't
-   there, research the official docs and update those files (they carry source links and
-   `[verify]` markers).
-4. Legal context (Québec): read [docs/legal-quebec-canada.md](docs/legal-quebec-canada.md)
-   before touching execution, data-retention, or anything social-media-privacy adjacent.
-   Social authors are stored **hashed only**.
+3. **Don't invent IBKR API facts.** If the answer is not already encoded in the code/tests,
+   research official IBKR sources before changing IBKR behavior.
+4. Legal context (Québec): be careful before touching execution, data-retention, or anything
+   social-media-privacy adjacent. Social authors are stored **hashed only**.
 5. IBKR pacing limits are real: any new historical-data code must throttle
-   (docs/ibkr/03-market-data-and-historical.md).
+   according to current official IBKR pacing rules.
 
 ## Commands
 
@@ -40,16 +38,15 @@ The initial schema migration exists and is applied to the dev DB (host port **54
 occupied by another local Postgres). After changing `db/models.py`, autogenerate a new revision
 and review it before upgrading.
 
-## Architecture (details: docs/architecture.md)
+## Architecture
 
 - `src/ibkr_trader/ingestion/` — one connector per source (news/, social/, market/), all
   implement `base.Connector`, all upsert into Postgres keyed on (source, external_id).
-  Source list + rate limits: [docs/data-sources.md](docs/data-sources.md).
 - `src/ibkr_trader/signals/` — features + `Predictor` ABC. Reads/writes DB only.
 - `src/ibkr_trader/backtest/` — engine (costs are first-class, no look-ahead) + metrics.
   DB only, no network.
 - `src/ibkr_trader/execution/` — `Broker` ABC → `IbkrBroker` (ib_async), `risk.py` pre-trade
-  checks. Order lifecycle notes: [docs/ibkr/04-orders.md](docs/ibkr/04-orders.md).
+  checks.
 - `src/ibkr_trader/db/` — SQLAlchemy 2.0 models; migrations via Alembic (`migrations/`).
 - Postgres is the single source of truth; models/backtests never call external APIs.
 

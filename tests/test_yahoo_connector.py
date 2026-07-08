@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from ibkr_trader.db.models import Base, Instrument, PriceBar
-from ibkr_trader.ingestion.market import yahoo
+from ibkr_trader.ingestion.market import yahoo, yahoo_common
 
 
 def _make_session_scope():
@@ -42,8 +42,8 @@ def _frame(rows: dict[str, list], dates: list[str]) -> pd.DataFrame:
 
 @pytest.fixture(autouse=True)
 def no_throttle(monkeypatch):
-    monkeypatch.setattr(yahoo, "MIN_REQUEST_INTERVAL_SECONDS", 0.0)
-    monkeypatch.setattr(yahoo, "_last_request_monotonic", None)
+    monkeypatch.setattr(yahoo_common, "MIN_REQUEST_INTERVAL_SECONDS", 0.0)
+    monkeypatch.setattr(yahoo_common, "_last_request_monotonic", None)
 
 
 def test_yahoo_fetch_upserts_price_bars_and_maps_to_suffix(monkeypatch):
@@ -277,10 +277,10 @@ def test_throttle_spaces_out_consecutive_requests(monkeypatch):
     clock = {"now": 0.0}
     sleeps: list[float] = []
 
-    monkeypatch.setattr(yahoo, "MIN_REQUEST_INTERVAL_SECONDS", 2.0)
-    monkeypatch.setattr(yahoo, "_last_request_monotonic", None)
-    monkeypatch.setattr(yahoo.time, "monotonic", lambda: clock["now"])
-    monkeypatch.setattr(yahoo.time, "sleep", sleeps.append)
+    monkeypatch.setattr(yahoo_common, "MIN_REQUEST_INTERVAL_SECONDS", 2.0)
+    monkeypatch.setattr(yahoo_common, "_last_request_monotonic", None)
+    monkeypatch.setattr(yahoo_common.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(yahoo_common.time, "sleep", sleeps.append)
 
     yahoo._throttle()
     assert sleeps == []  # first request goes straight through

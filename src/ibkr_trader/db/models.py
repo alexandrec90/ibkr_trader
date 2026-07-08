@@ -5,17 +5,18 @@ Conventions:
 - External payloads are preserved in a `raw` JSON column for reprocessing.
 - Upsert keys: (source, external_id) for text content; (instrument, ts, bar_size, source,
   what_to_show) for bars.
-- Privacy (Québec Law 25, see docs/legal-quebec-canada.md): social authors are stored as
+- Privacy (Québec Law 25): social authors are stored as
   hashes, never usernames.
 """
 
 import enum
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import (
     JSON,
     BigInteger,
     Boolean,
+    Date,
     DateTime,
     Enum,
     Float,
@@ -26,6 +27,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -34,6 +36,9 @@ class Base(DeclarativeBase):
 
 
 SqliteFriendlyBigInt = BigInteger().with_variant(Integer, "sqlite")
+
+#: JSONB on Postgres (indexable, typed), plain JSON on SQLite (test DB has no JSONB).
+JsonVariant = JSON().with_variant(JSONB(), "postgresql")
 
 
 class Instrument(Base):
@@ -54,6 +59,10 @@ class Instrument(Base):
     # ETPs excluded from registered-account trading.
     asset_class: Mapped[str | None] = mapped_column(String(8))  # "STK" | "ETF"
     leveraged: Mapped[bool | None] = mapped_column(Boolean)
+    # Corporate metadata (ingestion.market.yahoo_fundamentals): current-only from yfinance
+    # `.info`, refreshed on each fundamentals ingest. Static-ish; not a point-in-time record.
+    sector: Mapped[str | None] = mapped_column(String(128))
+    industry: Mapped[str | None] = mapped_column(String(128))
 
 
 class PriceBar(Base):
@@ -74,6 +83,88 @@ class PriceBar(Base):
     low: Mapped[float] = mapped_column(Float)
     close: Mapped[float] = mapped_column(Float)
     volume: Mapped[float | None] = mapped_column(Float)
+
+
+class Dividend(Base):
+    """Cash dividends per instrument (yfinance `Ticker.dividends`, decades deep)."""
+
+    __tablename__ = "dividends"
+    __table_args__ = (UniqueConstraint("instrument_id", "ex_date", "source"),)
+
+    id: Mapped[int] = mapped_column(SqliteFriendlyBigInt, primary_key=True)
+    instrument_id: Mapped[int] = mapped_column(ForeignKey("instruments.id"))
+    ex_date: Mapped[date] = mapped_column(Date)
+    amount: Mapped[float] = mapped_column(Float)
+    source: Mapped[str] = mapped_column(String(32))  # yahoo
+
+
+class ShareCount(Base):
+    """Historical shares outstanding (yfinance `get_shares_full`, ~2015+) for market cap."""
+
+    __tablename__ = "share_counts"
+    __table_args__ = (UniqueConstraint("instrument_id", "date", "source"),)
+
+    id: Mapped[int] = mapped_column(SqliteFriendlyBigInt, primary_key=True)
+    instrument_id: Mapped[int] = mapped_column(ForeignKey("instruments.id"))
+    date: Mapped[date] = mapped_column(Date)
+    shares: Mapped[float] = mapped_column(Float)
+    source: Mapped[str] = mapped_column(String(32))  # yahoo
+
+
+class FundamentalSnapshot(Base):
+    """One financial statement for one period, snapshotted forward.
+
+    yfinance serves only ~4-5 annual / ~5-7 quarterly periods, so we upsert the latest each
+    run. `first_seen` records when a figure first entered our DB and is **never updated** —
+    with `report_date` (inferred from earnings dates) it lets feature builds honestly answer
+    "what did we know at time t?".
+    """
+
+    __tablename__ = "fundamental_snapshots"
+    __table_args__ = (UniqueConstraint("instrument_id", "freq", "statement", "period_end"),)
+
+    id: Mapped[int] = mapped_column(SqliteFriendlyBigInt, primary_key=True)
+    instrument_id: Mapped[int] = mapped_column(ForeignKey("instruments.id"))
+    freq: Mapped[str] = mapped_column(String(16))  # annual | quarterly
+    statement: Mapped[str] = mapped_column(String(16))  # income | balance | cashflow
+    period_end: Mapped[date] = mapped_column(Date)
+    payload: Mapped[dict] = mapped_column(JsonVariant)  # line-item name -> value
+    report_date: Mapped[date | None] = mapped_column(Date)  # from earnings dates when matchable
+    first_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True))  # set on insert only
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))  # updated each refresh
+
+
+class EarningsEvent(Base):
+    """Earnings report timestamps (yfinance `get_earnings_dates`, back to ~2001).
+
+    Used to lag statements to their real availability date (point-in-time correctness).
+    """
+
+    __tablename__ = "earnings_events"
+    __table_args__ = (UniqueConstraint("instrument_id", "report_ts", "source"),)
+
+    id: Mapped[int] = mapped_column(SqliteFriendlyBigInt, primary_key=True)
+    instrument_id: Mapped[int] = mapped_column(ForeignKey("instruments.id"))
+    report_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    source: Mapped[str] = mapped_column(String(32))  # yahoo
+
+
+class Feature(Base):
+    """One instrument's feature snapshot for one day under one feature-set version.
+
+    Written by signals.features.build_daily_features so training (ML-03) and backtests read
+    identical inputs; `feature_set_version` pins what a saved model was trained on. `payload`
+    is the numeric feature dict plus the categorical `sector` string.
+    """
+
+    __tablename__ = "features"
+    __table_args__ = (UniqueConstraint("instrument_id", "ts", "feature_set_version"),)
+
+    id: Mapped[int] = mapped_column(SqliteFriendlyBigInt, primary_key=True)
+    instrument_id: Mapped[int] = mapped_column(ForeignKey("instruments.id"))
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True))  # as-of day, midnight UTC
+    feature_set_version: Mapped[str] = mapped_column(String(16))
+    payload: Mapped[dict] = mapped_column(JsonVariant)
 
 
 class NewsArticle(Base):

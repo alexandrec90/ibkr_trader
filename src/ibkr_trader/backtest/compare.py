@@ -43,6 +43,8 @@ def compare_runs(
 
     present = [run for run in runs if (run.metrics or {}).get(sort_by) is not None]
     missing = [run for run in runs if (run.metrics or {}).get(sort_by) is None]
-    present.sort(key=lambda run: run.metrics[sort_by], reverse=descending)
+    # `present` is filtered to runs whose metrics hold a non-None sort_by, so `or {}` is only
+    # here to satisfy the type checker (metrics is Mapped[dict | None]); the key always exists.
+    present.sort(key=lambda run: (run.metrics or {})[sort_by], reverse=descending)
     ranked = present + missing
     return ranked[:limit] if limit else ranked

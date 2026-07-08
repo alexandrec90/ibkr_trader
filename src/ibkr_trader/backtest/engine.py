@@ -16,7 +16,7 @@ Guardrails against classic backtest lies:
 - Signals/eligibility computed at t use only bars ≤ t; fills happen the next session.
 - Use ADJUSTED_LAST bars for returns (dividends reinvested; withholding modelled as a drag).
 - Universe selection must not condition on the future (survivorship bias — IBKR has no
-  delisted-ticker history; see docs/ibkr/03-market-and-historical.md).
+  delisted-ticker history).
 
 The pure ``simulate()`` core runs on in-memory ``Series`` panels so the guardrails are unit
 tested without a database; ``BacktestEngine.run()`` is the thin DB-loading wrapper around it.
@@ -35,6 +35,13 @@ from ibkr_trader.backtest import metrics as metrics_mod
 from ibkr_trader.backtest.costs import RegisteredAccountCostModel
 from ibkr_trader.db.models import BacktestRun, Instrument, PriceBar
 from ibkr_trader.signals.eligibility import Candidate, EligibilityLimits, screen
+from ibkr_trader.signals.features import (
+    FEATURE_SET_VERSION,
+    CorporateData,
+    FeatureInputs,
+    build_features_asof,
+    load_corporate_inputs,
+)
 from ibkr_trader.signals.portfolio import Allocator, Weights, get_allocator
 
 
@@ -87,8 +94,8 @@ class RegisteredStrategyConfig:
     annual_trade_budget: int = 100  # per account, buys + sells (hard cap; cost fn does the work)
     rebalance_band: float = 0.05  # only trade a name whose weight drifts past this
     rebalance_months: int = 1  # consider rebalancing every N months
-    momentum_lookback: int = 252
-    vol_lookback: int = 252
+    # feature lookbacks (momentum, volatility, …) are pinned by the versioned feature set —
+    # see signals.features.FEATURE_SET_VERSION — not per-run parameters.
     liquidity_lookback: int = 63
     benchmark_symbol: str = "XEQT"
     eligibility: EligibilityLimits = field(default_factory=EligibilityLimits)
@@ -153,23 +160,32 @@ def _build_candidates(
 
 
 def _features_asof(
-    universe: dict[int, Series], eligible_ids: set[int], day: date, config: RegisteredStrategyConfig
+    universe: dict[int, Series],
+    eligible_ids: set[int],
+    day: date,
+    *,
+    benchmark: Series | None = None,
+    corporate: dict[int, CorporateData] | None = None,
 ) -> dict[int, dict[str, float]]:
-    """Price-derived features (return_12m, volatility) as-of ``day`` — bars ≤ day only."""
+    """Feature set v1 (signals.features) as-of ``day`` — bars/corporate data ≤ day only.
+
+    Missing ML-01 corporate data degrades to price-only features, never an error.
+    """
     features: dict[int, dict[str, float]] = {}
     for iid in eligible_ids:
         series = universe[iid]
-        i = series.idx_asof(day)
-        feats: dict[str, float] = {}
-        back = i - config.momentum_lookback
-        if back >= 0 and series.closes[back] > 0:
-            feats["return_12m"] = series.closes[i] / series.closes[back] - 1.0
-        lo = max(0, i - config.vol_lookback + 1)
-        window = series.closes[lo : i + 1]
-        if len(window) >= 20:
-            rets = np.diff(window) / np.asarray(window[:-1])
-            feats["volatility"] = float(rets.std() * np.sqrt(metrics_mod.TRADING_DAYS))
-        features[iid] = feats
+        corp = (corporate or {}).get(iid) or CorporateData()
+        inputs = FeatureInputs(
+            dates=series.dates,
+            closes=series.closes,
+            volumes=series.volumes,
+            dividends=corp.dividends,
+            share_counts=corp.share_counts,
+            sector=corp.sector,
+            benchmark_dates=benchmark.dates if benchmark is not None else None,
+            benchmark_closes=benchmark.closes if benchmark is not None else None,
+        )
+        features[iid] = build_features_asof(inputs, day)
     return features
 
 
@@ -268,15 +284,23 @@ def simulate(
     profile: AccountTaxProfile | None = None,
     config: RegisteredStrategyConfig | None = None,
     strategy_name: str | None = None,
+    corporate: dict[int, CorporateData] | None = None,
 ) -> BacktestResult:
     """Walk ``calendar`` day by day, rebalancing toward ``allocator``'s target weights.
 
     Pure over in-memory panels — no DB, no network. This is where the no-look-ahead, budget,
-    FX and withholding rules live and are tested.
+    FX and withholding rules live and are tested. ``corporate`` carries optional ML-01 data
+    (dividends, share counts, sector) per instrument for the feature build; absent → the
+    allocator sees price-only features.
     """
     config = config or RegisteredStrategyConfig()
     cost_model = cost_model or RegisteredAccountCostModel()
     profile = profile or get_profile(config.account)
+    # benchmark series for benchmark-relative features, when it's part of the universe
+    benchmark_series = next(
+        (s for s in universe.values() if s.symbol.upper() == config.benchmark_symbol.upper()),
+        None,
+    )
 
     cash = config.start_capital
     positions: dict[int, float] = {}
@@ -330,7 +354,9 @@ def simulate(
         if due:
             candidates = _build_candidates(universe, fx, day, config)
             result = screen(candidates, config.eligibility)
-            features = _features_asof(universe, result.eligible_ids, day, config)
+            features = _features_asof(
+                universe, result.eligible_ids, day, benchmark=benchmark_series, corporate=corporate
+            )
             pending = allocator.allocate(result.eligible, features)
             last_rebalance_month = month_index
 
@@ -355,6 +381,7 @@ def simulate(
         params={
             "account": config.account.value,
             "model_version": allocator.version,
+            "feature_set_version": FEATURE_SET_VERSION,
             "horizon": "long_term",
             "annual_trade_budget": config.annual_trade_budget,
             "rebalance_band": config.rebalance_band,
@@ -426,6 +453,9 @@ class BacktestEngine:
 
         calendar = sorted({day for series in universe.values() for day in series.dates})
         profile = get_profile(config.account)
+        # ML-01 corporate data (dividends, share counts, sector) per instrument, when ingested;
+        # instruments without it simply get price-only features.
+        corporate = {iid: load_corporate_inputs(session, iid) for iid in universe}
 
         result = simulate(
             universe,
@@ -436,6 +466,7 @@ class BacktestEngine:
             profile=profile,
             config=config,
             strategy_name=strategy,
+            corporate=corporate,
         )
 
         # buy-and-hold benchmark through the same engine (never rebalances after the first buy)
@@ -452,6 +483,7 @@ class BacktestEngine:
             profile=profile,
             config=config,
             strategy_name="buy_and_hold",
+            corporate=corporate,
         )
         result.metrics["benchmark_end_value_cad"] = bench.metrics.get("end_value_cad")
         result.metrics["benchmark_total_return"] = bench.metrics.get("total_return")
@@ -490,17 +522,20 @@ def _pick_source(
     end: datetime,
 ) -> str | None:
     """The single source to load this instrument's bars from (None if it has no bars)."""
-    counts = session.execute(
-        select(PriceBar.source, func.count())
-        .where(
-            PriceBar.instrument_id == instrument_id,
-            PriceBar.bar_size == bar_size,
-            PriceBar.what_to_show == what_to_show,
-            PriceBar.ts >= start,
-            PriceBar.ts <= end,
-        )
-        .group_by(PriceBar.source)
-    ).all()
+    counts: list[tuple[str, int]] = [
+        (source, n_bars)
+        for source, n_bars in session.execute(
+            select(PriceBar.source, func.count())
+            .where(
+                PriceBar.instrument_id == instrument_id,
+                PriceBar.bar_size == bar_size,
+                PriceBar.what_to_show == what_to_show,
+                PriceBar.ts >= start,
+                PriceBar.ts <= end,
+            )
+            .group_by(PriceBar.source)
+        ).all()
+    ]
     if not counts:
         return None
 

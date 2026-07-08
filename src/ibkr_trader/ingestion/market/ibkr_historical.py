@@ -1,7 +1,7 @@
 """IBKR historical-bars connector via ib_async.
 
 Highest-fidelity source (matches the broker we trade with) but strict pacing rules —
-see docs/ibkr/03-market-data-and-historical.md. Budget ~1 request / 10 s sustained.
+budget ~1 request / 10 s sustained unless current official IBKR rules say otherwise.
 """
 
 from ibkr_trader.config import get_settings

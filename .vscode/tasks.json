@@ -291,6 +291,33 @@
       "problemMatcher": []
     },
     {
+      "label": "ingest: yahoo fundamentals (tickers-yahoo.txt)",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": [
+        "${workspaceFolder}\\.vscode\\task_artifact_runner.py",
+        "--artifact",
+        "ingest-yahoo-fundamentals",
+        "--",
+        "${workspaceFolder}\\.vscode\\ingest_fmp_tickers.py",
+        "--source",
+        "yahoo-fundamentals",
+        "--tickers",
+        "tickers-yahoo.txt"
+      ],
+      "options": {
+        "env": {
+          "DATABASE_URL": "postgresql+psycopg://trader:trader@127.0.0.1:5433/ibkr_trader?connect_timeout=5"
+        }
+      },
+      "presentation": {
+        "reveal": "silent",
+        "panel": "dedicated",
+        "clear": false
+      },
+      "problemMatcher": []
+    },
+    {
       "label": "tickers: aggregate universe (tickers.txt)",
       "type": "process",
       "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
@@ -315,6 +342,14 @@
       "label": "app: docker build",
       "type": "shell",
       "command": "docker compose build app",
+      "problemMatcher": []
+    },
+    {
+      "label": "docker: prune + compact (max reclaim, restarts Docker)",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": ["${workspaceFolder}\\.vscode\\docker_prune.py"],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
       "problemMatcher": []
     }
   ],

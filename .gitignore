@@ -17,6 +17,9 @@ build/
 
 # Data & runtime artifacts
 data/
+docs/
+TODO.md
+models/
 *.parquet
 *.csv
 !tests/fixtures/*.csv

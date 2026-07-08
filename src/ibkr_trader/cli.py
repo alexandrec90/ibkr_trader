@@ -15,6 +15,23 @@ ingest_app = typer.Typer(help="Run one ingestion connector.")
 app.add_typer(ingest_app, name="ingest")
 backtest_app = typer.Typer(help="Backtest strategies over stored data and compare runs.")
 app.add_typer(backtest_app, name="backtest")
+train_app = typer.Typer(help="Train the ML long-term model on stored data (needs the [ml] extra).")
+app.add_typer(train_app, name="train")
+
+
+def _read_universe(universe_file: str, symbols: str) -> list[str]:
+    """Universe symbols from --symbols (comma-separated) or one-per-line --universe-file."""
+    if symbols.strip():
+        universe = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    else:
+        try:
+            with open(universe_file) as handle:
+                universe = [line.strip().upper() for line in handle if line.strip()]
+        except OSError as exc:
+            raise typer.BadParameter(f"cannot read {universe_file!r}: {exc}") from None
+    if not universe:
+        raise typer.BadParameter("empty universe")
+    return universe
 
 
 @app.command()
@@ -78,6 +95,20 @@ def ingest_prices(
     typer.echo(f"upserted {count} bars")
 
 
+@ingest_app.command("fundamentals")
+def ingest_fundamentals(symbol: str):
+    """Upsert Yahoo corporate data (dividends, share counts, statements, sector, earnings dates)
+    for one symbol (e.g. AAPL, RY.TO). ETFs ingest dividends only, gracefully."""
+    from ibkr_trader.ingestion.market.yahoo_fundamentals import YahooFundamentalsConnector
+
+    try:
+        count = YahooFundamentalsConnector().fetch(symbol=symbol)
+    except RuntimeError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(f"upserted {count} rows")
+
+
 @ingest_app.command("fx")
 def ingest_fx(
     pair: str = typer.Option("USDCAD", help="currency pair, e.g. USDCAD (close = CAD per 1 USD)"),
@@ -116,23 +147,16 @@ def backtest_run(
     from ibkr_trader.signals.portfolio import get_allocator
 
     try:
-        get_allocator(strategy)  # fail fast, listing the known allocators
-    except KeyError as exc:
+        # fail fast: unknown name lists the known allocators; ml_lt additionally needs the
+        # [ml] extra (RuntimeError) and a trained artifact (FileNotFoundError)
+        get_allocator(strategy)
+    except (KeyError, RuntimeError, FileNotFoundError) as exc:
         raise typer.BadParameter(str(exc)) from None
 
     settings = get_settings()
     account_type = AccountType((account or settings.default_account).lower())
 
-    if symbols.strip():
-        universe = [s.strip().upper() for s in symbols.split(",") if s.strip()]
-    else:
-        try:
-            with open(universe_file) as handle:
-                universe = [line.strip().upper() for line in handle if line.strip()]
-        except OSError as exc:
-            raise typer.BadParameter(f"cannot read {universe_file!r}: {exc}") from None
-    if not universe:
-        raise typer.BadParameter("empty universe")
+    universe = _read_universe(universe_file, symbols)
 
     start_dt = datetime.strptime(start, "%Y-%m-%d").replace(tzinfo=UTC)
     end_dt = datetime.strptime(end, "%Y-%m-%d").replace(tzinfo=UTC)
@@ -234,11 +258,113 @@ def backtest_compare(
         )
 
 
+@train_app.command("run")
+def train_run(
+    start: str = typer.Option("2015-01-01", help="training window start YYYY-MM-DD"),
+    end: str = typer.Option(..., help="training window end YYYY-MM-DD (labels stop 12m earlier)"),
+    universe_file: str = typer.Option("tickers.txt", help="one symbol per line"),
+    symbols: str = typer.Option("", help="comma-separated symbols (overrides --universe-file)"),
+    models_dir: str = typer.Option("models", help="artifact root (models/ml_lt/<version>/)"),
+    seed: int = typer.Option(42, help="random seed for LightGBM/ridge"),
+    test_size: int = typer.Option(6, help="months per walk-forward test block"),
+    min_train: int = typer.Option(24, help="months of history before the first test block"),
+):
+    """Build the supervised dataset, walk-forward validate (LightGBM + linear floor), fit the
+    final model and write a versioned artifact under models/ml_lt/."""
+    from datetime import UTC, datetime
+    from pathlib import Path
+
+    from ibkr_trader.db.session import get_session
+    from ibkr_trader.signals.train import train_from_db
+
+    start_dt = datetime.strptime(start, "%Y-%m-%d").replace(tzinfo=UTC)
+    end_dt = datetime.strptime(end, "%Y-%m-%d").replace(tzinfo=UTC)
+    try:
+        with get_session() as session:
+            result = train_from_db(
+                session,
+                _read_universe(universe_file, symbols),
+                start_dt,
+                end_dt,
+                models_dir=Path(models_dir),
+                seed=seed,
+                test_size=test_size,
+                min_train=min_train,
+            )
+    except (RuntimeError, ValueError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+
+    _print_train_summary(result.metadata)
+    typer.echo(f"\nartifact: {result.artifact_dir}")
+
+
+@train_app.command("report")
+def train_report(
+    models_dir: str = typer.Option("models", help="artifact root (models/ml_lt/<version>/)"),
+):
+    """Print the latest trained artifact's metadata and walk-forward ICs."""
+    from pathlib import Path
+
+    from ibkr_trader.signals.train import load_latest_metadata
+
+    try:
+        metadata = load_latest_metadata(Path(models_dir))
+    except FileNotFoundError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    _print_train_summary(metadata)
+
+
+def _print_train_summary(metadata: dict) -> None:
+    window = metadata.get("train_window", {})
+    dates = window.get("dataset_dates", ["?", "?"])
+    typer.echo(
+        f"\n{metadata.get('model')} {metadata.get('version')}  ·  "
+        f"feature set v{metadata.get('feature_set_version')}  ·  "
+        f"created {metadata.get('created_at', '?')[:19]}"
+    )
+    typer.echo(f"  label: {metadata.get('label', {}).get('spec', '?')}")
+    universe = metadata.get("universe", {})
+    typer.echo(
+        f"  dataset: {window.get('n_rows', '?')} rows · {window.get('n_dates', '?')} rebalance "
+        f"dates ({dates[0]}→{dates[1]}) · {universe.get('n_symbols', '?')} symbols "
+        f"(hash {universe.get('sha256_16', '?')})"
+    )
+
+    validation = metadata.get("validation", {})
+    folds = validation.get("folds", [])
+    model_names = sorted(validation.get("overall_ic", {}))
+
+    def ic_cell(ic: dict | None) -> str:
+        if not ic or ic.get("mean") is None:
+            return f"{'-':>16}"
+        return f"{ic['mean']:+.3f} ±{ic['std']:.3f} ({ic['n_dates']:>2})"
+
+    header = f"  {'fold':<4} {'train':<23} {'test':<23}" + "".join(
+        f" {name:>18}" for name in model_names
+    )
+    typer.echo(
+        f"  walk-forward ({validation.get('scheme', '?')}, "
+        f"purge {validation.get('purge_months', '?')}m):"
+    )
+    typer.echo(header)
+    for fold in folds:
+        train_w = "→".join(fold.get("train", ["?", "?"]))
+        test_w = "→".join(fold.get("test", ["?", "?"]))
+        cells = "".join(f" {ic_cell(fold.get('ic', {}).get(name)):>18}" for name in model_names)
+        typer.echo(f"  {fold.get('fold_id', '?'):<4} {train_w:<23} {test_w:<23}{cells}")
+    for name in model_names:
+        overall = validation.get("overall_ic", {}).get(name) or {}
+        typer.echo(f"  overall {name}: {ic_cell(overall).strip()} mean ±std across test dates")
+    typer.echo(f"  {metadata.get('note', '')}")
+
+
 @app.command()
 def serve():
     """Long-running mode: APScheduler jobs for periodic ingestion (+ later, trading loop)."""
     # TODO(skeleton): BlockingScheduler with cron jobs per connector, honoring each
-    # source's rate limits (docs/data-sources.md). Trading loop stays out until
+    # source's rate limits. Trading loop stays out until
     # backtests + paper validation exist.
     raise typer.Exit(code=1)
 

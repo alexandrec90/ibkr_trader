@@ -1,6 +1,6 @@
 """IBKR implementation of Broker using ib_async (docs: https://ib-api-reloaded.github.io/ib_async/).
 
-Order lifecycle notes are summarized in docs/ibkr/04-orders.md — in particular:
+Order lifecycle reminders:
 - orderStatus callbacks are NOT guaranteed for every transition; reconcile via execDetails
   and periodic reqOpenOrders/reqPositions.
 - use whatIf=True for a margin/commission preflight before transmitting.
