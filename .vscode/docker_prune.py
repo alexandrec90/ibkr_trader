@@ -1,28 +1,31 @@
 #!/usr/bin/env python3
-"""Reclaim disk from Docker — aggressively, but never at the cost of the database.
+"""Reclaim the maximum possible disk from Docker, then return it to Windows.
 
-Two phases:
+Default flow (aggressive — stops Docker briefly, then restores it):
 
-  Phase A/B (default, non-disruptive): prune unused images/build-cache/stopped containers
-  and purge the pip download cache + stale temp dirs. Leaves running containers alone, so the
-  dev DB (and its `postgres:16` image) stay up and are NOT re-pulled next time.
+  1. `docker compose down`            stop the stack (detaches volumes; see safety rule below)
+  2. `docker system prune -af`        remove stopped containers, unused networks, ALL unused
+     `docker builder prune -af`       images, and ALL build cache
+  3. purge pip download cache + stale pip temp dirs
+  4. quit Docker Desktop, `wsl --shutdown`, diskpart-compact the WSL2 VHDX so the freed space
+     is returned to Windows (not just freed inside the virtual disk)
+  5. restart Docker Desktop and `docker compose up -d db` so the dev DB is back when it finishes
 
-  Phase C (`--compact`, disruptive, Windows/WSL2 only): the space freed above lives *inside*
-  Docker Desktop's WSL2 VHDX and is not returned to Windows until the VHDX is compacted. This
-  quits Docker Desktop (so it can't re-mount and re-lock the disk mid-compact — the usual
-  reason naive `wsl --shutdown` compaction fails), runs `wsl --shutdown`, and compacts the
-  VHDX with diskpart. It stops Docker, so run it when you're done for the session, then
-  `docker compose up -d db` to resume.
+HARD SAFETY RULE (CLAUDE.md: Postgres is the single source of truth): this NEVER runs
+`docker volume prune` or passes `--volumes`. Step 1's `compose down` detaches the named
+volume `ibkr_trader_pgdata`, which is exactly why `--volumes` would then delete it — so we
+never use it, and we assert the volume still exists after pruning. All ingested bars/
+fundamentals live in that volume and survive every run (the container + `postgres:16` image
+are recreated/re-pulled by step 5).
 
-HARD SAFETY RULE (CLAUDE.md: Postgres is the single source of truth): this script NEVER runs
-`docker volume prune` or passes `--volumes`. Named volumes — including `ibkr_trader_pgdata`,
-which holds every ingested bar/fundamental — are always preserved. `image prune -a` only
-removes images not backing any container, so keeping the DB up protects `postgres:16`.
+Windows/WSL2 only for the compaction step. `diskpart compact vdisk` needs an ELEVATED shell;
+if this runs unelevated, quitting Docker Desktop still triggers its own reclaim, but for the
+guaranteed full compaction run it from an Administrator terminal.
 
 Usage:
-    python .vscode/docker_prune.py            # safe reclaim (DB stays up)
-    python .vscode/docker_prune.py --compact  # also return space to Windows (stops Docker)
-    python .vscode/docker_prune.py --compact --yes   # no confirmation prompt
+    python .vscode/docker_prune.py                 # full aggressive reclaim + restore
+    python .vscode/docker_prune.py --no-compact    # prune only; skip VHDX compaction/restart
+    python .vscode/docker_prune.py --no-restart     # compact but leave Docker stopped
 """
 
 from __future__ import annotations
@@ -34,60 +37,54 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
-#: Named volumes that must survive every prune, no matter what. Belt-and-suspenders: we never
-#: prune volumes at all, but this is asserted post-prune so a regression fails loudly.
+#: Named volumes that must survive every prune, no matter what. We never prune volumes at all;
+#: this is asserted post-prune so any regression fails loudly instead of silently losing data.
 PROTECTED_VOLUMES = ("ibkr_trader_pgdata",)
 
 
-def run(argv: list[str], *, check: bool = False) -> tuple[int, str]:
+def run(argv: list[str]) -> tuple[int, str]:
     """Run a command, capturing combined output. Returns (exit_code, text)."""
     proc = subprocess.run(argv, capture_output=True, text=True)
-    out = (proc.stdout or "") + (proc.stderr or "")
-    if check and proc.returncode != 0:
-        raise RuntimeError(f"{' '.join(argv)} exited {proc.returncode}\n{out}")
-    return proc.returncode, out.strip()
+    return proc.returncode, ((proc.stdout or "") + (proc.stderr or "")).strip()
 
 
-def free_gb(path: str = "C:\\") -> float:
-    if platform.system() != "Windows":
-        path = "/"
-    return shutil.disk_usage(path).free / 1e9
+def free_gb() -> float:
+    return shutil.disk_usage("C:\\" if platform.system() == "Windows" else "/").free / 1e9
 
 
-def step(label: str, argv: list[str]) -> None:
+def step(label: str, argv: list[str]) -> int:
     print(f"\n{label}\n  $ {' '.join(argv)}")
     code, out = run(argv)
-    tail = "\n".join(f"  {line}" for line in out.splitlines()[-6:])
-    if tail:
-        print(tail)
+    for line in out.splitlines()[-8:]:
+        print(f"  {line}")
     if code != 0:
         print(f"  [WARN] exited {code} (continuing)")
+    return code
 
 
 def assert_volumes_survived() -> None:
     _, out = run(["docker", "volume", "ls", "--format", "{{.Name}}"])
-    present = set(out.splitlines())
-    missing = [v for v in PROTECTED_VOLUMES if v not in present]
+    missing = [v for v in PROTECTED_VOLUMES if v not in set(out.splitlines())]
     if missing:
         print(f"\n[FATAL] protected volume(s) missing after prune: {missing}")
         sys.exit(2)
     print(f"  protected volumes intact: {', '.join(PROTECTED_VOLUMES)}")
 
 
-def phase_ab() -> None:
-    print("=== Phase A: Docker prune (volume-safe; DB left running) ===")
-    # No --volumes anywhere. system prune -f: dangling images, stopped containers, networks,
-    # build cache. image prune -a: every image not backing a container (running DB protects
-    # postgres:16). builder prune -a: all build cache.
-    step("Pruning unused Docker objects (no volumes)", ["docker", "system", "prune", "-f"])
-    step("Pruning all unused images", ["docker", "image", "prune", "-a", "-f"])
-    step("Pruning all build cache", ["docker", "builder", "prune", "-a", "-f"])
+def prune() -> None:
+    print("=== Prune (max reclaim; volumes always preserved) ===")
+    step("Stopping the stack", ["docker", "compose", "down"])
+    # No --volumes anywhere: stopped containers, unused networks, ALL unused images, ALL cache.
+    step("Pruning containers/networks/images", ["docker", "system", "prune", "-af"])
+    step("Pruning all build cache", ["docker", "builder", "prune", "-af"])
     assert_volumes_survived()
 
-    print("\n=== Phase B: host-side pip reclaim ===")
-    # Prefer the repo venv's pip so its cache is the one purged.
+
+def pip_reclaim() -> None:
+    print("\n=== Host-side pip reclaim ===")
     venv_py = Path(__file__).resolve().parents[1] / ".venv" / "Scripts" / "python.exe"
     py = str(venv_py) if venv_py.exists() else sys.executable
     step("Purging pip download cache", [py, "-m", "pip", "cache", "purge"])
@@ -95,11 +92,8 @@ def phase_ab() -> None:
     removed = 0
     for pattern in ("pip-unpack-*", "pip-uninstall-*", "pip-metadata-*", "pip-ephem-wheel-cache-*"):
         for p in tmp.glob(pattern):
-            try:
-                shutil.rmtree(p, ignore_errors=True)
-                removed += 1
-            except OSError:
-                pass
+            shutil.rmtree(p, ignore_errors=True)
+            removed += 1
     print(f"  removed {removed} stale pip temp dir(s)")
 
 
@@ -112,83 +106,97 @@ def _find_vhdx() -> Path | None:
     return matches[0] if matches else None
 
 
+def _docker_cli() -> Path:
+    return Path(os.environ.get("ProgramFiles", "")) / "Docker" / "Docker" / "DockerCli.exe"
+
+
 def _stop_docker_desktop() -> None:
-    cli = Path(os.environ.get("ProgramFiles", "")) / "Docker" / "Docker" / "DockerCli.exe"
-    if cli.exists():
-        step("Quitting Docker Desktop (releases the VHDX)", [str(cli), "-Stop"])
-    else:
-        # Fall back to killing the app process so it can't re-mount the disk.
-        step("Quitting Docker Desktop", ["taskkill", "/IM", "Docker Desktop.exe", "/F"])
+    # DockerCli.exe has no portable "stop" flag across versions (older builds print usage and
+    # exit non-zero), so kill the GUI + backend processes directly. This must happen BEFORE
+    # `wsl --shutdown`, or Docker Desktop immediately re-mounts and re-locks the VHDX — the
+    # reason a naive shutdown-then-compact fails with "file in use".
+    for image in ("Docker Desktop.exe", "com.docker.backend.exe", "com.docker.build.exe"):
+        step(f"Quitting {image}", ["taskkill", "/IM", image, "/F"])
 
 
-def phase_c_compact() -> None:
-    if platform.system() != "Windows":
-        print("\n[skip] --compact is Windows/WSL2-only.")
-        return
+def compact_vhdx() -> None:
     vhdx = _find_vhdx()
     if vhdx is None:
         print("\n[skip] no Docker WSL VHDX found.")
         return
-
-    print(f"\n=== Phase C: compact VHDX -> return space to Windows ===\n  target: {vhdx}")
+    print(f"\n=== Compact VHDX -> return space to Windows ===\n  target: {vhdx}")
     _stop_docker_desktop()
     step("Shutting down WSL", ["wsl", "--shutdown"])
+    time.sleep(5)  # let the backend + WSL VM fully release the disk before diskpart attaches it
 
-    # diskpart is present on all Windows editions (Optimize-VHD needs the Hyper-V module).
-    script = (
-        f'select vdisk file="{vhdx}"\n'
-        "attach vdisk readonly\n"
-        "compact vdisk\n"
-        "detach vdisk\n"
-    )
+    # diskpart is present on every Windows edition (Optimize-VHD needs the Hyper-V module).
+    script = f'select vdisk file="{vhdx}"\nattach vdisk readonly\ncompact vdisk\ndetach vdisk\n'
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as fh:
         fh.write(script)
         script_path = fh.name
     try:
-        code, out = run(["diskpart", "/s", script_path])
-        for line in out.splitlines()[-10:]:
-            print(f"  {line}")
+        code = step("Compacting VHDX (diskpart)", ["diskpart", "/s", script_path])
         if code != 0:
             print(
-                f"  [WARN] diskpart exited {code}. Compaction needs an *elevated* shell — "
-                "re-run this from an Administrator terminal."
+                "  [WARN] diskpart failed — run this from an Administrator terminal for the "
+                "guaranteed compaction (Docker Desktop's own shutdown reclaim still applied)."
             )
     finally:
         os.unlink(script_path)
-    print("\n  Docker Desktop is stopped. Restart it, then: docker compose up -d db")
+
+
+def restart_docker_and_db() -> None:
+    print("\n=== Restart Docker + bring DB back up ===")
+    cli = _docker_cli()
+    if cli.exists():
+        run([str(cli), "-SwitchLinuxEngine"])  # ensures the app is launched
+    dd = Path(os.environ.get("ProgramFiles", "")) / "Docker" / "Docker" / "Docker Desktop.exe"
+    if dd.exists():
+        subprocess.Popen([str(dd)], close_fds=True)
+    print("  waiting for the Docker daemon...")
+    for _ in range(60):
+        if run(["docker", "info"])[0] == 0:
+            print("  daemon up.")
+            break
+        time.sleep(3)
+    else:
+        print(
+            "  [WARN] daemon didn't come up in time; start Docker Desktop and run "
+            "`docker compose up -d db` yourself."
+        )
+        return
+    repo = Path(__file__).resolve().parents[1]
+    step(
+        "Starting the dev DB",
+        ["docker", "compose", "-f", str(repo / "docker-compose.yml"), "up", "-d", "db"],
+    )
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Volume-safe Docker disk reclaim.")
+    parser = argparse.ArgumentParser(description="Max-reclaim Docker disk cleanup (volume-safe).")
     parser.add_argument(
-        "--compact",
-        action="store_true",
-        help="Also compact the WSL VHDX to return space to Windows (stops Docker; Windows only).",
+        "--no-compact", action="store_true", help="Prune only; skip VHDX compaction."
     )
-    parser.add_argument("--yes", action="store_true", help="Skip the --compact confirmation.")
+    parser.add_argument(
+        "--no-restart", action="store_true", help="Compact but leave Docker stopped."
+    )
     args = parser.parse_args()
 
     before = free_gb()
     print(f"Free space before: {before:.2f} GB")
 
-    phase_ab()
+    prune()
+    pip_reclaim()
 
-    if args.compact:
-        if not args.yes:
-            reply = input("\n--compact stops Docker (DB goes down). Continue? [y/N] ").strip().lower()
-            if reply != "y":
-                print("Skipping compaction.")
-                args.compact = False
-        if args.compact:
-            phase_c_compact()
+    if not args.no_compact and platform.system() == "Windows":
+        compact_vhdx()
+        if not args.no_restart:
+            restart_docker_and_db()
+    elif not args.no_compact:
+        print("\n[skip] VHDX compaction is Windows/WSL2-only.")
 
     after = free_gb()
     print(f"\nFree space after: {after:.2f} GB  (reclaimed to Windows: {after - before:+.2f} GB)")
-    if not args.compact:
-        print(
-            "Note: Docker-side space was freed *inside* the WSL VHDX. Re-run with --compact "
-            "to return it to Windows."
-        )
     return 0
 
 

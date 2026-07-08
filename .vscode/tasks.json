@@ -345,7 +345,7 @@
       "problemMatcher": []
     },
     {
-      "label": "docker: prune (safe reclaim, DB stays up)",
+      "label": "docker: prune + compact (max reclaim, restarts Docker)",
       "type": "process",
       "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
       "args": ["${workspaceFolder}\\.vscode\\docker_prune.py"],
