@@ -80,11 +80,13 @@ def walk_forward_folds(
 
 def rank_ic(predicted: pd.Series, actual: pd.Series) -> float | None:
     """Spearman rank correlation; None when the cross-section is too small or constant."""
-    if len(predicted) < _MIN_CROSS_SECTION:
+    paired = pd.concat({"predicted": predicted, "actual": actual}, axis=1).dropna()
+    if len(paired) < _MIN_CROSS_SECTION:
         return None
-    if predicted.nunique() < 2 or actual.nunique() < 2:
+    if paired["predicted"].nunique() < 2 or paired["actual"].nunique() < 2:
         return None
-    value = predicted.corr(actual, method="spearman")
+    ranks = paired.rank(method="average")
+    value = ranks["predicted"].corr(ranks["actual"])
     return None if pd.isna(value) else float(value)
 
 
