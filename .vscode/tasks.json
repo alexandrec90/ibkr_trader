@@ -343,6 +343,14 @@
       "type": "shell",
       "command": "docker compose build app",
       "problemMatcher": []
+    },
+    {
+      "label": "docker: prune (safe reclaim, DB stays up)",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": ["${workspaceFolder}\\.vscode\\docker_prune.py"],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "problemMatcher": []
     }
   ],
   "inputs": [
