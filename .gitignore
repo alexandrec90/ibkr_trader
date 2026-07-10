@@ -14,6 +14,9 @@ build/
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
 
 # Data & runtime artifacts
 data/

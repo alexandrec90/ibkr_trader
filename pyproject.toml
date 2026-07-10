@@ -26,6 +26,7 @@ dependencies = [
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.23",
+    "pytest-cov>=6",
     "ruff>=0.4",
     "mypy>=1.10",
 ]
@@ -67,3 +68,13 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+# Coverage is enforced in CI via `pytest --cov=ibkr_trader` (plain `pytest` stays fast locally).
+# The floor is a ratchet: raise it as coverage grows, never lower it to make a change pass.
+[tool.coverage.report]
+fail_under = 85
+show_missing = true
+skip_covered = true
+
+[tool.coverage.run]
+branch = true

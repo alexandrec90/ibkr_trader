@@ -20,6 +20,10 @@ regressions. Be aggressive: if code is testable, it gets a test.
 4. **Run the full gate before declaring work done:**
    `pytest && ruff check src tests && ruff format --check src tests && mypy src`.
    Report failures verbatim; never claim green without running it.
+5. **Coverage is a ratchet.** CI runs `pytest --cov=ibkr_trader` against the `fail_under`
+   floor in `pyproject.toml` (`[tool.coverage.report]`). When total coverage grows, raise the
+   floor to just below the new number; never lower it to make a change pass. Check locally
+   with `pytest --cov=ibkr_trader` when your change adds meaningful amounts of code.
 
 ## How to test each layer
 
