@@ -17,6 +17,8 @@ backtest_app = typer.Typer(help="Backtest strategies over stored data and compar
 app.add_typer(backtest_app, name="backtest")
 train_app = typer.Typer(help="Train the ML long-term model on stored data (needs the [ml] extra).")
 app.add_typer(train_app, name="train")
+snapshot_app = typer.Typer(help="Record and score broker-free forward strategy snapshots.")
+app.add_typer(snapshot_app, name="snapshot")
 
 
 def _read_universe(universe_file: str, symbols: str) -> list[str]:
@@ -210,6 +212,70 @@ def _print_backtest_result(result, account: str) -> None:
         f"costs ${result.costs_cad:,.0f}  ·  FX conversion ${result.fx_cost_cad:,.0f}  ·  "
         f"US-dividend tax ${result.tax_cad:,.0f} CAD"
     )
+
+
+@snapshot_app.command("run")
+def snapshot_run(
+    strategy: str | None = typer.Option(None, help="one allocator (default: all that resolve)"),
+    all_strategies: bool = typer.Option(False, "--all", help="snapshot all resolvable allocators"),
+    asof: str = typer.Option("", help="YYYY-MM-DD; only today/one-day retry is allowed"),
+):
+    """Record target weights now; historical backfills are deliberately refused."""
+    from datetime import datetime
+
+    from ibkr_trader.backtest.snapshot import STALE_BAR_DAYS, run_snapshots
+    from ibkr_trader.db.session import get_session
+
+    if strategy and all_strategies:
+        raise typer.BadParameter("use either --strategy or --all, not both")
+    try:
+        day = datetime.strptime(asof, "%Y-%m-%d").date() if asof else None
+    except ValueError:
+        raise typer.BadParameter("--asof must be YYYY-MM-DD") from None
+    try:
+        with get_session() as session:
+            result = run_snapshots(session, strategies=[strategy] if strategy else None, asof=day)
+    except ValueError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    if result.stale_days > STALE_BAR_DAYS:
+        typer.echo(
+            f"WARNING: latest daily bar is {result.latest_bar_date} "
+            f"({result.stale_days} days stale); run ingestion first",
+            err=True,
+        )
+    for name, reason in result.skipped.items():
+        typer.echo(f"warning: skipped {name}: {reason}", err=True)
+    typer.echo(
+        f"saved {len(result.snapshots)} forward snapshot(s) for {result.snapshots[0].ts:%Y-%m-%d}"
+        if result.snapshots
+        else "no strategies resolved"
+    )
+
+
+@snapshot_app.command("report")
+def snapshot_report(
+    horizon_months: int = typer.Option(1, min=1, help="realization horizon in calendar months"),
+):
+    """Report mature forward returns after approximate turnover costs, versus XEQT."""
+    from ibkr_trader.backtest.snapshot import build_snapshot_report
+    from ibkr_trader.db.session import get_session
+
+    try:
+        with get_session() as session:
+            rows = build_snapshot_report(session, horizon_months=horizon_months)
+    except ValueError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    if not rows:
+        typer.echo(f"no snapshots have matured for the {horizon_months}-month horizon")
+        return
+    typer.echo(f"forward shadow · {horizon_months}-month realized CAD return vs XEQT, after costs")
+    for row in rows:
+        typer.echo(
+            f"  {row.strategy}: mean excess {row.mean_excess * 100:+.1f}% · "
+            f"hit rate {row.hit_rate * 100:.0f}% · {row.n_snapshots} snapshot(s)"
+        )
 
 
 @backtest_app.command("oos")

@@ -291,3 +291,19 @@ class BacktestRun(Base):
     end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     metrics: Mapped[dict | None] = mapped_column(JSON)  # sharpe, max_dd, cagr, ...
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class StrategySnapshot(Base):
+    """Forward-only target weights recorded before their returns are known."""
+
+    __tablename__ = "strategy_snapshots"
+    __table_args__ = (UniqueConstraint("strategy", "ts"),)
+
+    id: Mapped[int] = mapped_column(SqliteFriendlyBigInt, primary_key=True)
+    strategy: Mapped[str] = mapped_column(String(64))
+    model_version: Mapped[str] = mapped_column(String(32))
+    feature_set_version: Mapped[str] = mapped_column(String(16))
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    weights: Mapped[dict] = mapped_column(JsonVariant)
+    params: Mapped[dict] = mapped_column(JsonVariant)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

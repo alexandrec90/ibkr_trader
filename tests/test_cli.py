@@ -56,7 +56,7 @@ def test_read_universe_empty_file_is_bad_parameter(tmp_path):
 def test_help_lists_command_groups():
     result = runner.invoke(cli.app, ["--help"])
     assert result.exit_code == 0
-    for group in ("ingest", "backtest", "train"):
+    for group in ("ingest", "backtest", "train", "snapshot"):
         assert group in result.output
 
 

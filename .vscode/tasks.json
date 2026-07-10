@@ -339,6 +339,21 @@
       "problemMatcher": []
     },
     {
+      "label": "snapshot: monthly",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\ibkr-trader.exe",
+      "args": ["snapshot", "run", "--all"],
+      "dependsOrder": "sequence",
+      "dependsOn": ["ingest: setup db + all prices"],
+      "options": {
+        "env": {
+          "DATABASE_URL": "postgresql+psycopg://trader:trader@127.0.0.1:5433/ibkr_trader?connect_timeout=5"
+        }
+      },
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "problemMatcher": []
+    },
+    {
       "label": "app: docker build",
       "type": "shell",
       "command": "docker compose build app",
