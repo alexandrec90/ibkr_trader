@@ -99,6 +99,10 @@ class RegisteredStrategyConfig:
     liquidity_lookback: int = 63
     benchmark_symbol: str = "XEQT"
     eligibility: EligibilityLimits = field(default_factory=EligibilityLimits)
+    # First decision date. Before it the simulator computes nothing and holds cash — no
+    # rebalance decisions, no equity points — so metrics start at the first decision date
+    # while features still see every loaded bar (warm-up). None ⇒ unchanged behavior.
+    eval_start: date | None = None
 
 
 @dataclass
@@ -296,6 +300,12 @@ def simulate(
     config = config or RegisteredStrategyConfig()
     cost_model = cost_model or RegisteredAccountCostModel()
     profile = profile or get_profile(config.account)
+    if config.eval_start is not None:
+        # hold cash before eval_start: no decisions, no equity points — but the Series keep
+        # their full history, so features at the first decision still see the warm-up bars
+        calendar = [day for day in calendar if day >= config.eval_start]
+        if not calendar:
+            raise ValueError(f"eval_start {config.eval_start} is after the last bar in the window")
     # benchmark series for benchmark-relative features, when it's part of the universe
     benchmark_series = next(
         (s for s in universe.values() if s.symbol.upper() == config.benchmark_symbol.upper()),
@@ -357,6 +367,7 @@ def simulate(
             features = _features_asof(
                 universe, result.eligible_ids, day, benchmark=benchmark_series, corporate=corporate
             )
+            allocator.asof(day)
             pending = allocator.allocate(result.eligible, features)
             last_rebalance_month = month_index
 
@@ -376,19 +387,22 @@ def simulate(
     )
     start_dt = datetime.combine(calendar[0], datetime.min.time(), tzinfo=UTC)
     end_dt = datetime.combine(calendar[-1], datetime.min.time(), tzinfo=UTC)
+    params = {
+        "account": config.account.value,
+        "model_version": allocator.version,
+        "feature_set_version": FEATURE_SET_VERSION,
+        "horizon": "long_term",
+        "annual_trade_budget": config.annual_trade_budget,
+        "rebalance_band": config.rebalance_band,
+        "rebalance_months": config.rebalance_months,
+        "start_capital": config.start_capital,
+        "benchmark": config.benchmark_symbol,
+    }
+    if config.eval_start is not None:  # only pinned when set, so unset runs are unchanged
+        params["eval_start"] = config.eval_start.isoformat()
     return BacktestResult(
         strategy=strategy_name or allocator.name,
-        params={
-            "account": config.account.value,
-            "model_version": allocator.version,
-            "feature_set_version": FEATURE_SET_VERSION,
-            "horizon": "long_term",
-            "annual_trade_budget": config.annual_trade_budget,
-            "rebalance_band": config.rebalance_band,
-            "rebalance_months": config.rebalance_months,
-            "start_capital": config.start_capital,
-            "benchmark": config.benchmark_symbol,
-        },
+        params=params,
         start=start_dt,
         end=end_dt,
         equity_curve=equity_curve,
@@ -421,18 +435,47 @@ class BacktestEngine:
         buy-and-hold benchmark, stamps the comparison into metrics, and persists a
         ``backtest_runs`` row unless ``persist=False``.
         """
+        return self.run_allocator(
+            get_allocator(strategy),
+            symbols,
+            start,
+            end,
+            strategy_name=strategy,
+            config=config,
+            session=session,
+            persist=persist,
+        )
+
+    def run_allocator(
+        self,
+        allocator: Allocator,
+        symbols: list[str],
+        start: datetime,
+        end: datetime,
+        *,
+        strategy_name: str | None = None,
+        config: RegisteredStrategyConfig | None = None,
+        session: Session | None = None,
+        persist: bool = True,
+        extra_params: dict | None = None,
+    ) -> BacktestResult:
+        """Like ``run`` but for an explicitly built (possibly unregistered) allocator.
+
+        ``extra_params`` is merged into the persisted run's ``params`` (e.g. the OOS backtest
+        pins its fold count and universe hash) — it never overrides the engine-pinned keys.
+        """
         config = config or RegisteredStrategyConfig()
-        allocator = get_allocator(strategy)
+        name = strategy_name or allocator.name
 
         if session is not None:
             return self._run_with_session(
-                session, allocator, strategy, symbols, start, end, config, persist
+                session, allocator, name, symbols, start, end, config, persist, extra_params
             )
         from ibkr_trader.db.session import get_session
 
         with get_session() as owned:
             return self._run_with_session(
-                owned, allocator, strategy, symbols, start, end, config, persist
+                owned, allocator, name, symbols, start, end, config, persist, extra_params
             )
 
     def _run_with_session(
@@ -445,6 +488,7 @@ class BacktestEngine:
         end: datetime,
         config: RegisteredStrategyConfig,
         persist: bool,
+        extra_params: dict | None = None,
     ) -> BacktestResult:
         universe = _load_universe(session, symbols, start, end)
         fx = _load_series(session, "USDCAD", start, end)
@@ -468,6 +512,8 @@ class BacktestEngine:
             strategy_name=strategy,
             corporate=corporate,
         )
+        if extra_params:
+            result.params = {**extra_params, **result.params}
 
         # buy-and-hold benchmark through the same engine (never rebalances after the first buy)
         benchmark = config.benchmark_symbol.upper()

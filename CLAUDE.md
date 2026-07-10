@@ -52,6 +52,9 @@ and review it before upgrading.
 
 ## Conventions
 
+- **Testing is mandatory, not optional** — this codebase is largely AI-written, so every
+  implemented (non-stub) module gets a matching `tests/test_<module>.py`, and new/changed code
+  ships with tests in the same commit. Full policy: [.claude/rules/testing.md](.claude/rules/testing.md).
 - SQLAlchemy 2.0 typed style (`Mapped[...]`), UTC timestamps everywhere.
 - Skeleton stubs raise `NotImplementedError` with a `TODO(skeleton)` comment describing the
   intended implementation — replace stub-by-stub, keep the comments' intent.

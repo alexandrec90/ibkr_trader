@@ -212,6 +212,83 @@ def _print_backtest_result(result, account: str) -> None:
     )
 
 
+@backtest_app.command("oos")
+def backtest_oos(
+    end: str = typer.Option(..., help="dataset window end YYYY-MM-DD (labels stop 12m earlier)"),
+    start: str = typer.Option("2015-01-01", help="dataset window start YYYY-MM-DD"),
+    sim_start: str = typer.Option(
+        "2021-08-01",
+        help="simulation bar-load start YYYY-MM-DD (keep on/after USDCAD coverage, 2021-07-08)",
+    ),
+    universe_file: str = typer.Option("tickers.txt", help="one symbol per line"),
+    symbols: str = typer.Option("", help="comma-separated symbols (overrides --universe-file)"),
+    account: str = typer.Option("", help="rrsp|tfsa|fhsa|lira|nonreg (default: config)"),
+    start_capital: float = typer.Option(100_000.0, help="starting capital (CAD)"),
+    seed: int = typer.Option(42, help="random seed for LightGBM/ridge"),
+    test_size: int = typer.Option(6, help="months per walk-forward test block"),
+    min_train: int = typer.Option(24, help="months of history before the first test block"),
+    no_persist: bool = typer.Option(False, "--no-persist", help="don't write backtest_runs rows"),
+):
+    """Per-fold out-of-sample backtest — the honest number. Trains one model per walk-forward
+    fold in memory (never the deployed artifact) so every decision comes from a model that
+    never saw its own test months, then runs the baselines over the identical decision dates."""
+    from datetime import UTC, datetime
+
+    from ibkr_trader.accounts import AccountType
+    from ibkr_trader.backtest.costs import RegisteredAccountCostModel
+    from ibkr_trader.backtest.engine import RegisteredStrategyConfig
+    from ibkr_trader.backtest.oos import run_oos_backtest
+    from ibkr_trader.config import get_settings
+    from ibkr_trader.db.session import get_session
+
+    settings = get_settings()
+    account_type = AccountType((account or settings.default_account).lower())
+    universe = _read_universe(universe_file, symbols)
+
+    start_dt = datetime.strptime(start, "%Y-%m-%d").replace(tzinfo=UTC)
+    end_dt = datetime.strptime(end, "%Y-%m-%d").replace(tzinfo=UTC)
+    sim_start_dt = datetime.strptime(sim_start, "%Y-%m-%d").replace(tzinfo=UTC)
+    config = RegisteredStrategyConfig(
+        account=account_type,
+        start_capital=start_capital,
+        annual_trade_budget=settings.annual_trade_budget,
+        rebalance_band=settings.rebalance_band,
+        benchmark_symbol=settings.benchmark_symbol,
+    )
+    cost_model = RegisteredAccountCostModel(
+        churn_penalty_bps=settings.churn_penalty_bps,
+        fx_conversion_bps=settings.fx_conversion_bps,
+        assumed_us_dividend_yield=settings.us_dividend_yield_assumption,
+    )
+
+    try:
+        with get_session() as session:
+            oos = run_oos_backtest(
+                session,
+                universe,
+                start_dt,
+                end_dt,
+                sim_start=sim_start_dt,
+                config=config,
+                cost_model=cost_model,
+                seed=seed,
+                test_size=test_size,
+                min_train=min_train,
+                persist=not no_persist,
+            )
+    except (RuntimeError, ValueError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+
+    typer.echo(
+        f"\nper-fold OOS backtest · {oos.n_folds} folds · decisions "
+        f"{oos.eval_start} → {oos.test_end} · every decision from a model that never saw "
+        f"its own test months"
+    )
+    for result in oos.results:
+        _print_backtest_result(result, account_type.value)
+
+
 @backtest_app.command("compare")
 def backtest_compare(
     strategy: str | None = typer.Option(None, help="filter to one strategy (default: all)"),

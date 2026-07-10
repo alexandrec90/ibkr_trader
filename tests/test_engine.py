@@ -247,6 +247,78 @@ def test_cad_only_run_never_pays_fx_conversion():
     assert result.fx_cost_cad == 0.0
 
 
+def test_eval_start_default_is_none_and_leaves_the_run_unchanged():
+    assert RegisteredStrategyConfig().eval_start is None
+    cal = _calendar(12)
+    universe = {1: _series(1, "AAA", "CAD", cal, closes=[100.0 + i for i in range(12)])}
+    result = simulate(
+        universe,
+        cal,
+        FixedAllocator({1: 1.0}),
+        cost_model=CHEAP,
+        profile=get_profile(AccountType.RRSP),
+        config=_config(),
+    )
+    assert "eval_start" not in result.params  # unset ⇒ params byte-identical to before
+    assert [day for day, _ in result.equity_curve] == cal  # every bar has an equity point
+
+
+def test_eval_start_holds_cash_and_starts_metrics_at_first_decision():
+    cal = _calendar(40)
+    closes = [100.0 + i for i in range(40)]
+    universe = {1: _series(1, "AAA", "CAD", cal, closes=closes)}
+    eval_start = cal[20]
+
+    config = _config()
+    config.eval_start = eval_start
+    result = simulate(
+        universe,
+        cal,
+        FixedAllocator({1: 1.0}),
+        cost_model=CHEAP,
+        profile=get_profile(AccountType.RRSP),
+        config=config,
+    )
+
+    days = [day for day, _ in result.equity_curve]
+    assert days[0] == eval_start  # no equity points (and no decisions) before eval_start
+    assert result.start.date() == eval_start
+    assert abs(result.equity_curve[0][1] - 100_000.0) < 1e-6  # still all cash at eval_start
+    assert result.trades == 1  # the first decision fills at the next open, as always
+    assert result.params["eval_start"] == eval_start.isoformat()
+
+    # identical to simply starting the calendar at eval_start: warm-up bars only feed
+    # features, they never leak into equity or decisions
+    trimmed = simulate(
+        universe,
+        [day for day in cal if day >= eval_start],
+        FixedAllocator({1: 1.0}),
+        cost_model=CHEAP,
+        profile=get_profile(AccountType.RRSP),
+        config=_config(),
+    )
+    assert result.equity_curve == trimmed.equity_curve
+
+
+def test_eval_start_after_last_bar_raises():
+    cal = _calendar(5)
+    universe = {1: _series(1, "AAA", "CAD", cal, closes=[100.0] * 5)}
+    config = _config()
+    config.eval_start = cal[-1] + timedelta(days=1)
+    try:
+        simulate(
+            universe,
+            cal,
+            FixedAllocator({1: 1.0}),
+            cost_model=CHEAP,
+            profile=get_profile(AccountType.RRSP),
+            config=config,
+        )
+        raise AssertionError("expected ValueError for eval_start past the last bar")
+    except ValueError:
+        pass
+
+
 def _sqlite_session() -> Session:
     engine = create_engine(
         "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool

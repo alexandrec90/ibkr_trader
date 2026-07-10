@@ -13,6 +13,7 @@ import json
 import logging
 import math
 from datetime import date, timedelta
+from importlib import metadata as importlib_metadata
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -21,9 +22,9 @@ import pytest
 from ibkr_trader.backtest.engine import Series, simulate
 from ibkr_trader.signals.eligibility import Candidate
 from ibkr_trader.signals.features import FEATURE_SET_VERSION
-from ibkr_trader.signals.portfolio import MlLtAllocator, get_allocator
+from ibkr_trader.signals.portfolio import MlLtAllocator, MlLtRidgeAllocator, get_allocator
 from ibkr_trader.signals.portfolio import available as allocators_available
-from ibkr_trader.signals.predictor import MlLongTerm
+from ibkr_trader.signals.predictor import MlLongTerm, MlLtRidge
 from ibkr_trader.signals.predictor import available as predictors_available
 
 requires_ml = pytest.mark.skipif(
@@ -35,19 +36,30 @@ SECTORS = ["Energy", "Technology"]
 
 
 def _make_artifact(
-    tmp_path: Path, *, version: str = "v7", feature_set_version: str = FEATURE_SET_VERSION
+    tmp_path: Path,
+    *,
+    version: str = "v7",
+    feature_set_version: str = FEATURE_SET_VERSION,
+    sklearn_version: str | None = None,
 ) -> Path:
     """A stub models/ml_lt-style artifact dir: real metadata, fake model.txt (never parsed)."""
     root = tmp_path / "ml_lt"
     artifact = root / version
     artifact.mkdir(parents=True)
     (artifact / "model.txt").write_text("stub booster — tests inject a fake instead\n")
+    (artifact / "ridge.joblib").write_text("stub ridge — tests inject a fake instead\n")
+    sklearn_version = sklearn_version or importlib_metadata.version("scikit-learn")
     metadata = {
         "model": "ml_lt",
         "version": version,
         "model_file": "model.txt",
         "feature_set_version": feature_set_version,
         "feature_columns": FEATURE_COLUMNS,
+        "ridge": {
+            "model_file": "ridge.joblib",
+            "numeric_feature_columns": ["momentum_12_1", "return_12m", "volatility"],
+            "sklearn_version": sklearn_version,
+        },
         "categorical": {
             "sector": {"encoding": "lightgbm-native-categorical", "categories": SECTORS}
         },
@@ -71,10 +83,22 @@ class FakeBooster:
         return list(x["return_12m"])
 
 
+class FakeRidge:
+    def __init__(self, value: float):
+        self.value = value
+        self.frames: list = []
+
+    def predict(self, x):
+        self.frames.append(x)
+        return [self.value]
+
+
 def test_ml_lt_is_registered_without_construction():
     # registration is an import side-effect and must not need lightgbm or an artifact
     assert "ml_lt" in predictors_available()
     assert "ml_lt" in allocators_available()
+    assert "ml_lt_ridge" in predictors_available()
+    assert "ml_lt_ridge" in allocators_available()
 
 
 @requires_ml
@@ -89,6 +113,31 @@ def test_get_allocator_resolves_ml_lt_from_settings(tmp_path, monkeypatch):
     assert allocator.version == "v7"  # the artifact version → pinned as model_version
     assert allocator.max_names == 15
     assert allocator.max_weight == 0.20
+
+
+@requires_ml
+def test_get_allocator_resolves_ml_lt_ridge_from_settings(tmp_path, monkeypatch):
+    root = _make_artifact(tmp_path)
+    monkeypatch.setattr(
+        "ibkr_trader.config.get_settings", lambda: SimpleNamespace(ml_lt_model_dir=str(root))
+    )
+    allocator = get_allocator("ml_lt_ridge")
+    assert isinstance(allocator, MlLtRidgeAllocator)
+    assert allocator.name == "ml_lt_ridge"
+    assert allocator.version == "v7"
+    assert allocator.max_names == 15
+    assert allocator.max_weight == 0.20
+
+
+@requires_ml
+def test_ridge_predict_centers_rank_and_uses_numeric_training_columns(tmp_path):
+    predictor = MlLtRidge(model_dir=_make_artifact(tmp_path))
+    fake = FakeRidge(0.8)
+    predictor._model = fake
+    assert predictor.predict({"return_12m": 0.2, "sector": "Energy"}) == pytest.approx(0.3)
+    (frame,) = fake.frames
+    assert list(frame.columns) == ["momentum_12_1", "return_12m", "volatility"]
+    assert math.isnan(frame["momentum_12_1"].iloc[0])
 
 
 @requires_ml
@@ -147,6 +196,23 @@ def test_feature_set_version_mismatch_scores_zero_and_logs(tmp_path, caplog):
 
 
 @requires_ml
+def test_ridge_reuses_feature_set_mismatch_guard(tmp_path, caplog):
+    root = _make_artifact(tmp_path, feature_set_version="0")
+    with caplog.at_level(logging.ERROR, logger="ibkr_trader.signals.predictor"):
+        predictor = MlLtRidge(model_dir=root)
+    assert "ml_lt_ridge" in caplog.text and "refusing to score" in caplog.text
+    assert predictor.predict({"return_12m": 0.9}) == 0.0
+    assert predictor._model is None
+
+
+@requires_ml
+def test_ridge_rejects_sklearn_major_minor_mismatch(tmp_path):
+    root = _make_artifact(tmp_path, sklearn_version="999.0.0")
+    with pytest.raises(RuntimeError, match="version mismatch.*retrain"):
+        MlLtRidge(model_dir=root)
+
+
+@requires_ml
 def test_missing_artifact_raises_with_train_hint(tmp_path):
     with pytest.raises(FileNotFoundError, match="train run"):
         MlLongTerm(model_dir=tmp_path / "nowhere")
@@ -164,6 +230,20 @@ def test_construct_without_ml_extra_raises_clear_error(tmp_path, monkeypatch):
     monkeypatch.setattr(builtins, "__import__", no_lightgbm)
     with pytest.raises(RuntimeError, match=r"pip install -e \.\[ml\]"):
         MlLongTerm(model_dir=root)
+
+
+def test_construct_ridge_without_ml_extra_raises_clear_error(tmp_path, monkeypatch):
+    root = _make_artifact(tmp_path)
+    real_import = builtins.__import__
+
+    def no_sklearn(name, *args, **kwargs):
+        if name == "sklearn" or name.startswith("sklearn."):
+            raise ImportError("No module named 'sklearn'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_sklearn)
+    with pytest.raises(RuntimeError, match=r"ml_lt_ridge.*pip install -e \.\[ml\]"):
+        MlLtRidge(model_dir=root)
 
 
 def test_simulate_pins_feature_set_version_into_params():

@@ -18,11 +18,16 @@ from ibkr_trader.signals.eligibility import EligibilityLimits  # noqa: E402
 from ibkr_trader.signals.features import FEATURE_SET_VERSION, CorporateData  # noqa: E402
 from ibkr_trader.signals.train import (  # noqa: E402
     DEFAULT_LGBM_PARAMS,
+    LGBM_CAPACITY_GRID,
     MODEL_FILE,
+    RIDGE_FILE,
+    RidgeModel,
     encode_categoricals,
     load_latest_metadata,
+    select_lgbm_params,
     train_on_dataset,
 )
+from ibkr_trader.signals.validation import walk_forward_folds  # noqa: E402
 
 OPEN_LIMITS = EligibilityLimits(min_price=0.0, min_avg_dollar_volume=0.0, min_history_days=1)
 FAST_LGBM = {"n_estimators": 40, "min_child_samples": 5}
@@ -82,6 +87,7 @@ def test_train_writes_a_versioned_artifact_and_report_reads_it_back(tmp_path: Pa
     assert result.version == "v1"
     assert result.artifact_dir == tmp_path / "ml_lt" / "v1"
     assert (result.artifact_dir / MODEL_FILE).exists()
+    assert (result.artifact_dir / RIDGE_FILE).exists()
     assert (tmp_path / "ml_lt" / "latest").read_text() == "v1"
     metadata = json.loads((result.artifact_dir / "metadata.json").read_text())
     assert metadata == result.metadata
@@ -100,6 +106,9 @@ def test_train_writes_a_versioned_artifact_and_report_reads_it_back(tmp_path: Pa
     }
     assert metadata["lgbm_params"]["n_estimators"] == 40
     assert metadata["lgbm_params"]["random_state"] == 7
+    assert metadata["ridge"]["model_file"] == RIDGE_FILE
+    assert metadata["ridge"]["numeric_feature_columns"]
+    assert "sector" not in metadata["ridge"]["numeric_feature_columns"]
     assert {"python", "lightgbm", "scikit-learn"} <= set(metadata["library_versions"])
 
     # walk-forward record: per-fold ICs for LightGBM AND the linear sanity floor
@@ -120,6 +129,14 @@ def test_train_writes_a_versioned_artifact_and_report_reads_it_back(tmp_path: Pa
     predictions = booster.predict(x)
     assert len(predictions) == len(df)
     assert all(math.isfinite(p) for p in predictions)
+
+    ridge = RidgeModel.load(
+        result.artifact_dir / RIDGE_FILE,
+        trained_sklearn_version=metadata["ridge"]["sklearn_version"],
+    )
+    ridge_predictions = ridge.predict(df[metadata["feature_columns"]])
+    assert len(ridge_predictions) == len(df)
+    assert all(math.isfinite(p) for p in ridge_predictions)
 
     # report path reads the same metadata back through the latest marker
     assert load_latest_metadata(tmp_path) == metadata
@@ -143,12 +160,58 @@ def test_second_run_bumps_the_version_and_moves_latest(tmp_path: Path):
     assert (tmp_path / "ml_lt" / "v1" / MODEL_FILE).exists()  # old artifacts are kept
 
 
+def test_ridge_artifact_round_trip_preserves_predictions(tmp_path: Path):
+    df = _dataset().head(80)
+    features = feature_columns(df)
+    original = RidgeModel(seed=7)
+    original.fit(df[features], df["label"])
+    expected = original.predict(df[features])
+    path = tmp_path / RIDGE_FILE
+    original.save(path)
+
+    from importlib import metadata as importlib_metadata
+
+    loaded = RidgeModel.load(
+        path, trained_sklearn_version=importlib_metadata.version("scikit-learn")
+    )
+    assert loaded.columns == original.columns
+    assert loaded.predict(df[features]) == pytest.approx(expected)
+
+
+def test_lgbm_capacity_grid_smoke_uses_fold_ic(tmp_path: Path):
+    del tmp_path  # signature keeps the smoke fixture pattern consistent
+    df = _dataset()
+    folds = walk_forward_folds(sorted(df["date"].unique()), test_size=6, min_train=12)
+    selected, record = select_lgbm_params(
+        df,
+        folds[:1],
+        seed=7,
+        grid={
+            "num_leaves": (7, 15),
+            "min_child_samples": (20,),
+            "n_estimators": (20,),
+        },
+    )
+    assert selected["num_leaves"] in {7, 15}
+    assert len(record["candidates"]) == 2
+    assert record["selection_metric"] == "mean fold rank IC"
+    assert record["winner"] in record["candidates"]
+    assert all("mean_fold_ic" in candidate for candidate in record["candidates"])
+
+
 def test_load_latest_without_any_artifact_is_a_clear_error(tmp_path: Path):
     with pytest.raises(FileNotFoundError, match="train run"):
         load_latest_metadata(tmp_path)
 
 
 def test_default_params_stay_light():
-    # hyperparameter search is out of scope (plan); defaults + light tuning only
+    assert LGBM_CAPACITY_GRID == {
+        "num_leaves": (7, 15, 31),
+        "min_child_samples": (20, 50, 100),
+        "n_estimators": (100, 200, 400),
+    }
     assert DEFAULT_LGBM_PARAMS["verbose"] == -1
+    assert DEFAULT_LGBM_PARAMS["n_estimators"] == 100
+    assert DEFAULT_LGBM_PARAMS["num_leaves"] == 7
+    assert DEFAULT_LGBM_PARAMS["min_child_samples"] == 50
     assert "early_stopping_rounds" not in DEFAULT_LGBM_PARAMS

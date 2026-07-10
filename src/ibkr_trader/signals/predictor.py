@@ -83,6 +83,17 @@ def _require_ml() -> None:
         ) from exc
 
 
+def _require_ridge_ml() -> None:
+    """scikit-learn/joblib live behind ``[ml]``; registry import remains lightweight."""
+    try:
+        import joblib  # noqa: F401
+        import sklearn  # noqa: F401
+    except ImportError as exc:
+        raise RuntimeError(
+            "the 'ml_lt_ridge' predictor needs the ML extra — install with: pip install -e .[ml]"
+        ) from exc
+
+
 @register
 class MlLongTerm(Predictor):
     """Trained long-term model (ML-03): LightGBM over feature set v1, artifact-backed.
@@ -158,3 +169,74 @@ class MlLongTerm(Predictor):
 
             self._booster = lightgbm.Booster(model_file=str(self._artifact_dir / self._model_file))
         return float(self._booster.predict(x)[0]) - 0.5
+
+
+@register
+class MlLtRidge(Predictor):
+    """Artifact-backed numeric ridge strategy saved alongside ``ml_lt`` LightGBM."""
+
+    name = "ml_lt_ridge"
+    version = "0"
+
+    def __init__(self, model_dir: str | Path | None = None):
+        _require_ridge_ml()
+        if model_dir is None:
+            from ibkr_trader.config import get_settings
+
+            model_dir = get_settings().ml_lt_model_dir
+        root = Path(model_dir)
+        marker = root / "latest"
+        if not marker.exists():
+            raise FileNotFoundError(
+                f"no trained ml_lt_ridge artifact under {root} — run `ibkr-trader train run` first"
+            )
+        artifact_version = marker.read_text().strip()
+        self._artifact_dir = root / artifact_version
+        metadata_path = self._artifact_dir / "metadata.json"
+        if not metadata_path.exists():
+            raise FileNotFoundError(
+                f"latest marker points at {artifact_version!r} but {metadata_path} is gone"
+            )
+        metadata = json.loads(metadata_path.read_text())
+        ridge = metadata.get("ridge")
+        if not ridge:
+            raise FileNotFoundError(
+                f"artifact {artifact_version!r} has no ridge model — "
+                "retrain with `ibkr-trader train run`"
+            )
+        self.version = str(metadata.get("version", artifact_version))
+        self._model_file = str(ridge.get("model_file", "ridge.joblib"))
+        self._feature_columns = list(ridge["numeric_feature_columns"])
+        self._sklearn_version = str(ridge["sklearn_version"])
+        self._model: Any = None
+        artifact_fsv = str(metadata.get("feature_set_version"))
+        self._version_mismatch = artifact_fsv != FEATURE_SET_VERSION
+        if self._version_mismatch:
+            logger.error(
+                "ml_lt_ridge artifact %s was trained on feature set v%s but the code computes "
+                "v%s — refusing to score (all predictions 0.0); retrain with "
+                "`ibkr-trader train run`",
+                self.version,
+                artifact_fsv,
+                FEATURE_SET_VERSION,
+            )
+        else:
+            from ibkr_trader.signals.train import assert_sklearn_compatible
+
+            assert_sklearn_compatible(self._sklearn_version)
+
+    def predict(self, features: dict) -> float:
+        if self._version_mismatch:
+            return 0.0
+        import pandas as pd
+
+        nan = float("nan")
+        x = pd.DataFrame([{column: features.get(column, nan) for column in self._feature_columns}])
+        if self._model is None:
+            from ibkr_trader.signals.train import RidgeModel
+
+            self._model = RidgeModel.load(
+                self._artifact_dir / self._model_file,
+                trained_sklearn_version=self._sklearn_version,
+            )
+        return float(self._model.predict(x)[0]) - 0.5

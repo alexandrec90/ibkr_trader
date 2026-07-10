@@ -5,6 +5,7 @@ Runs the walk-forward evaluation (signals.validation) over the supervised datase
 artifact directory::
 
     models/ml_lt/<vN>/model.txt        # LightGBM booster
+    models/ml_lt/<vN>/ridge.joblib     # numeric ridge pipeline
     models/ml_lt/<vN>/metadata.json    # features, label spec, fold ICs, versions, …
     models/ml_lt/latest                # text file naming the newest version
 
@@ -13,12 +14,14 @@ fails with an install hint only when training is actually attempted. Reads Postg
 """
 
 import hashlib
+import itertools
 import json
 import platform
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import partial
 from importlib import metadata as importlib_metadata
 from pathlib import Path
 from typing import Any
@@ -43,6 +46,7 @@ from ibkr_trader.signals.validation import (
 
 MODEL_NAME = "ml_lt"
 MODEL_FILE = "model.txt"
+RIDGE_FILE = "ridge.joblib"
 METADATA_FILE = "metadata.json"
 LATEST_MARKER = "latest"
 
@@ -52,16 +56,22 @@ HONEST_EXPECTATIONS = (
     "The decision metric remains the after-cost backtest (ML-04), not IC."
 )
 
-#: LightGBM defaults + light tuning only (per plan) — hyperparameter search is out of scope.
+#: Fixed non-capacity parameters. The three capacity parameters are walk-forward selected.
 DEFAULT_LGBM_PARAMS: dict[str, Any] = {
-    "n_estimators": 400,
+    "n_estimators": 100,
     "learning_rate": 0.05,
-    "num_leaves": 31,
-    "min_child_samples": 20,
+    "num_leaves": 7,
+    "min_child_samples": 50,
     "subsample": 0.9,
     "subsample_freq": 1,
     "colsample_bytree": 0.9,
     "verbose": -1,
+}
+
+LGBM_CAPACITY_GRID: dict[str, tuple[int, ...]] = {
+    "num_leaves": (7, 15, 31),
+    "min_child_samples": (20, 50, 100),
+    "n_estimators": (100, 200, 400),
 }
 
 _CATEGORICAL_FEATURES = ("sector",)  # encoded as LightGBM native categoricals
@@ -75,6 +85,35 @@ def _require_ml() -> None:
         raise RuntimeError(
             "training needs the ML extra — install with: pip install -e .[ml]"
         ) from exc
+
+
+def _require_sklearn() -> None:
+    try:
+        import joblib  # noqa: F401
+        import sklearn  # noqa: F401
+    except ImportError as exc:  # pragma: no cover - exercised only without the extra
+        raise RuntimeError(
+            "ridge training/prediction needs the ML extra — install with: pip install -e .[ml]"
+        ) from exc
+
+
+def _sklearn_major_minor(version: str) -> tuple[int, int] | None:
+    match = re.match(r"^(\d+)\.(\d+)", version)
+    return (int(match.group(1)), int(match.group(2))) if match else None
+
+
+def assert_sklearn_compatible(trained_version: str, runtime_version: str | None = None) -> None:
+    """Reject a ridge pickle produced by another scikit-learn major/minor release."""
+    _require_sklearn()
+    runtime_version = runtime_version or importlib_metadata.version("scikit-learn")
+    trained = _sklearn_major_minor(trained_version)
+    runtime = _sklearn_major_minor(runtime_version)
+    if trained is None or runtime is None or trained != runtime:
+        raise RuntimeError(
+            "ridge artifact scikit-learn version mismatch "
+            f"(trained with {trained_version}, running {runtime_version}); "
+            "retrain with `ibkr-trader train run` before scoring"
+        )
 
 
 def encode_categoricals(x: pd.DataFrame, categories: dict[str, list[str]]) -> pd.DataFrame:
@@ -125,7 +164,7 @@ class RidgeModel:
     """Trivial linear sanity floor: numeric features only, median-impute + standardize."""
 
     def __init__(self, *, alpha: float = 1.0, seed: int = 42):
-        _require_ml()
+        _require_sklearn()
         from sklearn.impute import SimpleImputer
         from sklearn.linear_model import Ridge
         from sklearn.pipeline import make_pipeline
@@ -147,6 +186,28 @@ class RidgeModel:
 
     def predict(self, x: pd.DataFrame) -> np.ndarray:
         return np.asarray(self._pipeline.predict(self._numeric(x)))
+
+    @property
+    def columns(self) -> list[str]:
+        return list(self._columns)
+
+    def save(self, path: Path) -> None:
+        import joblib
+
+        if not self._columns:
+            raise RuntimeError("fit before save")
+        joblib.dump({"columns": self._columns, "pipeline": self._pipeline}, path)
+
+    @classmethod
+    def load(cls, path: Path, *, trained_sklearn_version: str) -> "RidgeModel":
+        assert_sklearn_compatible(trained_sklearn_version)
+        import joblib
+
+        payload = joblib.load(path)
+        model = cls.__new__(cls)
+        model._columns = list(payload["columns"])
+        model._pipeline = payload["pipeline"]
+        return model
 
 
 @dataclass
@@ -202,6 +263,57 @@ def _fold_payload(results: Sequence[FoldResult], model_names: Sequence[str]) -> 
     ]
 
 
+def select_lgbm_params(
+    df: pd.DataFrame,
+    folds: Sequence,
+    *,
+    seed: int = 42,
+    grid: Mapping[str, Sequence[int]] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Select LightGBM capacity using mean fold IC only (lower std breaks ties)."""
+    capacity_grid: Mapping[str, Sequence[int]] = grid or LGBM_CAPACITY_GRID
+    keys = ("num_leaves", "min_child_samples", "n_estimators")
+    candidates: list[dict[str, Any]] = []
+    for index, values in enumerate(itertools.product(*(capacity_grid[key] for key in keys))):
+        capacity = dict(zip(keys, values, strict=True))
+        name = f"candidate_{index:02d}"
+        results = evaluate_walk_forward(
+            df,
+            folds,
+            {name: partial(LgbmModel, capacity, seed=seed)},
+        )
+        fold_ics = [result.ic_mean(name) for result in results]
+        valid = [value for value in fold_ics if value is not None]
+        candidates.append(
+            {
+                "params": capacity,
+                "mean_fold_ic": float(np.mean(valid)) if valid else None,
+                "std_fold_ic": float(np.std(valid)) if valid else None,
+                "n_folds": len(valid),
+            }
+        )
+    if not any(candidate["mean_fold_ic"] is not None for candidate in candidates):
+        raise ValueError("LightGBM grid produced no valid fold ICs")
+
+    def selection_key(candidate: dict[str, Any]) -> tuple[float, float]:
+        mean = candidate["mean_fold_ic"]
+        std = candidate["std_fold_ic"]
+        return (
+            float(mean) if mean is not None else -np.inf,
+            -(float(std) if std is not None else np.inf),
+        )
+
+    winner = max(candidates, key=selection_key)
+    selected = dict(DEFAULT_LGBM_PARAMS) | dict(winner["params"])
+    return selected, {
+        "selection_metric": "mean fold rank IC",
+        "tie_break": "lower std of fold rank IC",
+        "grid": {key: list(capacity_grid[key]) for key in keys},
+        "candidates": candidates,
+        "winner": winner,
+    }
+
+
 def train_on_dataset(
     df: pd.DataFrame,
     *,
@@ -227,14 +339,27 @@ def train_on_dataset(
     folds = walk_forward_folds(
         sorted(df["date"].unique()), test_size=test_size, min_train=min_train
     )
+    if lgbm_params is None:
+        selected_lgbm_params, grid_search = select_lgbm_params(df, folds, seed=seed)
+    else:
+        selected_lgbm_params = dict(DEFAULT_LGBM_PARAMS) | dict(lgbm_params)
+        grid_search = {
+            "selection_metric": "explicit parameters (grid skipped)",
+            "tie_break": None,
+            "grid": None,
+            "candidates": [],
+            "winner": {"params": dict(lgbm_params)},
+        }
     factories: dict[str, Callable[[], SupervisedModel]] = {
-        "lightgbm": lambda: LgbmModel(lgbm_params, seed=seed),
+        "lightgbm": lambda: LgbmModel(selected_lgbm_params, seed=seed),
         "ridge": lambda: RidgeModel(seed=seed),
     }
     fold_results = evaluate_walk_forward(df, folds, factories)
 
-    final = LgbmModel(lgbm_params, seed=seed)
+    final = LgbmModel(selected_lgbm_params, seed=seed)
     final.fit(df[features], df["label"])
+    final_ridge = RidgeModel(seed=seed)
+    final_ridge.fit(df[features], df["label"])
 
     model_dir = models_dir / MODEL_NAME
     model_dir.mkdir(parents=True, exist_ok=True)
@@ -242,13 +367,20 @@ def train_on_dataset(
     artifact_dir = model_dir / version
     artifact_dir.mkdir()
     final.save(artifact_dir / MODEL_FILE)
+    final_ridge.save(artifact_dir / RIDGE_FILE)
 
     model_names = list(factories)
+    library_versions = _library_versions()
     metadata = {
         "model": MODEL_NAME,
         "version": version,
         "created_at": datetime.now(tz=UTC).isoformat(),
         "model_file": MODEL_FILE,
+        "ridge": {
+            "model_file": RIDGE_FILE,
+            "numeric_feature_columns": final_ridge.columns,
+            "sklearn_version": library_versions["scikit-learn"],
+        },
         "feature_set_version": FEATURE_SET_VERSION,
         "feature_columns": features,
         "categorical": {
@@ -283,8 +415,9 @@ def train_on_dataset(
             "overall_ic": {name: summarize_ics(fold_results, name) for name in model_names},
         },
         "lgbm_params": {**final.params, "random_state": seed},
+        "lgbm_grid_search": grid_search,
         "seed": seed,
-        "library_versions": _library_versions(),
+        "library_versions": library_versions,
         "note": HONEST_EXPECTATIONS,
     }
     (artifact_dir / METADATA_FILE).write_text(json.dumps(metadata, indent=2))

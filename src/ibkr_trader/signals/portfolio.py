@@ -20,6 +20,7 @@ engine computes features (from bars ≤ t, no look-ahead) and hands them in.
 import abc
 import math
 from collections.abc import Sequence
+from datetime import date
 
 from ibkr_trader.signals.eligibility import Candidate
 from ibkr_trader.signals.predictor import Predictor, get_predictor
@@ -58,6 +59,14 @@ class Allocator(abc.ABC):
     @abc.abstractmethod
     def allocate(self, candidates: Sequence[Candidate], features: Features) -> Weights:
         """Return target weights {instrument_id: weight}, long-only, summing to ≤ 1."""
+
+    def asof(self, day: date) -> None:  # noqa: B027 - deliberately optional, not abstract
+        """Engine hook: the decision date, called right before each ``allocate``.
+
+        Stateless allocators ignore it (this default). Date-aware ones — e.g. the per-fold
+        OOS allocator that must pick the model trained strictly before ``day`` — override it;
+        they still receive only bar-derived features computed from data ≤ day.
+        """
 
 
 REGISTRY: dict[str, type[Allocator]] = {}
@@ -210,3 +219,14 @@ class MlLtAllocator(ScoreAllocator):
         # backtest_runs.strategy matches --strategy ml_lt. version stays the artifact's
         # (e.g. "v1") — the engine pins it into params as model_version.
         self.name = MlLtAllocator.name
+
+
+@register
+class MlLtRidgeAllocator(ScoreAllocator):
+    """The saved ridge floor as a top-15, 20%-cap first-class strategy."""
+
+    name = "ml_lt_ridge"
+
+    def __init__(self):
+        super().__init__("ml_lt_ridge", max_names=15, max_weight=0.20)
+        self.name = MlLtRidgeAllocator.name
