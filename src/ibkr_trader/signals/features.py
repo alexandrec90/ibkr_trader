@@ -5,7 +5,7 @@ predictions, feature snapshots) — no network calls in this package, so feature
 are reproducible.
 
 The heart is a **pure core + thin DB wrapper**: ``build_features_asof`` computes feature
-set v1 from in-memory inputs (no session, no network) so training (ML-03) and the backtest
+set v2 from in-memory inputs (no session, no network) so training (ML-03) and the backtest
 engine share the exact same feature code and can never disagree; ``build_daily_features``
 loads those inputs from Postgres and persists snapshots to the ``features`` table, keyed by
 ``FEATURE_SET_VERSION`` so a saved model knows what it was trained on.
@@ -27,7 +27,7 @@ from ibkr_trader.db.models import Dividend, Feature, Instrument, ShareCount
 #: Version stamp for the feature *definitions* below. Bump whenever a feature's semantics
 #: change (lookbacks, formulas, additions) — persisted snapshots and trained models carry it,
 #: so mixed-version rows never silently feed one model.
-FEATURE_SET_VERSION = "1"
+FEATURE_SET_VERSION = "2"
 
 TRADING_DAYS_PER_YEAR = 252
 
@@ -164,7 +164,7 @@ def _add_corporate_features(
 
 
 def build_features_asof(inputs: FeatureInputs, day: date) -> dict[str, float]:
-    """Feature set v1 as-of ``day`` — the numeric dict allocators and models consume.
+    """Feature set v2 as-of ``day`` — the numeric dict allocators and models consume.
 
     No-look-ahead contract: **only data dated ≤ day influences the output**; appending later
     bars/dividends/share counts to ``inputs`` must not change the result at ``day``. Features
@@ -177,7 +177,10 @@ def build_features_asof(inputs: FeatureInputs, day: date) -> dict[str, float]:
     i = bisect_right(inputs.dates, day) - 1
     if i < 0:
         return {}
-    feats: dict[str, float] = {}
+    # Count only bars observable as of the decision. This is deliberately the same quantity
+    # used by Candidate.history_days, exposed to the model so young-listing missingness has an
+    # explicit regime signal. Every pre-v2 feature below retains its v1 semantics.
+    feats: dict[str, float] = {"history_days": float(i + 1)}
     _add_price_features(inputs, i, feats)
     _add_benchmark_relative(inputs, day, feats)
     _add_corporate_features(inputs, day, inputs.closes[i], feats)
@@ -259,7 +262,7 @@ def build_daily_features(
     *,
     benchmark_symbol: str = "XEQT",
 ) -> int:
-    """Compute feature set v1 for each (instrument, date) and upsert ``features`` snapshots.
+    """Compute feature set v2 for each (instrument, date) and upsert ``features`` snapshots.
 
     Thin DB wrapper around the pure core: loads bars (via the engine's one-source-per-
     instrument loader), dividends, share counts and sector from Postgres — never the network —

@@ -1,6 +1,6 @@
 """Supervised dataset for the long-term model (ML-03).
 
-One row per (instrument, monthly rebalance date t): feature set v1 as-of t, the eligibility
+One row per (instrument, monthly rebalance date t): current feature set as-of t, the eligibility
 screen as-of t, and the label fixed by prior decision — **12-month forward total return in CAD
 (ADJUSTED_LAST bars, dividends reinvested), in excess of XEQT, percentile-ranked
 cross-sectionally per rebalance date** into [0, 1].

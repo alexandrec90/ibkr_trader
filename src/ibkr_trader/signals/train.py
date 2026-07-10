@@ -35,6 +35,7 @@ from ibkr_trader.signals.dataset import (
     build_dataset,
     feature_columns,
 )
+from ibkr_trader.signals.eligibility import EligibilityLimits
 from ibkr_trader.signals.features import FEATURE_SET_VERSION
 from ibkr_trader.signals.validation import (
     FoldResult,
@@ -325,6 +326,7 @@ def train_on_dataset(
     min_train: int = 24,
     lgbm_params: dict[str, Any] | None = None,
     benchmark_symbol: str = "XEQT",
+    min_history_days: int = 252,
 ) -> TrainResult:
     """Walk-forward evaluate, fit the final model on the full window, write the artifact.
 
@@ -397,6 +399,7 @@ def train_on_dataset(
             "benchmark": benchmark_symbol,
         },
         "universe": {"n_symbols": len(set(universe)), "sha256_16": _universe_hash(universe)},
+        "eligibility": {"min_history_days": min_history_days},
         "train_window": {
             "requested": [window[0].isoformat(), window[1].isoformat()],
             "dataset_dates": [
@@ -439,10 +442,18 @@ def train_from_db(
     test_size: int = 6,
     min_train: int = 24,
     lgbm_params: dict[str, Any] | None = None,
+    limits: EligibilityLimits | None = None,
 ) -> TrainResult:
     """Build the dataset from Postgres and run ``train_on_dataset`` (the CLI entry point)."""
     _require_ml()
-    df = build_dataset(session, universe, start, end, benchmark_symbol=benchmark_symbol)
+    df = build_dataset(
+        session,
+        universe,
+        start,
+        end,
+        benchmark_symbol=benchmark_symbol,
+        limits=limits,
+    )
     return train_on_dataset(
         df,
         models_dir=models_dir,
@@ -453,6 +464,7 @@ def train_from_db(
         min_train=min_train,
         lgbm_params=lgbm_params,
         benchmark_symbol=benchmark_symbol,
+        min_history_days=(limits or EligibilityLimits()).min_history_days,
     )
 
 

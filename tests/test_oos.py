@@ -223,6 +223,7 @@ def test_oos_backtest_end_to_end_smoke_on_synthetic_panel():
     for result in oos.results:
         assert result.params["eval_start"] == oos.eval_start.isoformat()
         assert result.params["oos_folds"] == oos.n_folds
+        assert result.params["min_history_days"] == 1
         assert "universe_sha256_16" in result.params
     by_name = {r.strategy: r for r in oos.results}
     assert by_name["ml_lt_oos"].params["model_version"] == OOS_MODEL_VERSION

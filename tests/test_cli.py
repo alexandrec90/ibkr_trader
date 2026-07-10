@@ -3,7 +3,7 @@
 monkeypatched in-memory SQLite session)."""
 
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -72,6 +72,111 @@ def test_backtest_run_unknown_strategy_is_refused():
     assert "unknown allocator" in _all_output(result)
 
 
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["backtest", "run", "--symbols", "AAPL"],
+        ["backtest", "oos", "--end", "2025-01-01", "--symbols", "AAPL"],
+        ["train", "run", "--end", "2025-01-01", "--symbols", "AAPL"],
+    ],
+)
+def test_min_history_days_must_be_positive(args):
+    result = runner.invoke(cli.app, [*args, "--min-history-days", "0"])
+    assert result.exit_code == 2
+    assert "range x>=1" in _all_output(result)
+
+
+def test_backtest_run_flows_history_floor_into_config(monkeypatch):
+    from ibkr_trader.backtest import engine as engine_mod
+
+    seen = {}
+
+    def fake_run(self, strategy, universe, start, end, *, config, persist):
+        seen["floor"] = config.eligibility.min_history_days
+        return SimpleNamespace()
+
+    monkeypatch.setattr(engine_mod.BacktestEngine, "run", fake_run)
+    monkeypatch.setattr(cli, "_print_backtest_result", lambda result, account: None)
+    result = runner.invoke(
+        cli.app,
+        ["backtest", "run", "--symbols", "AAPL", "--min-history-days", "63"],
+    )
+    assert result.exit_code == 0
+    assert seen["floor"] == 63
+
+
+def test_backtest_oos_flows_history_floor_into_config(monkeypatch):
+    from ibkr_trader.backtest import oos as oos_mod
+    from ibkr_trader.db import session as session_mod
+
+    seen = {}
+
+    @contextmanager
+    def fake_session():
+        yield object()
+
+    def fake_oos(session, universe, start, end, **kwargs):
+        seen["floor"] = kwargs["config"].eligibility.min_history_days
+        return SimpleNamespace(
+            n_folds=1,
+            eval_start=date(2023, 1, 31),
+            test_end=date(2023, 6, 30),
+            results=[],
+        )
+
+    monkeypatch.setattr(session_mod, "get_session", fake_session)
+    monkeypatch.setattr(oos_mod, "run_oos_backtest", fake_oos)
+    result = runner.invoke(
+        cli.app,
+        [
+            "backtest",
+            "oos",
+            "--end",
+            "2025-01-01",
+            "--symbols",
+            "AAPL",
+            "--min-history-days",
+            "63",
+        ],
+    )
+    assert result.exit_code == 0
+    assert seen["floor"] == 63
+
+
+def test_train_run_flows_history_floor_into_limits(monkeypatch, tmp_path):
+    from ibkr_trader.db import session as session_mod
+    from ibkr_trader.signals import train as train_mod
+
+    seen = {}
+
+    @contextmanager
+    def fake_session():
+        yield object()
+
+    def fake_train(session, universe, start, end, **kwargs):
+        seen["floor"] = kwargs["limits"].min_history_days
+        return SimpleNamespace(metadata={}, artifact_dir=tmp_path / "v-test")
+
+    monkeypatch.setattr(session_mod, "get_session", fake_session)
+    monkeypatch.setattr(train_mod, "train_from_db", fake_train)
+    monkeypatch.setattr(cli, "_print_train_summary", lambda metadata: None)
+    result = runner.invoke(
+        cli.app,
+        [
+            "train",
+            "run",
+            "--end",
+            "2025-01-01",
+            "--symbols",
+            "AAPL",
+            "--min-history-days",
+            "63",
+        ],
+    )
+    assert result.exit_code == 0
+    assert seen["floor"] == 63
+
+
 def test_train_report_without_artifact_exits_nonzero(tmp_path):
     result = runner.invoke(cli.app, ["train", "report", "--models-dir", str(tmp_path)])
     assert result.exit_code == 1
@@ -102,7 +207,11 @@ def _add_run(session: Session, strategy: str, sharpe: float) -> None:
     session.add(
         BacktestRun(
             strategy=strategy,
-            params={"model_version": "3", "horizon": "12m"},
+            params={
+                "model_version": "3",
+                "horizon": "12m",
+                "universe": {"survivorship": "curated-current"},
+            },
             start=datetime(2021, 8, 1, tzinfo=UTC),
             end=datetime(2025, 1, 1, tzinfo=UTC),
             metrics={"sharpe": sharpe, "max_drawdown": -0.15, "cagr": 0.11, "n_days": 850},
@@ -139,6 +248,8 @@ def test_backtest_compare_renders_leaderboard(monkeypatch):
     assert "ranked by sharpe (desc), 2 run(s)" in result.output
     assert "1.234" in result.output  # metric cells use 3 decimal places
     assert result.output.index("ml_lt") < result.output.index("momentum_lt")
+    assert "curated-current universes are survivorship-biased" in result.output
+    assert "Compare strategies only on the identical universe" in result.output
 
 
 # --- formatters -------------------------------------------------------------------------
@@ -149,7 +260,10 @@ def _fake_result(metrics: dict) -> SimpleNamespace:
         strategy="ml_lt",
         start=datetime(2021, 8, 1, tzinfo=UTC),
         end=datetime(2025, 1, 1, tzinfo=UTC),
-        params={"benchmark": "XEQT"},
+        params={
+            "benchmark": "XEQT",
+            "universe": {"survivorship": "curated-current"},
+        },
         metrics=metrics,
         trades=40,
         costs_cad=123.0,
@@ -180,6 +294,8 @@ def test_print_backtest_result_formats_key_figures(capsys):
     assert "Buy-and-hold XEQT" in out
     assert "excess +11.0%" in out
     assert "40 trades (12.5/yr)" in out
+    assert "WARNING: curated-current universe is survivorship-biased" in out
+    assert "absolute returns are upper bounds" in out
 
 
 def test_print_backtest_result_omits_benchmark_when_absent(capsys):

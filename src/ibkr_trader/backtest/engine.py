@@ -171,7 +171,7 @@ def _features_asof(
     benchmark: Series | None = None,
     corporate: dict[int, CorporateData] | None = None,
 ) -> dict[int, dict[str, float]]:
-    """Feature set v1 (signals.features) as-of ``day`` — bars/corporate data ≤ day only.
+    """Current feature set (signals.features) as-of ``day`` — bars/corporate data ≤ day only.
 
     Missing ML-01 corporate data degrades to price-only features, never an error.
     """
@@ -397,6 +397,7 @@ def simulate(
         "rebalance_months": config.rebalance_months,
         "start_capital": config.start_capital,
         "benchmark": config.benchmark_symbol,
+        "min_history_days": config.eligibility.min_history_days,
     }
     if config.eval_start is not None:  # only pinned when set, so unset runs are unchanged
         params["eval_start"] = config.eval_start.isoformat()
@@ -512,6 +513,17 @@ class BacktestEngine:
             strategy_name=strategy,
             corporate=corporate,
         )
+        # The requested list is curated from today's survivors.  Stamp its exact identity on
+        # every run (including non-persisted and OOS runs) so results cannot be separated from
+        # that limitation when they are rendered or later persisted.
+        from ibkr_trader.signals.train import _universe_hash
+
+        result.params["universe"] = {
+            "source": "requested-symbols",
+            "n_symbols": len({symbol.upper() for symbol in symbols}),
+            "sha256_16": _universe_hash(symbols),
+            "survivorship": "curated-current",
+        }
         if extra_params:
             result.params = {**extra_params, **result.params}
 

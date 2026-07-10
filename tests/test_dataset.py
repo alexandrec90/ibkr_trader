@@ -206,6 +206,35 @@ def test_ineligible_names_never_reach_the_dataset():
     assert min(df["date"]) >= dates[0] + timedelta(days=252)
 
 
+def test_history_floor_is_a_per_dataset_choice_and_history_is_a_feature():
+    n = 1200
+    dates = _daily_dates(n)
+    young_dates = dates[200:]
+    universe = {
+        1: _series(1, "ESTABLISHED", dates, _path(n, 0.0002, 7.0)),
+        2: _series(
+            2,
+            "YOUNG",
+            young_dates,
+            _path(len(young_dates), 0.0003, 8.0),
+        ),
+    }
+    benchmark = _series(99, "XEQT", dates, [50.0] * n)
+    common = {"start": dates[0], "end": dates[-1]}
+    low = build_dataset_from_panel(
+        universe, benchmark, limits=EligibilityLimits(min_history_days=63), **common
+    )
+    core = build_dataset_from_panel(
+        universe, benchmark, limits=EligibilityLimits(min_history_days=252), **common
+    )
+
+    low_young = low[low["symbol"] == "YOUNG"]
+    core_young = core[core["symbol"] == "YOUNG"]
+    assert 63 <= low_young["history_days"].min() < 252
+    assert core_young["history_days"].min() >= 252
+    assert len(low_young) > len(core_young)
+
+
 # --- sector + frame shape --------------------------------------------------------------------
 
 

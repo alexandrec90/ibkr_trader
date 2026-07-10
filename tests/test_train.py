@@ -94,6 +94,7 @@ def test_train_writes_a_versioned_artifact_and_report_reads_it_back(tmp_path: Pa
 
     # metadata records what a saved model must know about itself
     assert metadata["feature_set_version"] == FEATURE_SET_VERSION
+    assert metadata["eligibility"]["min_history_days"] == 252
     assert metadata["feature_columns"] == feature_columns(df)
     assert metadata["label"]["horizon_months"] == 12
     assert "percentile-ranked" in metadata["label"]["spec"]

@@ -81,6 +81,7 @@ def test_appending_future_data_never_changes_features_at_t():
     assert before == after
     # and the fixture exercised the full v1 set, so the property covers every feature
     assert set(before) >= {
+        "history_days",
         "return_1m",
         "return_3m",
         "return_6m",
@@ -132,11 +133,42 @@ def test_return_12m_and_volatility_match_pre_refactor_engine_exactly():
 # --- value sanity ----------------------------------------------------------------------------
 
 
-def test_insufficient_history_yields_no_features_not_nans():
+def test_young_listing_exposes_history_days_while_long_lookbacks_stay_absent():
     inputs = FeatureInputs(dates=_dates(10), closes=[100.0] * 10, volumes=[1e6] * 10)
-    assert build_features_asof(inputs, inputs.dates[-1]) == {}
+    assert build_features_asof(inputs, inputs.dates[-1]) == {"history_days": 10.0}
     # day before the first bar → nothing at all
     assert build_features_asof(_inputs(400), date(2019, 1, 1)) == {}
+
+
+def test_v2_adds_only_history_days_to_v1_feature_semantics():
+    """The v2 addition must not alter any value that existed in feature set v1."""
+    inputs = _inputs(400)
+    day = inputs.dates[380]
+    v2 = build_features_asof(inputs, day)
+    history_days = v2.pop("history_days")
+
+    assert FEATURE_SET_VERSION == "2"
+    assert history_days == 381.0
+    # Existing parity/value tests below cover the complete pre-v2 feature set. This explicit
+    # key assertion prevents a later v2 change from silently adding or dropping a v1 feature.
+    assert set(v2) == {
+        "return_1m",
+        "return_3m",
+        "return_6m",
+        "return_12m",
+        "momentum_12_1",
+        "volatility",
+        "volatility_60d",
+        "downside_deviation_252d",
+        "max_drawdown_252d",
+        "pct_off_52w_high",
+        "volume_zscore_60d",
+        "excess_return_3m",
+        "excess_return_12m",
+        "dividend_yield_ttm",
+        "dividend_growth_3y",
+        "log_market_cap",
+    }
 
 
 def test_flat_series_features_are_all_zero():
@@ -250,7 +282,7 @@ def test_sector_is_in_the_payload_but_not_the_numeric_dict():
     assert {k: v for k, v in payload.items() if k != "sector"} == numeric
 
 
-# --- engine integration: the simulator hands allocators feature set v1 -----------------------
+# --- engine integration: the simulator hands allocators the current feature set ---------------
 
 OPEN_LIMITS = EligibilityLimits(
     min_price=0.0, min_avg_dollar_volume=0.0, min_history_days=1, exclude_leveraged=True

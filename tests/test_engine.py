@@ -378,8 +378,18 @@ def test_engine_run_loads_bars_benchmarks_and_persists():
     # AAA rose while the flat XEQT benchmark didn't → strategy should beat buy-and-hold
     assert result.metrics["benchmark_end_value_cad"] is not None
     assert result.metrics["excess_return"] > 0
+    assert result.params["universe"] == {
+        "source": "requested-symbols",
+        "n_symbols": 2,
+        "sha256_16": "5fd4dd24449c68ae",
+        "survivorship": "curated-current",
+    }
+    assert result.params["min_history_days"] == 1
     # a backtest_runs row was persisted (only the strategy, not the benchmark)
     assert session.scalar(select(func.count()).select_from(BacktestRun)) == 1
+    persisted = session.scalar(select(BacktestRun))
+    assert persisted is not None
+    assert persisted.params["universe"] == result.params["universe"]
 
 
 def test_load_series_uses_one_source_and_never_double_counts():

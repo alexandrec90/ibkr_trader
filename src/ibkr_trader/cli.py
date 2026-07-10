@@ -137,6 +137,9 @@ def backtest_run(
     start: str = typer.Option("2015-01-01", help="window start YYYY-MM-DD"),
     end: str = typer.Option("2025-01-01", help="window end YYYY-MM-DD"),
     start_capital: float = typer.Option(100_000.0, help="starting capital (CAD)"),
+    min_history_days: int = typer.Option(
+        252, min=1, help="minimum as-of listing history in trading days"
+    ),
     no_persist: bool = typer.Option(False, "--no-persist", help="don't write a backtest_runs row"),
 ):
     """Simulate a long-term registered-account strategy over stored bars and report the P&L."""
@@ -146,6 +149,7 @@ def backtest_run(
     from ibkr_trader.backtest.costs import RegisteredAccountCostModel
     from ibkr_trader.backtest.engine import BacktestEngine, RegisteredStrategyConfig
     from ibkr_trader.config import get_settings
+    from ibkr_trader.signals.eligibility import EligibilityLimits
     from ibkr_trader.signals.portfolio import get_allocator
 
     try:
@@ -168,6 +172,7 @@ def backtest_run(
         annual_trade_budget=settings.annual_trade_budget,
         rebalance_band=settings.rebalance_band,
         benchmark_symbol=settings.benchmark_symbol,
+        eligibility=EligibilityLimits(min_history_days=min_history_days),
     )
     cost_model = RegisteredAccountCostModel(
         churn_penalty_bps=settings.churn_penalty_bps,
@@ -212,6 +217,12 @@ def _print_backtest_result(result, account: str) -> None:
         f"costs ${result.costs_cad:,.0f}  ·  FX conversion ${result.fx_cost_cad:,.0f}  ·  "
         f"US-dividend tax ${result.tax_cad:,.0f} CAD"
     )
+    universe = result.params.get("universe", {})
+    if universe.get("survivorship") == "curated-current":
+        typer.echo(
+            "  WARNING: curated-current universe is survivorship-biased; absolute returns "
+            "are upper bounds."
+        )
 
 
 @snapshot_app.command("run")
@@ -293,6 +304,9 @@ def backtest_oos(
     seed: int = typer.Option(42, help="random seed for LightGBM/ridge"),
     test_size: int = typer.Option(6, help="months per walk-forward test block"),
     min_train: int = typer.Option(24, help="months of history before the first test block"),
+    min_history_days: int = typer.Option(
+        252, min=1, help="minimum as-of listing history in trading days"
+    ),
     no_persist: bool = typer.Option(False, "--no-persist", help="don't write backtest_runs rows"),
 ):
     """Per-fold out-of-sample backtest — the honest number. Trains one model per walk-forward
@@ -306,6 +320,7 @@ def backtest_oos(
     from ibkr_trader.backtest.oos import run_oos_backtest
     from ibkr_trader.config import get_settings
     from ibkr_trader.db.session import get_session
+    from ibkr_trader.signals.eligibility import EligibilityLimits
 
     settings = get_settings()
     account_type = AccountType((account or settings.default_account).lower())
@@ -320,6 +335,7 @@ def backtest_oos(
         annual_trade_budget=settings.annual_trade_budget,
         rebalance_band=settings.rebalance_band,
         benchmark_symbol=settings.benchmark_symbol,
+        eligibility=EligibilityLimits(min_history_days=min_history_days),
     )
     cost_model = RegisteredAccountCostModel(
         churn_penalty_bps=settings.churn_penalty_bps,
@@ -399,6 +415,10 @@ def backtest_compare(
             f" {cell(metrics.get('sharpe')):>8} {cell(metrics.get('max_drawdown')):>8}"
             f" {cell(metrics.get('cagr')):>8} {cell(metrics.get('n_days'), 0):>6}"
         )
+    typer.echo(
+        "\nNOTE: curated-current universes are survivorship-biased; absolute excess returns "
+        "are upper bounds. Compare strategies only on the identical universe."
+    )
 
 
 @train_app.command("run")
@@ -411,6 +431,9 @@ def train_run(
     seed: int = typer.Option(42, help="random seed for LightGBM/ridge"),
     test_size: int = typer.Option(6, help="months per walk-forward test block"),
     min_train: int = typer.Option(24, help="months of history before the first test block"),
+    min_history_days: int = typer.Option(
+        252, min=1, help="minimum as-of listing history in trading days"
+    ),
 ):
     """Build the supervised dataset, walk-forward validate (LightGBM + linear floor), fit the
     final model and write a versioned artifact under models/ml_lt/."""
@@ -418,6 +441,7 @@ def train_run(
     from pathlib import Path
 
     from ibkr_trader.db.session import get_session
+    from ibkr_trader.signals.eligibility import EligibilityLimits
     from ibkr_trader.signals.train import train_from_db
 
     start_dt = datetime.strptime(start, "%Y-%m-%d").replace(tzinfo=UTC)
@@ -433,6 +457,7 @@ def train_run(
                 seed=seed,
                 test_size=test_size,
                 min_train=min_train,
+                limits=EligibilityLimits(min_history_days=min_history_days),
             )
     except (RuntimeError, ValueError) as exc:
         typer.echo(f"error: {exc}", err=True)

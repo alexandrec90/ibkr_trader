@@ -96,7 +96,7 @@ def _require_ridge_ml() -> None:
 
 @register
 class MlLongTerm(Predictor):
-    """Trained long-term model (ML-03): LightGBM over feature set v1, artifact-backed.
+    """Trained long-term model (ML-03): LightGBM over the current feature set, artifact-backed.
 
     ``__init__`` resolves the newest artifact under ``Settings.ml_lt_model_dir`` (the
     ``latest`` marker written by ``ibkr-trader train run``) and reads its metadata;
