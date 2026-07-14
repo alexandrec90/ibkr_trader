@@ -174,7 +174,7 @@ class NewsArticle(Base):
         Index("ix_news_published_at", "published_at"),
     )
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    id: Mapped[int] = mapped_column(SqliteFriendlyBigInt, primary_key=True)
     source: Mapped[str] = mapped_column(String(32))  # newsapi | finnhub
     external_id: Mapped[str] = mapped_column(String(256))  # provider id or URL hash
     published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
@@ -194,7 +194,7 @@ class SocialPost(Base):
         Index("ix_social_created_at", "created_at"),
     )
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    id: Mapped[int] = mapped_column(SqliteFriendlyBigInt, primary_key=True)
     platform: Mapped[str] = mapped_column(String(32))  # reddit
     channel: Mapped[str] = mapped_column(String(64))  # subreddit name
     external_id: Mapped[str] = mapped_column(String(64))
@@ -216,7 +216,7 @@ class TrendPoint(Base):
     __tablename__ = "trend_points"
     __table_args__ = (UniqueConstraint("keyword", "geo", "ts"),)
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    id: Mapped[int] = mapped_column(SqliteFriendlyBigInt, primary_key=True)
     keyword: Mapped[str] = mapped_column(String(128))
     geo: Mapped[str] = mapped_column(String(8), default="")  # "" = worldwide, "CA" = Canada
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True))

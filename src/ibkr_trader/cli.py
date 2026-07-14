@@ -59,11 +59,52 @@ def ingest_news(query: str = typer.Option("", help="search query, e.g. a company
     typer.echo(f"upserted {count} articles")
 
 
+@ingest_app.command("finnhub-news")
+def ingest_finnhub_news(
+    symbol: str = typer.Argument("", help="ticker (e.g. AAPL); omit and pass --universe-file"),
+    date_from: str = typer.Option("", help="YYYY-MM-DD (default: last 7 days); single-symbol only"),
+    date_to: str = typer.Option("", help="YYYY-MM-DD (default: today); single-symbol only"),
+    universe_file: str = typer.Option(
+        "", help="batch mode: pull news for every symbol in this file (one per line)"
+    ),
+    spacing_seconds: float = typer.Option(
+        1.1, help="batch mode: delay between calls (free tier is 60/min)"
+    ),
+):
+    """Upsert Finnhub company news. Pass a SYMBOL for one ticker, or --universe-file to batch a
+    whole list (last-7-days window, spaced to respect the rate limit). Articles arrive tagged by
+    symbol. Note: Finnhub's free company-news coverage is US-centric — TSX names may return
+    nothing."""
+    if universe_file:
+        # Reuse the scheduler's batch helper: it spaces calls and skips a failing symbol.
+        from ibkr_trader.scheduler import poll_finnhub_news
+
+        count = poll_finnhub_news(universe_file, spacing_seconds)
+        typer.echo(f"upserted {count} articles")
+        return
+
+    if not symbol.strip():
+        raise typer.BadParameter("provide a SYMBOL or --universe-file")
+
+    from ibkr_trader.ingestion.news.finnhub_news import FinnhubNewsConnector
+
+    try:
+        count = FinnhubNewsConnector().fetch(symbol=symbol, date_from=date_from, date_to=date_to)
+    except (RuntimeError, ValueError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(f"upserted {count} articles")
+
+
 @ingest_app.command("reddit")
 def ingest_reddit(limit: int = 100):
     from ibkr_trader.ingestion.social.reddit import RedditConnector
 
-    count = RedditConnector().fetch(limit=limit)
+    try:
+        count = RedditConnector().fetch(limit=limit)
+    except (RuntimeError, ValueError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from None
     typer.echo(f"upserted {count} posts")
 
 
@@ -71,7 +112,11 @@ def ingest_reddit(limit: int = 100):
 def ingest_trends(keywords: list[str] = typer.Option([], help="up to 5 keywords")):
     from ibkr_trader.ingestion.social.google_trends import GoogleTrendsConnector
 
-    count = GoogleTrendsConnector().fetch(keywords=keywords)
+    try:
+        count = GoogleTrendsConnector().fetch(keywords=keywords)
+    except (RuntimeError, ValueError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from None
     typer.echo(f"upserted {count} trend points")
 
 
@@ -530,11 +575,15 @@ def _print_train_summary(metadata: dict) -> None:
 
 @app.command()
 def serve():
-    """Long-running mode: APScheduler jobs for periodic ingestion (+ later, trading loop)."""
-    # TODO(skeleton): BlockingScheduler with cron jobs per connector, honoring each
-    # source's rate limits. Trading loop stays out until
-    # backtests + paper validation exist.
-    raise typer.Exit(code=1)
+    """Long-running mode: APScheduler jobs for periodic ingestion + raw pruning.
+
+    Polls Reddit / Finnhub news / Google Trends on the cadence in Settings and drops the
+    ``raw`` blob on rows that signals has already sentiment-scored. No trading loop — that
+    stays out until backtests + paper validation justify it. Blocks; Ctrl-C to stop.
+    """
+    from ibkr_trader.scheduler import serve as run_scheduler
+
+    run_scheduler()
 
 
 if __name__ == "__main__":
