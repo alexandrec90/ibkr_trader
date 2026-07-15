@@ -38,6 +38,21 @@ class Settings(BaseSettings):
 
     # Ingestion defaults
     subreddits: list[str] = ["wallstreetbets", "investing", "stocks", "CanadianInvestor"]
+    # Google Trends search terms (brand/company names, not tickers). Empty => trends poll no-ops.
+    trends_keywords: list[str] = []
+
+    # `serve` scheduler cadence — periodic ingestion + raw pruning. All opt-in via `serve`;
+    # nothing here runs unless the long-running process is started.
+    poll_reddit_minutes: int = 30
+    poll_finnhub_news_hours: int = 6
+    poll_trends_hours: int = 24
+    prune_raw_hours: int = 24
+    # Grace on fetched_at before a scored row's raw is dropped; 0 = drop as soon as scored.
+    prune_raw_min_age_days: int = 0
+    # Universe the finnhub-news poll iterates (one symbol per line).
+    news_universe_file: str = "tickers.txt"
+    # Spacing between finnhub-news calls in the poll; ~1.1 s keeps us under the free 60 req/min.
+    finnhub_request_spacing_seconds: float = 1.1
 
     # Registered-account long-term strategy defaults.
     # These are env-overridable deployment defaults; a backtest run pins its own values into

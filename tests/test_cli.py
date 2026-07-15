@@ -2,6 +2,7 @@
 `backtest compare` command. Hermetic — no network, no Postgres (compare runs against a
 monkeypatched in-memory SQLite session)."""
 
+import re
 from contextlib import contextmanager
 from datetime import UTC, date, datetime
 from types import SimpleNamespace
@@ -21,6 +22,14 @@ runner = CliRunner()
 
 def _all_output(result) -> str:
     return result.output + result.stderr
+
+
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+def _plain(text: str) -> str:
+    """Strip ANSI escape codes — typer's rich error panels style option names mid-string."""
+    return _ANSI.sub("", text)
 
 
 # --- _read_universe -------------------------------------------------------------------
@@ -185,9 +194,70 @@ def test_train_report_without_artifact_exits_nonzero(tmp_path):
 
 def test_stub_commands_exit_nonzero():
     """Skeleton commands must fail loudly, not pretend success."""
-    for args in (["ibkr-check"], ["serve"]):
+    for args in (["ibkr-check"],):
         result = runner.invoke(cli.app, args)
         assert result.exit_code == 1, args
+
+
+def test_serve_starts_the_scheduler(monkeypatch):
+    """serve delegates to the scheduler (patched here so it doesn't actually block)."""
+    started = {}
+
+    def fake_serve():
+        started["called"] = True
+
+    monkeypatch.setattr("ibkr_trader.scheduler.serve", fake_serve)
+    result = runner.invoke(cli.app, ["serve"])
+    assert result.exit_code == 0
+    assert started.get("called") is True
+
+
+def test_ingest_finnhub_news_reports_error_cleanly(monkeypatch):
+    """Missing key must exit 1 with a readable message, not a traceback."""
+    from ibkr_trader.ingestion.news import finnhub_news
+
+    def boom(self, **kwargs):
+        raise RuntimeError("FINNHUB_KEY is not set (see .env.example)")
+
+    monkeypatch.setattr(finnhub_news.FinnhubNewsConnector, "fetch", boom)
+    result = runner.invoke(cli.app, ["ingest", "finnhub-news", "AAPL"])
+    assert result.exit_code == 1
+    assert "FINNHUB_KEY" in result.output
+
+
+def test_ingest_finnhub_news_reports_count(monkeypatch):
+    from ibkr_trader.ingestion.news import finnhub_news
+
+    monkeypatch.setattr(finnhub_news.FinnhubNewsConnector, "fetch", lambda self, **kw: 7)
+    result = runner.invoke(cli.app, ["ingest", "finnhub-news", "AAPL"])
+    assert result.exit_code == 0
+    assert "upserted 7 articles" in result.output
+
+
+def test_ingest_finnhub_news_batch_uses_universe_file(monkeypatch):
+    import ibkr_trader.scheduler as scheduler
+
+    seen = {}
+
+    def fake_poll(universe_file, spacing_seconds, **kw):
+        seen["file"] = universe_file
+        seen["spacing"] = spacing_seconds
+        return 42
+
+    monkeypatch.setattr(scheduler, "poll_finnhub_news", fake_poll)
+    result = runner.invoke(
+        cli.app,
+        ["ingest", "finnhub-news", "--universe-file", "tickers-fmp.txt", "--spacing-seconds", "0"],
+    )
+    assert result.exit_code == 0
+    assert "upserted 42 articles" in result.output
+    assert seen == {"file": "tickers-fmp.txt", "spacing": 0.0}
+
+
+def test_ingest_finnhub_news_requires_symbol_or_file():
+    result = runner.invoke(cli.app, ["ingest", "finnhub-news"])
+    assert result.exit_code != 0
+    assert "SYMBOL or --universe-file" in _plain(result.output)
 
 
 # --- backtest compare (in-memory DB) ---------------------------------------------------

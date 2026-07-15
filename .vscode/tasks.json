@@ -211,6 +211,119 @@
       "problemMatcher": []
     },
     {
+      "label": "ingest: finnhub news (one symbol)",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": [
+        "${workspaceFolder}\\.vscode\\task_artifact_runner.py",
+        "--artifact",
+        "ingest-finnhub-news",
+        "--",
+        "-m",
+        "ibkr_trader.cli",
+        "ingest",
+        "finnhub-news",
+        "${input:newsSymbol}"
+      ],
+      "options": {
+        "env": {
+          "DATABASE_URL": "postgresql+psycopg://trader:trader@127.0.0.1:5433/ibkr_trader?connect_timeout=5"
+        }
+      },
+      "presentation": {
+        "reveal": "silent",
+        "panel": "dedicated",
+        "clear": false
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "ingest: finnhub news (tickers.txt)",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": [
+        "${workspaceFolder}\\.vscode\\task_artifact_runner.py",
+        "--artifact",
+        "ingest-finnhub-news-batch",
+        "--",
+        "-m",
+        "ibkr_trader.cli",
+        "ingest",
+        "finnhub-news",
+        "--universe-file",
+        "tickers.txt",
+        "--spacing-seconds",
+        "1.1"
+      ],
+      "options": {
+        "env": {
+          "DATABASE_URL": "postgresql+psycopg://trader:trader@127.0.0.1:5433/ibkr_trader?connect_timeout=5"
+        }
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "ingest: reddit (subreddits from settings)",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": [
+        "${workspaceFolder}\\.vscode\\task_artifact_runner.py",
+        "--artifact",
+        "ingest-reddit",
+        "--",
+        "-m",
+        "ibkr_trader.cli",
+        "ingest",
+        "reddit",
+        "--limit",
+        "${input:redditLimit}"
+      ],
+      "options": {
+        "env": {
+          "DATABASE_URL": "postgresql+psycopg://trader:trader@127.0.0.1:5433/ibkr_trader?connect_timeout=5"
+        }
+      },
+      "presentation": {
+        "reveal": "silent",
+        "panel": "dedicated",
+        "clear": false
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "ingest: google trends (one keyword)",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": [
+        "${workspaceFolder}\\.vscode\\task_artifact_runner.py",
+        "--artifact",
+        "ingest-google-trends",
+        "--",
+        "-m",
+        "ibkr_trader.cli",
+        "ingest",
+        "trends",
+        "--keywords",
+        "${input:trendsKeyword}"
+      ],
+      "options": {
+        "env": {
+          "DATABASE_URL": "postgresql+psycopg://trader:trader@127.0.0.1:5433/ibkr_trader?connect_timeout=5"
+        }
+      },
+      "presentation": {
+        "reveal": "silent",
+        "panel": "dedicated",
+        "clear": false
+      },
+      "problemMatcher": []
+    },
+    {
       "label": "ingest: fmp fx (USDCAD)",
       "type": "process",
       "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
@@ -354,6 +467,14 @@
       "problemMatcher": []
     },
     {
+      "label": "todo: tidy (move done items to end)",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": ["${workspaceFolder}\\.vscode\\reorder_todo.py"],
+      "presentation": { "reveal": "silent", "panel": "dedicated", "clear": false },
+      "problemMatcher": []
+    },
+    {
       "label": "app: docker build",
       "type": "shell",
       "command": "docker compose build app",
@@ -379,6 +500,24 @@
       "type": "promptString",
       "description": "Ticker symbol to pull from FMP",
       "default": "NVDA"
+    },
+    {
+      "id": "newsSymbol",
+      "type": "promptString",
+      "description": "Ticker symbol to pull company news from Finnhub (US names have best coverage)",
+      "default": "AAPL"
+    },
+    {
+      "id": "redditLimit",
+      "type": "promptString",
+      "description": "Max posts to pull per subreddit (needs REDDIT_* creds in .env)",
+      "default": "100"
+    },
+    {
+      "id": "trendsKeyword",
+      "type": "promptString",
+      "description": "Google Trends search term — a brand/company name, not a ticker (no API key needed)",
+      "default": "Nvidia"
     },
     {
       "id": "fxPair",
