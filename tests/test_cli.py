@@ -2,6 +2,7 @@
 `backtest compare` command. Hermetic — no network, no Postgres (compare runs against a
 monkeypatched in-memory SQLite session)."""
 
+import re
 from contextlib import contextmanager
 from datetime import UTC, date, datetime
 from types import SimpleNamespace
@@ -21,6 +22,14 @@ runner = CliRunner()
 
 def _all_output(result) -> str:
     return result.output + result.stderr
+
+
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+def _plain(text: str) -> str:
+    """Strip ANSI escape codes — typer's rich error panels style option names mid-string."""
+    return _ANSI.sub("", text)
 
 
 # --- _read_universe -------------------------------------------------------------------
@@ -248,7 +257,7 @@ def test_ingest_finnhub_news_batch_uses_universe_file(monkeypatch):
 def test_ingest_finnhub_news_requires_symbol_or_file():
     result = runner.invoke(cli.app, ["ingest", "finnhub-news"])
     assert result.exit_code != 0
-    assert "SYMBOL or --universe-file" in result.output
+    assert "SYMBOL or --universe-file" in _plain(result.output)
 
 
 # --- backtest compare (in-memory DB) ---------------------------------------------------
