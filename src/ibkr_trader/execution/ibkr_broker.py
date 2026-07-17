@@ -34,9 +34,13 @@ class IbkrBroker(Broker):
     def place_order(self, request: OrderRequest) -> int:
         self.settings.assert_trading_allowed()  # paper/live gate — do not remove
         self.risk.check(request)
+        _account_id = self.settings.ibkr_execution_account(
+            request.account or self.settings.default_account
+        )
         # TODO(skeleton):
         #   contract = Stock(request.symbol, "SMART", "USD"); ib.qualifyContracts(contract)
         #   order = MarketOrder(request.side, request.quantity)  # or LimitOrder
+        #   order.account = _account_id  # required when the login manages multiple accounts
         #   preflight: whatIf order → inspect margin impact before transmit
         #   trade = self._ib.placeOrder(contract, order)
         #   persist Order row (environment, ibkr_order_id, permId when it arrives), return id

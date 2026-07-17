@@ -8,6 +8,19 @@
       "problemMatcher": []
     },
     {
+      "label": "ibkr: gateway up",
+      "type": "shell",
+      "command": "docker compose --profile ibkr up -d ib-gateway",
+      "problemMatcher": []
+    },
+    {
+      "label": "ibkr: gateway vnc",
+      "type": "process",
+      "command": "${env:ProgramFiles}\\TigerVNC\\vncviewer.exe",
+      "args": ["-SecurityTypes", "VncAuth", "127.0.0.1::5900"],
+      "problemMatcher": []
+    },
+    {
       "label": "db: migrate",
       "type": "process",
       "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
@@ -268,6 +281,64 @@
       "problemMatcher": []
     },
     {
+      "label": "ingest: newsapi headlines (news-keywords.txt)",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": [
+        "${workspaceFolder}\\.vscode\\task_artifact_runner.py",
+        "--artifact",
+        "ingest-newsapi-batch",
+        "--",
+        "-m",
+        "ibkr_trader.cli",
+        "ingest",
+        "news",
+        "--mapping-file",
+        "news-keywords.txt"
+      ],
+      "options": {
+        "env": {
+          "DATABASE_URL": "postgresql+psycopg://trader:trader@127.0.0.1:5433/ibkr_trader?connect_timeout=5"
+        }
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "ingest: alpha vantage prices (tickers-av.txt)",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": [
+        "${workspaceFolder}\\.vscode\\task_artifact_runner.py",
+        "--artifact",
+        "ingest-alpha-vantage-batch",
+        "--",
+        "-m",
+        "ibkr_trader.cli",
+        "ingest",
+        "prices",
+        "--source",
+        "alpha_vantage",
+        "--universe-file",
+        "tickers-av.txt"
+      ],
+      "options": {
+        "env": {
+          "DATABASE_URL": "postgresql+psycopg://trader:trader@127.0.0.1:5433/ibkr_trader?connect_timeout=5"
+        }
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
       "label": "ingest: reddit (subreddits from settings)",
       "type": "process",
       "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
@@ -292,6 +363,34 @@
         "reveal": "silent",
         "panel": "dedicated",
         "clear": false
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "ingest: google trends (trends-keywords.txt)",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": [
+        "${workspaceFolder}\\.vscode\\task_artifact_runner.py",
+        "--artifact",
+        "ingest-google-trends-batch",
+        "--",
+        "-m",
+        "ibkr_trader.cli",
+        "ingest",
+        "trends",
+        "--mapping-file",
+        "trends-keywords.txt"
+      ],
+      "options": {
+        "env": {
+          "DATABASE_URL": "postgresql+psycopg://trader:trader@127.0.0.1:5433/ibkr_trader?connect_timeout=5"
+        }
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
       },
       "problemMatcher": []
     },

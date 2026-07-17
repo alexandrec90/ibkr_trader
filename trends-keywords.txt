@@ -1,0 +1,62 @@
+# Google Trends search terms, tied to tickers.txt symbols. Format: TICKER,search term
+#
+# Three signal families, in blocks below. A ticker may appear in several blocks — each
+# search term is its own trend_points series and all of them join back to the same symbol
+# at feature time. Each line costs ~1 min per batch run (one request per keyword, 60 s
+# throttle), so add variants deliberately.
+#
+# 1. INVESTOR ATTENTION ("<TICKER> stock") — people thinking about the stock itself; the
+#    scheme the SVI literature (Da/Engelberg/Gao) uses. Every name gets one of these.
+#    Exception: single-letter tickers get the company name ("Visa stock").
+# 2. BRAND ATTENTION (company name) — consumer interest. Only for names that are
+#    unambiguous AND non-navigational. Excluded on purpose:
+#      Apple (fruit), Visa (travel), Intel (the noun), AMD (macular degeneration);
+#      Google/Facebook/Amazon/Netflix/Microsoft (navigational — typed to reach the site);
+#      banks/energy (not consumer product brands, logins are navigational).
+# 3. PRODUCT DEMAND (flagship product) — proxies revenue, not sentiment. Only stable,
+#    long-lived product names; model-number terms (RTX 5090, Model Y) churn and go stale.
+#
+# - Low-volume caution: if a term's 5-year weekly series is mostly zeros in the Trends UI,
+#   it's quantization noise — remove the line rather than feed the model garbage.
+# - Re-fetching renormalizes the 0-100 index within each request window, so downstream
+#   features must be scale-invariant (deltas / z-scores), never raw levels across fetches.
+
+# --- 1. investor attention -------------------------------------------------
+AAPL,AAPL stock
+MSFT,MSFT stock
+NVDA,NVDA stock
+AMZN,AMZN stock
+GOOGL,GOOGL stock
+META,META stock
+TSLA,TSLA stock
+AMD,AMD stock
+NFLX,NFLX stock
+SHOP,SHOP stock
+INTC,INTC stock
+DIS,DIS stock
+COST,COST stock
+WMT,WMT stock
+SBUX,SBUX stock
+NKE,NKE stock
+MCD,MCD stock
+JPM,JPM stock
+V,Visa stock
+RY,RY stock
+TD,TD stock
+BNS,BNS stock
+ENB,ENB stock
+SU,SU stock
+
+# --- 2. brand attention ----------------------------------------------------
+TSLA,Tesla
+NVDA,Nvidia
+SBUX,Starbucks
+NKE,Nike
+MCD,McDonalds
+COST,Costco
+WMT,Walmart
+DIS,Disney
+SHOP,Shopify
+
+# --- 3. product demand -----------------------------------------------------
+AAPL,iPhone

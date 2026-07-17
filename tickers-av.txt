@@ -1,0 +1,15 @@
+# Alpha Vantage ingest list — one symbol per line, # comments allowed.
+# Used by: ingest prices --universe-file tickers-av.txt --source alpha_vantage
+# (VS Code task "ingest: alpha vantage prices (tickers-av.txt)").
+#
+# Free tier is ~25 requests/day and the batch stops at a 20-fetch budget, so keep this
+# list at ~20 symbols or fewer; symbols with a bar stored today are skipped for free, so
+# re-running after a quota abort resumes where it stopped. FMP/Yahoo remain the bulk
+# price sources — treat this as a slow secondary/backfill feed.
+#
+# TSX names use the .TRT suffix on Alpha Vantage (e.g. SHOP.TRT), mapped to the same
+# (SHOP, TSX, CAD) instrument as the other connectors.
+
+NVDA
+MSFT
+GOOGL

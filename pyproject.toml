@@ -20,6 +20,7 @@ dependencies = [
     "typer>=0.12",
     "tenacity>=8.2",
     "yfinance>=0.2.50",
+    "vaderSentiment>=3.3",
 ]
 
 [project.optional-dependencies]
@@ -72,7 +73,7 @@ testpaths = ["tests"]
 # Coverage is enforced in CI via `pytest --cov=ibkr_trader` (plain `pytest` stays fast locally).
 # The floor is a ratchet: raise it as coverage grows, never lower it to make a change pass.
 [tool.coverage.report]
-fail_under = 87
+fail_under = 89.5
 show_missing = true
 skip_covered = true
 
