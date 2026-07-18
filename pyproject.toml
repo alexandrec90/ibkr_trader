@@ -24,18 +24,22 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# ML training extra (ML-03): the core package must import without it — training modules
+# guard these imports and tests importorskip them.
+ml = [
+    "lightgbm>=4.5",
+    "scikit-learn>=1.5",
+]
+
+# Dev tooling is a PEP 735 dependency group (not an extra): `uv sync` installs it by default,
+# and it never leaks into the published package metadata.
+[dependency-groups]
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.23",
     "pytest-cov>=6",
     "ruff>=0.4",
     "mypy>=1.10",
-]
-# ML training extra (ML-03): the core package must import without it — training modules
-# guard these imports and tests importorskip them.
-ml = [
-    "lightgbm>=4.5",
-    "scikit-learn>=1.5",
 ]
 
 [project.scripts]
