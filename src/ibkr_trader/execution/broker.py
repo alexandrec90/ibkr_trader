@@ -3,6 +3,8 @@
 import abc
 from dataclasses import dataclass
 
+from ibkr_trader.accounts import AccountType
+
 
 @dataclass
 class OrderRequest:
@@ -11,6 +13,7 @@ class OrderRequest:
     quantity: float
     order_type: str = "MKT"  # MKT | LMT
     limit_price: float | None = None
+    account: AccountType | str | None = None  # logical wrapper; paper still routes to DU account
 
 
 @dataclass

@@ -52,18 +52,58 @@ def ibkr_check():
 
 
 @ingest_app.command("news")
-def ingest_news(query: str = typer.Option("", help="search query, e.g. a company name")):
+def ingest_news(
+    query: str = typer.Option("", help="search query, e.g. a company name"),
+    symbol: str = typer.Option("", help="optional ticker to tag the stored articles with"),
+    date_from: str = typer.Option("", help="YYYY-MM-DD (free tier only reaches ~1 month back)"),
+    date_to: str = typer.Option("", help="YYYY-MM-DD"),
+    mapping_file: str = typer.Option(
+        "", help="batch mode: 'TICKER,search query' file (see news-keywords.txt)"
+    ),
+    refresh_after_hours: float = typer.Option(
+        12.0,
+        help="batch mode: skip symbols whose newsapi articles were fetched within this "
+        "(free-tier articles are 24 h delayed → nothing new inside ~12 h; 0 = force)",
+    ),
+    max_requests: int = typer.Option(
+        90, help="batch mode: request budget per run (free tier is 100/day)"
+    ),
+):
+    """Upsert NewsAPI headlines. Ad-hoc: --query (+ --symbol tag). Batch: --mapping-file runs
+    one request per stale symbol, skips freshly-fetched ones, and stops on the request budget
+    or a key/quota failure — so re-runs are cheap and a dead key can't burn the day's quota.
+    Free tier: ~100 req/day, articles delayed 24 h, first 100 results per search."""
+    if mapping_file:
+        from ibkr_trader.ingestion.social.google_trends import read_mapping_file
+        from ibkr_trader.scheduler import poll_newsapi_pairs
+
+        try:
+            pairs = read_mapping_file(mapping_file)
+        except (OSError, ValueError) as exc:
+            raise typer.BadParameter(str(exc)) from None
+        count = poll_newsapi_pairs(
+            pairs, refresh_after_hours=refresh_after_hours, max_requests=max_requests
+        )
+        typer.echo(f"upserted {count} articles")
+        return
+
     from ibkr_trader.ingestion.news.newsapi import NewsApiConnector
 
-    count = NewsApiConnector().fetch(query=query)
+    try:
+        count = NewsApiConnector().fetch(
+            query=query, symbol=symbol, date_from=date_from, date_to=date_to
+        )
+    except (RuntimeError, ValueError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from None
     typer.echo(f"upserted {count} articles")
 
 
 @ingest_app.command("finnhub-news")
 def ingest_finnhub_news(
     symbol: str = typer.Argument("", help="ticker (e.g. AAPL); omit and pass --universe-file"),
-    date_from: str = typer.Option("", help="YYYY-MM-DD (default: last 7 days); single-symbol only"),
-    date_to: str = typer.Option("", help="YYYY-MM-DD (default: today); single-symbol only"),
+    date_from: str = typer.Option("", help="YYYY-MM-DD (default: last 7 days)"),
+    date_to: str = typer.Option("", help="YYYY-MM-DD (default: today)"),
     universe_file: str = typer.Option(
         "", help="batch mode: pull news for every symbol in this file (one per line)"
     ),
@@ -77,9 +117,13 @@ def ingest_finnhub_news(
     nothing."""
     if universe_file:
         # Reuse the scheduler's batch helper: it spaces calls and skips a failing symbol.
+        # Re-runs cost the same 1 call/symbol regardless of window; pass --date-from ~1 year
+        # back for the initial backfill.
         from ibkr_trader.scheduler import poll_finnhub_news
 
-        count = poll_finnhub_news(universe_file, spacing_seconds)
+        count = poll_finnhub_news(
+            universe_file, spacing_seconds, date_from=date_from, date_to=date_to
+        )
         typer.echo(f"upserted {count} articles")
         return
 
@@ -90,6 +134,40 @@ def ingest_finnhub_news(
 
     try:
         count = FinnhubNewsConnector().fetch(symbol=symbol, date_from=date_from, date_to=date_to)
+    except (RuntimeError, ValueError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(f"upserted {count} articles")
+
+
+@ingest_app.command("finnhub-backfill")
+def ingest_finnhub_backfill(
+    universe_file: str = typer.Option(
+        "tickers.txt", help="symbols to backfill, one per line (same file the serve poll uses)"
+    ),
+    days: int = typer.Option(365, help="rolling floor depth (Finnhub free tier serves ~1 year)"),
+    chunk_days: int = typer.Option(30, help="window size; capped-looking windows split in half"),
+    max_requests: int = typer.Option(
+        2000, help="per-run API budget; the remainder resumes on the next run"
+    ),
+    spacing_seconds: float = typer.Option(1.1, help="delay between calls (free tier is 60/min)"),
+):
+    """Walk Finnhub company-news history backwards to the rolling floor for a whole universe.
+
+    Resumable and idempotent: the cursor is each symbol's oldest stored article, so re-running
+    (or the `serve` job, which runs this daily) only fetches what is still missing. The first
+    full run takes a while — ~12 spaced calls per symbol, more where windows split.
+    """
+    from ibkr_trader.scheduler import backfill_finnhub_news
+
+    try:
+        count = backfill_finnhub_news(
+            universe_file,
+            backfill_days=days,
+            chunk_days=chunk_days,
+            max_requests=max_requests,
+            request_spacing_seconds=spacing_seconds,
+        )
     except (RuntimeError, ValueError) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1) from None
@@ -109,11 +187,49 @@ def ingest_reddit(limit: int = 100):
 
 
 @ingest_app.command("trends")
-def ingest_trends(keywords: list[str] = typer.Option([], help="up to 5 keywords")):
-    from ibkr_trader.ingestion.social.google_trends import GoogleTrendsConnector
+def ingest_trends(
+    keywords: list[str] = typer.Option([], help="ad-hoc mode: up to 5 search terms"),
+    mapping_file: str = typer.Option(
+        "", help="batch mode: 'TICKER,search term' file (see trends-keywords.txt)"
+    ),
+    geo: str = typer.Option("", help='Trends region code; "" = worldwide, "CA" = Canada'),
+    timeframe: str = typer.Option(
+        "", help="pytrends timeframe (defaults: batch 'today 5-y', ad-hoc 'now 7-d')"
+    ),
+    refresh_after_days: float = typer.Option(
+        14.0,
+        help="batch mode: skip keywords whose stored series is younger than this "
+        "(weekly buckets → nothing new inside 14 days; 0 = force full re-fetch)",
+    ),
+):
+    """Upsert Google Trends interest. --mapping-file runs one request per keyword (~1 min each,
+    own 0-100 scale per series) and defaults to a 5-year weekly window, so the first batch run
+    doubles as backfill. Fresh keywords are skipped (see --refresh-after-days), so re-runs cost
+    seconds and a partially-failed batch resumes from the failures."""
+    if mapping_file:
+        from ibkr_trader.ingestion.social.google_trends import read_mapping_file
+        from ibkr_trader.scheduler import poll_trends_pairs
+
+        try:
+            pairs = read_mapping_file(mapping_file)
+        except (OSError, ValueError) as exc:
+            raise typer.BadParameter(str(exc)) from None
+        typer.echo(f"polling {len(pairs)} keywords (~1 min per stale keyword, fresh skipped) ...")
+        count = poll_trends_pairs(
+            pairs,
+            geo=geo,
+            timeframe=timeframe or "today 5-y",
+            refresh_after_days=refresh_after_days,
+        )
+        typer.echo(f"upserted {count} trend points")
+        return
+
+    from ibkr_trader.ingestion.social.google_trends import DEFAULT_TIMEFRAME, GoogleTrendsConnector
 
     try:
-        count = GoogleTrendsConnector().fetch(keywords=keywords)
+        count = GoogleTrendsConnector().fetch(
+            keywords=keywords, geo=geo, timeframe=timeframe or DEFAULT_TIMEFRAME
+        )
     except (RuntimeError, ValueError) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1) from None
@@ -122,8 +238,43 @@ def ingest_trends(keywords: list[str] = typer.Option([], help="up to 5 keywords"
 
 @ingest_app.command("prices")
 def ingest_prices(
-    symbol: str, source: str = typer.Option("fmp", help="fmp|yahoo|alpha_vantage|ibkr")
+    symbol: str = typer.Argument("", help="ticker; omit and pass --universe-file for batch"),
+    source: str = typer.Option("fmp", help="fmp|yahoo|alpha_vantage|ibkr"),
+    universe_file: str = typer.Option(
+        "", help="batch mode (alpha_vantage only): one symbol per line (see tickers-av.txt)"
+    ),
+    refresh_after_days: float = typer.Option(
+        1.0,
+        help="batch mode: skip symbols whose newest stored bar is younger than this "
+        "(1 = same-day reruns are free, 3 = also skip weekend runs, 0 = force)",
+    ),
+    max_requests: int = typer.Option(
+        20, help="batch mode: fetch budget per run (Alpha Vantage free tier is ~25/day)"
+    ),
 ):
+    """Upsert daily bars for one SYMBOL, or --universe-file to batch a list through Alpha
+    Vantage under its tiny free budget (fresh symbols are skipped, quota errors abort)."""
+    if universe_file:
+        if source != "alpha_vantage":
+            raise typer.BadParameter(
+                "--universe-file batching is alpha_vantage-only "
+                "(FMP/Yahoo have their own batch tasks)"
+            )
+        from ibkr_trader.ingestion.market.alpha_vantage import fetch_universe, read_tickers_file
+
+        try:
+            symbols = read_tickers_file(universe_file)
+        except OSError as exc:
+            raise typer.BadParameter(f"cannot read {universe_file!r}: {exc}") from None
+        count = fetch_universe(
+            symbols, refresh_after_days=refresh_after_days, max_requests=max_requests
+        )
+        typer.echo(f"upserted {count} bars")
+        return
+
+    if not symbol.strip():
+        raise typer.BadParameter("provide a SYMBOL or --universe-file")
+
     connectors = {
         "fmp": "ibkr_trader.ingestion.market.fmp:FmpConnector",
         "yahoo": "ibkr_trader.ingestion.market.yahoo:YahooConnector",
@@ -573,13 +724,26 @@ def _print_train_summary(metadata: dict) -> None:
     typer.echo(f"  {metadata.get('note', '')}")
 
 
+@app.command("score-sentiment")
+def score_sentiment_command():
+    """VADER-score every news/social row where sentiment IS NULL (also done hourly by serve).
+
+    Scoring marks a row consumed, which lets the prune job drop its raw payload.
+    """
+    from ibkr_trader.scheduler import run_sentiment_scoring
+
+    counts = run_sentiment_scoring()
+    typer.echo(f"scored {counts}")
+
+
 @app.command()
 def serve():
-    """Long-running mode: APScheduler jobs for periodic ingestion + raw pruning.
+    """Long-running mode: APScheduler jobs for periodic ingestion, scoring and raw pruning.
 
-    Polls Reddit / Finnhub news / Google Trends on the cadence in Settings and drops the
-    ``raw`` blob on rows that signals has already sentiment-scored. No trading loop — that
-    stays out until backtests + paper validation justify it. Blocks; Ctrl-C to stop.
+    Polls Reddit / Finnhub news / Google Trends on the cadence in Settings, backfills Finnhub
+    news history to the free-tier floor, VADER-scores unscored rows, and drops the ``raw``
+    blob on rows already sentiment-scored. No trading loop — that stays out until backtests +
+    paper validation justify it. Blocks; Ctrl-C to stop.
     """
     from ibkr_trader.scheduler import serve as run_scheduler
 

@@ -11,10 +11,11 @@ being comparable.
 """
 
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
 from ibkr_trader.db.models import TrendPoint
 from ibkr_trader.db.session import get_session
@@ -56,6 +57,7 @@ class GoogleTrendsConnector(Connector):
         keywords: list[str] | None = None,
         geo: str = "CA",
         timeframe: str = DEFAULT_TIMEFRAME,
+        skip_if_newer_than_days: float = 0.0,
         **kwargs,
     ) -> int:
         keywords = [kw.strip() for kw in (keywords or []) if kw.strip()]
@@ -63,6 +65,17 @@ class GoogleTrendsConnector(Connector):
             raise ValueError("at least one keyword is required")
         # Trends caps a single payload at 5 keywords.
         batch = keywords[:5]
+
+        # Freshness skip: each fetch re-pulls (and renormalizes) the whole window, so the only
+        # savings available is not fetching at all. Weekly data can't produce a new bucket more
+        # often than ~every 7 days; skipping fresh keywords makes reruns cost seconds and lets
+        # a partially-failed batch resume (failed keywords stay stale and get retried).
+        if skip_if_newer_than_days > 0:
+            cutoff = datetime.now(UTC) - timedelta(days=skip_if_newer_than_days)
+            with get_session() as session:
+                batch = [kw for kw in batch if _is_stale(session, kw, geo, cutoff)]
+            if not batch:
+                return 0  # everything fresh — no request, no throttle wait
 
         throttle()
         pytrends = _trends_client()
@@ -95,6 +108,40 @@ class GoogleTrendsConnector(Connector):
                         session.add(TrendPoint(keyword=keyword, geo=geo, ts=ts, interest=interest))
                     count += 1
         return count
+
+
+def read_mapping_file(path: str) -> list[tuple[str, str]]:
+    """Parse ``TICKER,search term`` lines into (symbol, keyword) pairs.
+
+    Blank lines and ``#`` comments are skipped; a malformed line raises loudly rather than
+    silently dropping a keyword. The symbol side ties each Trends series back to the
+    tickers.txt universe (trend_points stores only the search term).
+    """
+    pairs: list[tuple[str, str]] = []
+    with open(path, encoding="utf-8-sig") as handle:  # -sig: tolerate a Notepad BOM
+        for lineno, line in enumerate(handle, 1):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            symbol, sep, keyword = stripped.partition(",")
+            if not sep or not symbol.strip() or not keyword.strip():
+                raise ValueError(
+                    f"{path}:{lineno}: expected 'TICKER,search term', got {stripped!r}"
+                )
+            pairs.append((symbol.strip().upper(), keyword.strip()))
+    return pairs
+
+
+def _is_stale(session: Session, keyword: str, geo: str, cutoff: datetime) -> bool:
+    """True when the stored series for (keyword, geo) is absent or older than the cutoff."""
+    newest = session.scalar(
+        select(func.max(TrendPoint.ts)).where(TrendPoint.keyword == keyword, TrendPoint.geo == geo)
+    )
+    if newest is None:
+        return True
+    if newest.tzinfo is None:  # SQLite drops tzinfo on readback (Postgres keeps it)
+        newest = newest.replace(tzinfo=UTC)
+    return newest <= cutoff
 
 
 def _to_utc(index_value: Any) -> datetime:

@@ -1,6 +1,6 @@
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pandas as pd
 import pytest
@@ -116,6 +116,110 @@ def test_trends_empty_frame_returns_zero(monkeypatch):
 def test_trends_requires_keyword():
     with pytest.raises(ValueError, match="keyword"):
         gt.GoogleTrendsConnector().fetch(keywords=[])
+
+
+def test_trends_skips_network_when_series_is_fresh(monkeypatch):
+    session_cm = _make_session_scope()
+    with session_cm() as session:
+        session.add(
+            TrendPoint(
+                keyword="AAPL stock",
+                geo="CA",
+                ts=datetime.now(UTC) - timedelta(days=2),
+                interest=50.0,
+            )
+        )
+    monkeypatch.setattr(gt, "get_session", session_cm)
+
+    def no_client():
+        raise AssertionError("fresh series must not hit the network")
+
+    monkeypatch.setattr(gt, "_trends_client", no_client)
+
+    count = gt.GoogleTrendsConnector().fetch(
+        keywords=["AAPL stock"], geo="CA", skip_if_newer_than_days=14
+    )
+    assert count == 0
+
+
+def test_trends_fetches_when_series_is_stale(monkeypatch):
+    session_cm = _make_session_scope()
+    with session_cm() as session:
+        session.add(
+            TrendPoint(
+                keyword="AAPL stock",
+                geo="CA",
+                ts=datetime.now(UTC) - timedelta(days=30),
+                interest=50.0,
+            )
+        )
+    frame = _frame("AAPL stock", [60.0], [False], ["2024-01-01"])
+    client = FakeTrendReq(frame)
+    monkeypatch.setattr(gt, "get_session", session_cm)
+    monkeypatch.setattr(gt, "_trends_client", lambda: client)
+
+    count = gt.GoogleTrendsConnector().fetch(
+        keywords=["AAPL stock"], geo="CA", skip_if_newer_than_days=14
+    )
+    assert count == 1
+    assert client.payloads  # network was used
+
+
+def test_trends_freshness_filter_drops_only_fresh_keywords(monkeypatch):
+    """Mixed batch: the fresh keyword is filtered out of the payload, the stale one fetched."""
+    session_cm = _make_session_scope()
+    with session_cm() as session:
+        session.add(
+            TrendPoint(
+                keyword="fresh", geo="CA", ts=datetime.now(UTC) - timedelta(days=1), interest=10.0
+            )
+        )
+    frame = _frame("stale", [30.0], [False], ["2024-01-01"])
+    client = FakeTrendReq(frame)
+    monkeypatch.setattr(gt, "get_session", session_cm)
+    monkeypatch.setattr(gt, "_trends_client", lambda: client)
+
+    gt.GoogleTrendsConnector().fetch(
+        keywords=["fresh", "stale"], geo="CA", skip_if_newer_than_days=14
+    )
+    assert client.payloads[0]["kw_list"] == ["stale"]
+
+
+def test_read_mapping_file_parses_pairs_and_skips_comments(tmp_path):
+    mapping = tmp_path / "m.txt"
+    mapping.write_text(
+        "# comment\n\nAAPL,Apple\nry , RBC \nTD,TD Bank\n",
+        encoding="utf-8",
+    )
+    assert gt.read_mapping_file(str(mapping)) == [
+        ("AAPL", "Apple"),
+        ("RY", "RBC"),
+        ("TD", "TD Bank"),
+    ]
+
+
+def test_read_mapping_file_allows_multiple_keywords_per_ticker(tmp_path):
+    """A ticker may map to several search terms (e.g. brand vs 'TICKER stock' variants);
+    each becomes its own series and joins back to the same symbol at feature time."""
+    mapping = tmp_path / "m.txt"
+    mapping.write_text("TSLA,TSLA stock\nTSLA,Tesla\n", encoding="utf-8")
+    assert gt.read_mapping_file(str(mapping)) == [
+        ("TSLA", "TSLA stock"),
+        ("TSLA", "Tesla"),
+    ]
+
+
+def test_read_mapping_file_tolerates_bom(tmp_path):
+    mapping = tmp_path / "m.txt"
+    mapping.write_bytes(b"\xef\xbb\xbfAAPL,Apple\n")  # Notepad-style UTF-8 BOM
+    assert gt.read_mapping_file(str(mapping)) == [("AAPL", "Apple")]
+
+
+def test_read_mapping_file_rejects_malformed_line(tmp_path):
+    mapping = tmp_path / "m.txt"
+    mapping.write_text("AAPL Apple\n", encoding="utf-8")  # missing comma
+    with pytest.raises(ValueError, match="TICKER,search term"):
+        gt.read_mapping_file(str(mapping))
 
 
 def test_trends_caps_at_five_keywords(monkeypatch):

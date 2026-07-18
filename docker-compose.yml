@@ -1,6 +1,6 @@
 # Local dev + single-VM cloud deployment.
 # Usual dev loop: `docker compose up -d db` and run the app natively.
-# The ib-gateway service needs TWS_USERID/TWS_PASSWORD in .env and a human to
+# The paper ib-gateway service needs TWS_USERID_PAPER/TWS_PASSWORD_PAPER in .env and a human to
 # approve 2FA periodically.
 
 services:
@@ -30,9 +30,10 @@ services:
     profiles: ["ibkr"] # opt-in: `docker compose --profile ibkr up -d`
     environment:
       # Empty credentials just make the gateway container fail its login loop;
-      # set TWS_USERID/TWS_PASSWORD in .env before using the ibkr profile.
-      TWS_USERID: ${TWS_USERID:-}
-      TWS_PASSWORD: ${TWS_PASSWORD:-}
+      # In single-session paper mode the image expects the generic names, so map the
+      # explicitly paper-scoped credentials from .env at the Compose boundary.
+      TWS_USERID: ${TWS_USERID_PAPER:-}
+      TWS_PASSWORD: ${TWS_PASSWORD_PAPER:-}
       TRADING_MODE: ${TRADING_MODE:-paper}
       READ_ONLY_API: ${READ_ONLY_API:-yes}
       TWOFA_TIMEOUT_ACTION: restart
@@ -47,7 +48,12 @@ services:
 
   app:
     build: .
-    profiles: ["app"] # opt-in while the service is still a skeleton
+    restart: unless-stopped
+    # The scheduler service: `docker compose --profile app up -d --build app` runs
+    # `ibkr-trader serve` (ingestion polls, Finnhub history backfill, sentiment scoring, raw
+    # pruning). Rebuild the image (--build) after code changes or they won't reach this
+    # container. Opt-in so the usual dev loop (db only + native app) stays unchanged.
+    profiles: ["app"]
     env_file:
       - path: .env
         required: false
@@ -58,6 +64,12 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    volumes:
+      # Universe/keyword files stay host-editable (not baked into the image): edit + restart
+      # the container, no rebuild needed. The image itself only carries code.
+      - ./tickers.txt:/app/tickers.txt:ro
+      - ./trends-keywords.txt:/app/trends-keywords.txt:ro
+      - ./news-keywords.txt:/app/news-keywords.txt:ro
     command: ["ibkr-trader", "serve"]
 
 volumes:

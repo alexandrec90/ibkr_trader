@@ -17,6 +17,7 @@ from bisect import bisect_right
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
+from typing import Any
 
 import numpy as np
 from sqlalchemy import select
@@ -326,7 +327,23 @@ def extract_tickers(text: str, known_symbols: set[str]) -> list[str]:
     return sorted(candidates & known_symbols)
 
 
+#: Lazy VADER singleton — the lexicon load happens once, on the first scoring call, so
+#: importing this module stays cheap for code paths that never score text.
+_vader_analyzer: Any = None
+
+
 def score_sentiment(text: str) -> float:
-    """Sentiment in [-1, 1]. TODO: start with VADER or a small finance-tuned model;
-    persist into news_articles.sentiment / social_posts.sentiment."""
-    raise NotImplementedError
+    """Sentiment in [-1, 1] via VADER's compound score; blank/empty text scores 0.0.
+
+    VADER is a general-purpose lexicon model — good enough as v1 for headline-grade text
+    (persisted into news_articles.sentiment / social_posts.sentiment by signals.sentiment);
+    revisit a finance-tuned model if the event study shows promise.
+    """
+    global _vader_analyzer
+    if not text or not text.strip():
+        return 0.0
+    if _vader_analyzer is None:
+        from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+
+        _vader_analyzer = SentimentIntensityAnalyzer()
+    return float(_vader_analyzer.polarity_scores(text)["compound"])

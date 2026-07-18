@@ -288,3 +288,56 @@ def test_throttle_spaces_out_consecutive_requests(monkeypatch):
     clock["now"] = 0.5
     yahoo._throttle()
     assert sleeps == [1.5]  # only 0.5s elapsed → wait the remaining 1.5s
+
+
+def test_tracked_yahoo_symbols_returns_only_yahoo_sourced_instruments():
+    session_cm = _make_session_scope()
+    with session_cm() as session:
+        tsx = Instrument(symbol="XEQT", exchange="TSX", currency="CAD")
+        us = Instrument(symbol="AAPL", exchange="SMART", currency="USD")
+        fmp_only = Instrument(symbol="NVDA", exchange="SMART", currency="USD")
+        bare = Instrument(symbol="ZZZ", exchange="SMART", currency="USD")  # no bars at all
+        session.add_all([tsx, us, fmp_only, bare])
+        session.flush()
+
+        def bar(instrument, source, day):
+            return PriceBar(
+                instrument_id=instrument.id,
+                ts=yahoo._daily_ts(day),
+                bar_size="1 day",
+                source=source,
+                what_to_show="ADJUSTED_LAST",
+                open=1.0,
+                high=1.0,
+                low=1.0,
+                close=1.0,
+                volume=1.0,
+            )
+
+        session.add_all(
+            [
+                bar(tsx, "yahoo", date(2024, 1, 2)),
+                bar(tsx, "yahoo", date(2024, 1, 3)),  # two bars, must not duplicate
+                bar(us, "yahoo", date(2024, 1, 2)),
+                bar(fmp_only, "fmp", date(2024, 1, 2)),
+            ]
+        )
+
+    with session_cm() as session:
+        symbols = yahoo_common.tracked_yahoo_symbols(session)
+
+    # TSX names get their Yahoo suffix back; fmp-only and bar-less instruments are excluded
+    assert symbols == ["AAPL", "XEQT.TO"]
+
+
+def test_yahoo_symbol_round_trips_instrument_defaults():
+    tsx = Instrument(symbol="XEQT", exchange="TSX", currency="CAD")
+    us = Instrument(symbol="AAPL", exchange="SMART", currency="USD")
+    assert yahoo_common.yahoo_symbol(tsx) == "XEQT.TO"
+    assert yahoo_common.yahoo_symbol(us) == "AAPL"
+    # inverse property: defaults(symbol(i)) == the instrument key
+    assert yahoo_common.instrument_defaults(yahoo_common.yahoo_symbol(tsx)) == (
+        "XEQT",
+        "TSX",
+        "CAD",
+    )

@@ -32,9 +32,11 @@ ibkr-trader --help
 
 ## IBKR paper trading
 
-1. Request a paper account in IBKR Client Portal.
+1. Find or activate the separate paper account in Client Portal under
+   `Settings → Account Configuration → Paper Trading Account`, then put its `DU...` ID in
+   `IBKR_PAPER_ACCOUNT`. Do not use a funded margin/RRSP/TFSA/FHSA account ID here.
 2. Either run IB Gateway natively (paper, port 4002) or `docker compose up -d ib-gateway`
-   (port 4004, needs `TWS_USERID`/`TWS_PASSWORD` in `.env`).
+   (port 4004, needs `TWS_USERID_PAPER`/`TWS_PASSWORD_PAPER` in `.env`).
 3. `ibkr-trader ibkr-check` — connects and prints account + a delayed quote.
 
 ## Layout
