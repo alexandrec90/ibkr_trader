@@ -636,3 +636,106 @@ def test_print_train_summary_prints_folds_and_overall_ic(capsys):
     assert "ml_lt v3" in out
     assert "1000 rows" in out
     assert "overall ridge: +0.070 ±0.080 (12)" in out
+
+
+# --- archive commands (local backend in tmp_path + in-memory DB) ------------------------
+
+
+def _patch_archive_settings(monkeypatch, tmp_path) -> None:
+    from ibkr_trader.config import Settings
+
+    settings = Settings(_env_file=None, archive_backend="local", archive_local_dir=str(tmp_path))
+    monkeypatch.setattr("ibkr_trader.archive.store.get_settings", lambda: settings)
+
+
+def test_archive_commands_refuse_unconfigured_backend():
+    result = runner.invoke(cli.app, ["archive", "status"])
+    assert result.exit_code == 1
+    assert "no archive backend configured" in _all_output(result)
+
+
+def test_archive_status_empty(monkeypatch, tmp_path):
+    _patch_archive_settings(monkeypatch, tmp_path)
+    result = runner.invoke(cli.app, ["archive", "status"])
+    assert result.exit_code == 0
+    assert "archive is empty" in result.output
+
+
+def test_archive_bars_roundtrip_via_cli(monkeypatch, tmp_path):
+    pytest.importorskip("pyarrow")
+    from ibkr_trader.db.models import Instrument, PriceBar
+
+    session = _make_session()
+    session.add(Instrument(id=1, symbol="AAPL", exchange="SMART", currency="USD"))
+    session.add(
+        PriceBar(
+            instrument_id=1,
+            ts=datetime(2020, 1, 15, 14, 30, tzinfo=UTC),
+            bar_size="1 min",
+            source="ibkr",
+            what_to_show="TRADES",
+            open=9.0,
+            high=11.0,
+            low=8.0,
+            close=10.0,
+            volume=100.0,
+        )
+    )
+    session.commit()
+    _patch_session(monkeypatch, session)
+    _patch_archive_settings(monkeypatch, tmp_path)
+
+    result = runner.invoke(cli.app, ["archive", "bars", "--older-than-days", "365"])
+    assert result.exit_code == 0
+    assert "archived 1 bars → deleted 1 local rows" in result.output
+    assert (tmp_path / "price_bars/bar_size=1_min/2020-01.parquet").is_file()
+
+    status = runner.invoke(cli.app, ["archive", "status"])
+    assert status.exit_code == 0
+    assert "1 object(s)" in status.output
+
+    restore = runner.invoke(
+        cli.app, ["archive", "restore-bars", "--start", "2020-01-01", "--end", "2020-12-31"]
+    )
+    assert restore.exit_code == 0
+    assert "restored 1 bars" in restore.output
+
+
+def test_archive_raw_roundtrip_via_cli(monkeypatch, tmp_path):
+    pytest.importorskip("pyarrow")
+    from ibkr_trader.db.models import NewsArticle
+
+    session = _make_session()
+    session.add(
+        NewsArticle(
+            source="finnhub",
+            external_id="n1",
+            published_at=datetime(2020, 3, 2, tzinfo=UTC),
+            title="t",
+            sentiment=0.5,
+            raw={"category": "company"},
+            fetched_at=datetime(2020, 3, 2, tzinfo=UTC),
+        )
+    )
+    session.commit()
+    _patch_session(monkeypatch, session)
+    _patch_archive_settings(monkeypatch, tmp_path)
+
+    result = runner.invoke(cli.app, ["archive", "raw"])
+    assert result.exit_code == 0
+    assert "archived 1 payloads → NULLed 1 local" in result.output
+
+    restore = runner.invoke(
+        cli.app, ["archive", "restore-raw", "--start", "2020-03-01", "--end", "2020-03-31"]
+    )
+    assert restore.exit_code == 0
+    assert "news_articles: refilled 1 payloads" in restore.output
+
+
+def test_archive_restore_bars_rejects_bad_date(monkeypatch, tmp_path):
+    _patch_archive_settings(monkeypatch, tmp_path)
+    result = runner.invoke(
+        cli.app, ["archive", "restore-bars", "--start", "not-a-date", "--end", "2020-12-31"]
+    )
+    assert result.exit_code != 0
+    assert "--start must be YYYY-MM-DD" in _plain(_all_output(result))

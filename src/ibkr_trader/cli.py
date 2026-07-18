@@ -19,6 +19,11 @@ train_app = typer.Typer(help="Train the ML long-term model on stored data (needs
 app.add_typer(train_app, name="train")
 snapshot_app = typer.Typer(help="Record and score broker-free forward strategy snapshots.")
 app.add_typer(snapshot_app, name="snapshot")
+archive_app = typer.Typer(
+    help="Offload cold data (intraday bars, scored raw payloads) to object storage as Parquet, "
+    "and restore it (docs/remote-archive.md; needs the [archive] extra + ARCHIVE_* in .env)."
+)
+app.add_typer(archive_app, name="archive")
 
 
 def _read_universe(universe_file: str, symbols: str) -> list[str]:
@@ -722,6 +727,142 @@ def _print_train_summary(metadata: dict) -> None:
         overall = validation.get("overall_ic", {}).get(name) or {}
         typer.echo(f"  overall {name}: {ic_cell(overall).strip()} mean ±std across test dates")
     typer.echo(f"  {metadata.get('note', '')}")
+
+
+def _archive_store():
+    """The configured backend, with config errors surfaced as clean CLI failures."""
+    from ibkr_trader.archive import store_from_settings
+
+    try:
+        return store_from_settings()
+    except RuntimeError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+
+
+def _parse_date(value: str, option: str):
+    from datetime import datetime
+
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError:
+        raise typer.BadParameter(f"{option} must be YYYY-MM-DD") from None
+
+
+@archive_app.command("bars")
+def archive_bars(
+    older_than_days: int = typer.Option(365, min=0, help="only archive bars older than this"),
+    bar_size: list[str] = typer.Option(
+        [], help='bar sizes to archive, e.g. "1 min" (default: every size except "1 day")'
+    ),
+):
+    """Upload old intraday bars as Parquet, verify the upload, then delete the local rows.
+    Daily bars never leave Postgres — they are the training/backtest input."""
+    from ibkr_trader.archive import archive_price_bars
+    from ibkr_trader.db.session import get_session
+
+    store = _archive_store()
+    try:
+        with get_session() as session:
+            result = archive_price_bars(
+                session, store, older_than_days=older_than_days, bar_sizes=bar_size or None
+            )
+    except (RuntimeError, ValueError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    for key, count in result.objects.items():
+        typer.echo(f"  {key} ← {count} bars")
+    typer.echo(f"archived {result.rows_archived} bars → deleted {result.rows_removed} local rows")
+
+
+@archive_app.command("raw")
+def archive_raw(
+    min_age_days: int = typer.Option(
+        0, min=0, help="fetched_at grace period before a scored raw blob is offloaded"
+    ),
+):
+    """Upload scored raw provider payloads (news/social) as Parquet, verify, then NULL them
+    locally. The rows themselves (title, body, sentiment, hashed author) stay in Postgres."""
+    from ibkr_trader.archive import archive_raw_payloads
+    from ibkr_trader.db.session import get_session
+
+    store = _archive_store()
+    try:
+        with get_session() as session:
+            result = archive_raw_payloads(session, store, min_age_days=min_age_days)
+    except (RuntimeError, ValueError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    for key, count in result.objects.items():
+        typer.echo(f"  {key} ← {count} payloads")
+    typer.echo(f"archived {result.rows_archived} payloads → NULLed {result.rows_removed} local")
+
+
+@archive_app.command("restore-bars")
+def archive_restore_bars(
+    start: str = typer.Option(..., help="restore window start YYYY-MM-DD"),
+    end: str = typer.Option(..., help="restore window end YYYY-MM-DD"),
+    bar_size: list[str] = typer.Option([], help="bar sizes to restore (default: all archived)"),
+):
+    """Pull archived bars for a date range back into Postgres (idempotent), e.g. before
+    training an intraday model — the trainer itself stays DB-only."""
+    from ibkr_trader.archive import restore_price_bars
+    from ibkr_trader.db.session import get_session
+
+    store = _archive_store()
+    try:
+        with get_session() as session:
+            count = restore_price_bars(
+                session,
+                store,
+                start=_parse_date(start, "--start"),
+                end=_parse_date(end, "--end"),
+                bar_sizes=bar_size or None,
+            )
+    except (RuntimeError, ValueError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(f"restored {count} bars")
+
+
+@archive_app.command("restore-raw")
+def archive_restore_raw(
+    start: str = typer.Option(..., help="restore window start YYYY-MM-DD"),
+    end: str = typer.Option(..., help="restore window end YYYY-MM-DD"),
+):
+    """Refill NULLed raw payloads from the archive for reprocessing (idempotent; never
+    overwrites a populated payload, never inserts rows)."""
+    from ibkr_trader.archive import restore_raw_payloads
+    from ibkr_trader.db.session import get_session
+
+    store = _archive_store()
+    try:
+        with get_session() as session:
+            counts = restore_raw_payloads(
+                session, store, start=_parse_date(start, "--start"), end=_parse_date(end, "--end")
+            )
+    except (RuntimeError, ValueError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    for table, count in counts.items():
+        typer.echo(f"  {table}: refilled {count} payloads")
+
+
+@archive_app.command("status")
+def archive_status():
+    """List archived objects and their sizes."""
+    try:
+        objects = _archive_store().list_objects()
+    except Exception as exc:  # backend/network problems should print, not traceback
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    if not objects:
+        typer.echo("archive is empty")
+        return
+    total = sum(obj.size for obj in objects)
+    for obj in objects:
+        typer.echo(f"  {obj.size / 1_048_576:>9.2f} MiB  {obj.key}")
+    typer.echo(f"{len(objects)} object(s), {total / 1_048_576:.2f} MiB total")
 
 
 @app.command("score-sentiment")

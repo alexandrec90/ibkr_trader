@@ -24,13 +24,13 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
 
-      - name: Sync environment (locked, dev group + ml extra)
+      - name: Sync environment (locked, dev group + ml and archive extras)
         # --frozen fails the build if uv.lock is out of date with pyproject.toml, so the
-        # committed lockfile is authoritative. [ml] matters: the ML tests importorskip
-        # lightgbm/scikit-learn, so without it they silently skip and CI green stops meaning
-        # "the ML path works". The dev group installs by default.
+        # committed lockfile is authoritative. [ml] and [archive] matter: their tests
+        # importorskip optional dependencies, so without the extras CI can silently skip them.
+        # The dev group installs by default.
         # Python comes from .python-version (3.12); numpy's stubs need >= 3.12 to parse.
-        run: uv sync --frozen --extra ml
+        run: uv sync --frozen --extra ml --extra archive
 
       - name: Ruff lint
         run: uv run ruff check src tests

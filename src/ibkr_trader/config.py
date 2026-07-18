@@ -99,6 +99,18 @@ class Settings(BaseSettings):
     benchmark_symbol: str = "XEQT"  # buy-and-hold comparison
     ml_lt_model_dir: str = "models/ml_lt"  # trained ml_lt artifacts (<vN>/ dirs + latest marker)
 
+    # Cold-data archive (docs/remote-archive.md): intraday bars + scored raw payloads are
+    # offloaded as Parquet to object storage to keep the local DB small. "s3" covers any
+    # S3-compatible service (Cloudflare R2, Backblaze B2, MinIO); "local" is a plain directory.
+    archive_backend: Literal["none", "local", "s3"] = "none"
+    archive_local_dir: str = "archive"
+    archive_s3_bucket: str = ""
+    archive_s3_endpoint_url: str = ""  # e.g. https://<account-id>.r2.cloudflarestorage.com
+    archive_s3_region: str = "auto"  # R2 uses the literal region "auto"
+    archive_s3_access_key_id: str = ""
+    archive_s3_secret_access_key: str = ""
+    archive_s3_prefix: str = ""  # optional key prefix inside the bucket
+
     def configured_live_accounts(self) -> dict[AccountType, str]:
         """Return non-empty funded-account references keyed by the strategy account type.
 

@@ -53,6 +53,9 @@ and review it before upgrading.
 - `src/ibkr_trader/execution/` — `Broker` ABC → `IbkrBroker` (ib_async), `risk.py` pre-trade
   checks.
 - `src/ibkr_trader/db/` — SQLAlchemy 2.0 models; migrations via Alembic (`migrations/`).
+- `src/ibkr_trader/archive/` — cold-data offload to object storage as Parquet (intraday
+  bars, scored raw payloads) with verify-before-delete; daily bars and orders/executions
+  never leave Postgres. Needs the `[archive]` extra. See [docs/remote-archive.md](docs/remote-archive.md).
 - Postgres is the single source of truth; models/backtests never call external APIs.
 
 ## Conventions
