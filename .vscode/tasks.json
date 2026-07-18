@@ -86,8 +86,10 @@
     {
       "label": "test",
       "type": "process",
-      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "command": "uv",
       "args": [
+        "run",
+        "python",
         "${workspaceFolder}\\.vscode\\task_artifact_runner.py",
         "--artifact",
         "test",
@@ -106,8 +108,10 @@
     {
       "label": "lint",
       "type": "process",
-      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "command": "uv",
       "args": [
+        "run",
+        "python",
         "${workspaceFolder}\\.vscode\\task_artifact_runner.py",
         "--artifact",
         "lint",
@@ -129,8 +133,10 @@
     {
       "label": "format: check",
       "type": "process",
-      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "command": "uv",
       "args": [
+        "run",
+        "python",
         "${workspaceFolder}\\.vscode\\task_artifact_runner.py",
         "--artifact",
         "format-check",
@@ -152,8 +158,10 @@
     {
       "label": "typecheck",
       "type": "process",
-      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "command": "uv",
       "args": [
+        "run",
+        "python",
         "${workspaceFolder}\\.vscode\\task_artifact_runner.py",
         "--artifact",
         "typecheck",
