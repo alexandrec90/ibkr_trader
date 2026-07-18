@@ -23,12 +23,12 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Install (editable + dev and ml extras)
-        # [ml] matters: the ML tests importorskip lightgbm/scikit-learn, so without it they
-        # silently skip and CI green stops meaning "the ML path works".
+      - name: Install (editable + dev, ml and archive extras)
+        # [ml] and [archive] matter: their tests importorskip the extras, so without them they
+        # silently skip and CI green stops meaning "the ML and archive paths work".
         run: |
           python -m pip install --upgrade pip
-          pip install -e .[dev,ml]
+          pip install -e .[dev,ml,archive]
 
       - name: Ruff lint
         run: ruff check src tests
