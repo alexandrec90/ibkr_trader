@@ -17,27 +17,29 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v6
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
         with:
-          # Matches [tool.mypy] python_version; numpy's stubs need >= 3.12 to parse.
-          python-version: "3.12"
-          cache: pip
+          # Cache the uv download + resolver cache, keyed on the committed lockfile.
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
 
-      - name: Install (editable + dev, ml and archive extras)
-        # [ml] and [archive] matter: their tests importorskip the extras, so without them they
-        # silently skip and CI green stops meaning "the ML and archive paths work".
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e .[dev,ml,archive]
+      - name: Sync environment (locked, dev group + ml and archive extras)
+        # --frozen fails the build if uv.lock is out of date with pyproject.toml, so the
+        # committed lockfile is authoritative. [ml] and [archive] matter: their tests
+        # importorskip optional dependencies, so without the extras CI can silently skip them.
+        # The dev group installs by default.
+        # Python comes from .python-version (3.12); numpy's stubs need >= 3.12 to parse.
+        run: uv sync --frozen --extra ml --extra archive
 
       - name: Ruff lint
-        run: ruff check src tests
+        run: uv run ruff check src tests
 
       - name: Ruff format
-        run: ruff format --check src tests
+        run: uv run ruff format --check src tests
 
       - name: Mypy
-        run: mypy src
+        run: uv run mypy src
 
       - name: Pytest (with coverage floor — fail_under lives in pyproject.toml)
-        run: pytest -q --cov=ibkr_trader
+        run: uv run pytest -q --cov=ibkr_trader

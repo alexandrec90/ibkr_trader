@@ -54,12 +54,12 @@ def test_local_store_empty_root_lists_nothing(tmp_path):
 # --- S3ObjectStore (fake client) ------------------------------------------------------
 
 
-class _NoSuchKey(Exception):
-    pass
+class _S3ClientError(Exception):
+    """Minimal botocore ClientError shape without depending on the optional package."""
 
-
-class _ClientError(Exception):
-    pass
+    def __init__(self, code: str, key: str):
+        super().__init__(f"{code}: {key}")
+        self.response = {"Error": {"Code": code}}
 
 
 class _FakeBody:
@@ -70,15 +70,8 @@ class _FakeBody:
         return self._data
 
 
-class _FakeExceptions:
-    NoSuchKey = _NoSuchKey
-    ClientError = _ClientError
-
-
 class FakeS3Client:
     """Just enough of boto3's S3 client for S3ObjectStore, incl. truncated listing."""
-
-    exceptions = _FakeExceptions
 
     def __init__(self, page_size: int = 2):
         self.blobs: dict[tuple[str, str], bytes] = {}
@@ -89,12 +82,12 @@ class FakeS3Client:
 
     def get_object(self, Bucket, Key):
         if (Bucket, Key) not in self.blobs:
-            raise _NoSuchKey(Key)
+            raise _S3ClientError("NoSuchKey", Key)
         return {"Body": _FakeBody(self.blobs[(Bucket, Key)])}
 
     def head_object(self, Bucket, Key):
         if (Bucket, Key) not in self.blobs:
-            raise _ClientError(Key)
+            raise _S3ClientError("404", Key)
 
     def list_objects_v2(self, Bucket, Prefix, ContinuationToken=None):
         keys = sorted(
@@ -126,6 +119,21 @@ def test_s3_store_roundtrip_with_prefix():
 def test_s3_store_missing_key_raises_keyerror():
     with pytest.raises(KeyError):
         S3ObjectStore(FakeS3Client(), "bucket").get_bytes("missing.parquet")
+
+
+def test_s3_store_does_not_hide_non_missing_client_errors():
+    class AccessDeniedClient(FakeS3Client):
+        def get_object(self, Bucket, Key):
+            raise _S3ClientError("AccessDenied", Key)
+
+        def head_object(self, Bucket, Key):
+            raise _S3ClientError("AccessDenied", Key)
+
+    store = S3ObjectStore(AccessDeniedClient(), "bucket")
+    with pytest.raises(_S3ClientError, match="AccessDenied"):
+        store.get_bytes("private.parquet")
+    with pytest.raises(_S3ClientError, match="AccessDenied"):
+        store.exists("private.parquet")
 
 
 def test_s3_store_listing_paginates_and_strips_prefix():

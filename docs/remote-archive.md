@@ -30,7 +30,7 @@ body, sentiment, hashed author) always stays in Postgres; only the payload blob 
 Install the extra and configure a backend in `.env` (see `.env.example`):
 
 ```bash
-pip install -e .[archive]
+uv sync --extra archive
 ```
 
 - `ARCHIVE_BACKEND=s3` — any S3-compatible service. Cloudflare R2 (10 GB free, **zero

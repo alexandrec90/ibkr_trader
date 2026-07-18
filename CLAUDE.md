@@ -22,16 +22,21 @@ Naming: the repo folder is `ibkr_trader`; the Python package is `ibkr_trader`.
 
 ## Commands
 
+Dependencies are managed with **uv** (lockfile: `uv.lock`, Python pinned in `.python-version`).
+
 ```bash
-pip install -e .[dev]          # setup (venv recommended)
+uv sync                        # setup: create .venv, install locked deps + dev group
+uv sync --extra ml             # + ML training extras (lightgbm/scikit-learn)
+uv add <pkg>                   # add a runtime dep (updates pyproject.toml + uv.lock)
+uv lock                        # re-resolve after editing pyproject.toml by hand
 docker compose up -d db        # postgres only (usual dev loop)
 docker compose --profile ibkr up -d   # + IB Gateway (needs TWS_USERID/PASSWORD in .env)
-pytest                         # tests
-ruff check src tests && ruff format --check src tests
-mypy src
-alembic upgrade head           # apply migrations
-alembic revision --autogenerate -m "msg"
-ibkr-trader --help             # CLI: ingest / backtest / ibkr-check / serve
+uv run pytest                  # tests
+uv run ruff check src tests && uv run ruff format --check src tests
+uv run mypy src
+uv run alembic upgrade head    # apply migrations
+uv run alembic revision --autogenerate -m "msg"
+uv run ibkr-trader --help      # CLI: ingest / backtest / ibkr-check / serve
 ```
 
 The initial schema migration exists and is applied to the dev DB (host port **5433**; 5432 is

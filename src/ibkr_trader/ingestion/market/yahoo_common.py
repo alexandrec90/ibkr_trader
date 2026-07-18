@@ -16,7 +16,7 @@ from typing import TypeVar, cast
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ibkr_trader.db.models import Instrument
+from ibkr_trader.db.models import Instrument, PriceBar
 
 #: Minimum spacing between Yahoo requests. There is no documented quota — Yahoo just
 #: rate-limits/bans abusive IPs, so stay far below anything that looks automated-hostile.
@@ -87,6 +87,28 @@ def get_instrument(session: Session, yahoo_symbol: str) -> Instrument | None:
             Instrument.currency == currency,
         )
     )
+
+
+def yahoo_symbol(instrument: Instrument) -> str:
+    """Inverse of ``instrument_defaults``: the Yahoo ticker for a stored instrument."""
+    return f"{instrument.symbol}.TO" if instrument.exchange == "TSX" else instrument.symbol
+
+
+def tracked_yahoo_symbols(session: Session) -> list[str]:
+    """Yahoo tickers of every instrument that already has yahoo-source price bars.
+
+    This is the "refresh what we track" universe for the scheduled price poll: it never
+    guesses ticker formats or reads universe files — an instrument enters it via a first
+    manual/batch Yahoo ingest and stays current from then on.
+    """
+    instruments = session.scalars(
+        select(Instrument)
+        .join(PriceBar, PriceBar.instrument_id == Instrument.id)
+        .where(PriceBar.source == "yahoo")
+        .distinct()
+        .order_by(Instrument.symbol)
+    ).all()
+    return [yahoo_symbol(instrument) for instrument in instruments]
 
 
 def run_within_timeout(work: Callable[[], T], *, timeout: float, label: str) -> T:

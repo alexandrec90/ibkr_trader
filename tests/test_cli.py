@@ -234,6 +234,53 @@ def test_ingest_finnhub_news_reports_count(monkeypatch):
     assert "upserted 7 articles" in result.output
 
 
+def test_ingest_finnhub_backfill_delegates_to_scheduler_helper(monkeypatch):
+    import ibkr_trader.scheduler as scheduler
+
+    seen = {}
+
+    def fake_backfill(universe_file, **kwargs):
+        seen["file"] = universe_file
+        seen["kwargs"] = kwargs
+        return 9
+
+    monkeypatch.setattr(scheduler, "backfill_finnhub_news", fake_backfill)
+    result = runner.invoke(
+        cli.app,
+        ["ingest", "finnhub-backfill", "--days", "120", "--max-requests", "50"],
+    )
+    assert result.exit_code == 0
+    assert "upserted 9 articles" in result.output
+    assert seen["file"] == "tickers.txt"
+    assert seen["kwargs"]["backfill_days"] == 120
+    assert seen["kwargs"]["max_requests"] == 50
+
+
+def test_ingest_finnhub_backfill_reports_error_cleanly(monkeypatch):
+    import ibkr_trader.scheduler as scheduler
+
+    def boom(universe_file, **kwargs):
+        raise RuntimeError("FINNHUB_KEY is not set (see .env.example)")
+
+    monkeypatch.setattr(scheduler, "backfill_finnhub_news", boom)
+    result = runner.invoke(cli.app, ["ingest", "finnhub-backfill"])
+    assert result.exit_code == 1
+    assert "FINNHUB_KEY" in result.output
+
+
+def test_score_sentiment_command_reports_counts(monkeypatch):
+    import ibkr_trader.scheduler as scheduler
+
+    monkeypatch.setattr(
+        scheduler,
+        "run_sentiment_scoring",
+        lambda: {"news_articles": 5, "social_posts": 2},
+    )
+    result = runner.invoke(cli.app, ["score-sentiment"])
+    assert result.exit_code == 0
+    assert "news_articles" in result.output
+
+
 def test_ingest_finnhub_news_batch_uses_universe_file(monkeypatch):
     import ibkr_trader.scheduler as scheduler
 
@@ -242,22 +289,192 @@ def test_ingest_finnhub_news_batch_uses_universe_file(monkeypatch):
     def fake_poll(universe_file, spacing_seconds, **kw):
         seen["file"] = universe_file
         seen["spacing"] = spacing_seconds
+        seen["date_from"] = kw.get("date_from")
         return 42
 
     monkeypatch.setattr(scheduler, "poll_finnhub_news", fake_poll)
     result = runner.invoke(
         cli.app,
-        ["ingest", "finnhub-news", "--universe-file", "tickers-fmp.txt", "--spacing-seconds", "0"],
+        [
+            "ingest",
+            "finnhub-news",
+            "--universe-file",
+            "tickers.txt",
+            "--spacing-seconds",
+            "0",
+            "--date-from",
+            "2025-07-16",
+        ],
     )
     assert result.exit_code == 0
     assert "upserted 42 articles" in result.output
-    assert seen == {"file": "tickers-fmp.txt", "spacing": 0.0}
+    assert seen == {"file": "tickers.txt", "spacing": 0.0, "date_from": "2025-07-16"}
+
+
+def test_ingest_news_reports_error_cleanly(monkeypatch):
+    """Missing key must exit 1 with a readable message, not a traceback."""
+    from ibkr_trader.ingestion.news import newsapi
+
+    def boom(self, **kwargs):
+        raise RuntimeError("NEWSAPI_KEY is not set (see .env.example)")
+
+    monkeypatch.setattr(newsapi.NewsApiConnector, "fetch", boom)
+    result = runner.invoke(cli.app, ["ingest", "news", "--query", "Nvidia"])
+    assert result.exit_code == 1
+    assert "NEWSAPI_KEY" in result.output
+
+
+def test_ingest_news_flows_options_into_fetch(monkeypatch):
+    from ibkr_trader.ingestion.news import newsapi
+
+    seen = {}
+
+    def fake_fetch(self, **kwargs):
+        seen.update(kwargs)
+        return 5
+
+    monkeypatch.setattr(newsapi.NewsApiConnector, "fetch", fake_fetch)
+    result = runner.invoke(
+        cli.app,
+        [
+            "ingest",
+            "news",
+            "--query",
+            "Nvidia",
+            "--symbol",
+            "NVDA",
+            "--date-from",
+            "2026-06-20",
+            "--date-to",
+            "2026-07-15",
+        ],
+    )
+    assert result.exit_code == 0
+    assert "upserted 5 articles" in result.output
+    assert seen == {
+        "query": "Nvidia",
+        "symbol": "NVDA",
+        "date_from": "2026-06-20",
+        "date_to": "2026-07-15",
+    }
+
+
+def test_ingest_news_empty_query_exits_nonzero(monkeypatch):
+    from ibkr_trader.ingestion.news import newsapi
+
+    def boom(self, **kwargs):
+        raise ValueError("query is required")
+
+    monkeypatch.setattr(newsapi.NewsApiConnector, "fetch", boom)
+    result = runner.invoke(cli.app, ["ingest", "news"])
+    assert result.exit_code == 1
+    assert "query is required" in result.output
+
+
+def test_ingest_news_batch_uses_mapping_file(monkeypatch, tmp_path):
+    import ibkr_trader.scheduler as scheduler
+
+    mapping = tmp_path / "news.txt"
+    mapping.write_text("AAPL,Apple Inc\nNVDA,Nvidia\n", encoding="utf-8")
+    seen = {}
+
+    def fake_poll(pairs, refresh_after_hours=0.0, max_requests=0):
+        seen.update(pairs=pairs, refresh=refresh_after_hours, budget=max_requests)
+        return 11
+
+    monkeypatch.setattr(scheduler, "poll_newsapi_pairs", fake_poll)
+    result = runner.invoke(cli.app, ["ingest", "news", "--mapping-file", str(mapping)])
+    assert result.exit_code == 0
+    assert "upserted 11 articles" in result.output
+    assert seen["pairs"] == [("AAPL", "Apple Inc"), ("NVDA", "Nvidia")]
+    assert seen["refresh"] == 12.0  # freshness skip on by default
+    assert seen["budget"] == 90  # free tier is 100/day — leave headroom
+
+
+def test_ingest_news_malformed_mapping_is_bad_parameter(tmp_path):
+    mapping = tmp_path / "news.txt"
+    mapping.write_text("AAPL Apple\n", encoding="utf-8")  # missing comma
+    result = runner.invoke(cli.app, ["ingest", "news", "--mapping-file", str(mapping)])
+    assert result.exit_code != 0
+    assert "TICKER,search term" in _plain(result.output)
+
+
+def test_ingest_prices_batch_is_alpha_vantage_only():
+    result = runner.invoke(
+        cli.app, ["ingest", "prices", "--universe-file", "tickers-av.txt", "--source", "fmp"]
+    )
+    assert result.exit_code == 2
+    assert "alpha_vantage-only" in _plain(_all_output(result))
+
+
+def test_ingest_prices_batch_flows_into_fetch_universe(monkeypatch, tmp_path):
+    from ibkr_trader.ingestion.market import alpha_vantage
+
+    tickers = tmp_path / "t.txt"
+    tickers.write_text("# comment\nnvda\nmsft\n", encoding="utf-8")
+    seen = {}
+
+    def fake_fetch_universe(symbols, refresh_after_days=0.0, max_requests=0):
+        seen.update(symbols=symbols, refresh=refresh_after_days, budget=max_requests)
+        return 200
+
+    monkeypatch.setattr(alpha_vantage, "fetch_universe", fake_fetch_universe)
+    result = runner.invoke(
+        cli.app,
+        [
+            "ingest",
+            "prices",
+            "--universe-file",
+            str(tickers),
+            "--source",
+            "alpha_vantage",
+        ],
+    )
+    assert result.exit_code == 0
+    assert "upserted 200 bars" in result.output
+    assert seen["symbols"] == ["NVDA", "MSFT"]
+    assert seen["refresh"] == 1.0  # same-day reruns are free by default
+    assert seen["budget"] == 20  # free tier is ~25/day — leave headroom
+
+
+def test_ingest_prices_requires_symbol_or_file():
+    result = runner.invoke(cli.app, ["ingest", "prices"])
+    assert result.exit_code != 0
+    assert "SYMBOL or --universe-file" in _plain(_all_output(result))
 
 
 def test_ingest_finnhub_news_requires_symbol_or_file():
     result = runner.invoke(cli.app, ["ingest", "finnhub-news"])
     assert result.exit_code != 0
     assert "SYMBOL or --universe-file" in _plain(result.output)
+
+
+def test_ingest_trends_batch_uses_mapping_file(monkeypatch, tmp_path):
+    import ibkr_trader.scheduler as scheduler
+
+    mapping = tmp_path / "m.txt"
+    mapping.write_text("AAPL,Apple\nNVDA,Nvidia\n", encoding="utf-8")
+    seen = {}
+
+    def fake_poll(pairs, geo="", timeframe="", refresh_after_days=None):
+        seen.update(pairs=pairs, geo=geo, timeframe=timeframe, refresh=refresh_after_days)
+        return 99
+
+    monkeypatch.setattr(scheduler, "poll_trends_pairs", fake_poll)
+    result = runner.invoke(cli.app, ["ingest", "trends", "--mapping-file", str(mapping)])
+    assert result.exit_code == 0
+    assert "upserted 99 trend points" in result.output
+    assert seen["pairs"] == [("AAPL", "Apple"), ("NVDA", "Nvidia")]
+    assert seen["timeframe"] == "today 5-y"  # batch default = 5y weekly backfill
+    assert seen["refresh"] == 14.0  # freshness skip on by default
+
+
+def test_ingest_trends_malformed_mapping_is_bad_parameter(tmp_path):
+    mapping = tmp_path / "m.txt"
+    mapping.write_text("AAPL Apple\n", encoding="utf-8")  # missing comma
+    result = runner.invoke(cli.app, ["ingest", "trends", "--mapping-file", str(mapping)])
+    assert result.exit_code != 0
+    assert "TICKER,search term" in _plain(result.output)
 
 
 # --- backtest compare (in-memory DB) ---------------------------------------------------

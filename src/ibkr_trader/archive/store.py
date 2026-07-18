@@ -33,6 +33,16 @@ class ObjectStore(Protocol):
     def list_objects(self, prefix: str = "") -> list[StoredObject]: ...
 
 
+def _is_missing_s3_object(exc: Exception) -> bool:
+    """Return whether a botocore-style client error represents a missing object."""
+    response = getattr(exc, "response", None)
+    if not isinstance(response, dict):
+        return False
+    error = response.get("Error", {})
+    code = error.get("Code") if isinstance(error, dict) else None
+    return str(code) in {"404", "NoSuchKey", "NotFound"}
+
+
 class LocalDirStore:
     """Archive to a plain directory (external drive, NAS mount) — also the test backend."""
 
@@ -92,7 +102,7 @@ class S3ObjectStore:
         except ImportError as exc:  # pragma: no cover - exercised only without the extra
             raise RuntimeError(
                 "the s3 archive backend needs the archive extra — "
-                "install with: pip install -e .[archive]"
+                "install with: uv sync --extra archive"
             ) from exc
         client = boto3.client(
             "s3",
@@ -112,15 +122,19 @@ class S3ObjectStore:
     def get_bytes(self, key: str) -> bytes:
         try:
             response = self.client.get_object(Bucket=self.bucket, Key=self._key(key))
-        except self.client.exceptions.NoSuchKey:
-            raise KeyError(key) from None
+        except Exception as exc:
+            if _is_missing_s3_object(exc):
+                raise KeyError(key) from None
+            raise
         return response["Body"].read()
 
     def exists(self, key: str) -> bool:
         try:
             self.client.head_object(Bucket=self.bucket, Key=self._key(key))
-        except self.client.exceptions.ClientError:
-            return False
+        except Exception as exc:
+            if _is_missing_s3_object(exc):
+                return False
+            raise
         return True
 
     def list_objects(self, prefix: str = "") -> list[StoredObject]:

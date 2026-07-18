@@ -1,0 +1,8 @@
+{
+  // uv creates the project venv at .venv in the workspace root, so point VS Code there.
+  // This makes the Python extension auto-select it on a fresh clone (no manual
+  // "Python: Select Interpreter" step) and, with activateEnvironment, auto-activate it
+  // in every new integrated terminal.
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv",
+  "python.terminal.activateEnvironment": true
+}

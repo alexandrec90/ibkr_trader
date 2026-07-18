@@ -34,7 +34,7 @@ def _require_pyarrow() -> None:
         import pyarrow  # noqa: F401
     except ImportError as exc:  # pragma: no cover - exercised only without the extra
         raise RuntimeError(
-            "archiving needs the archive extra — install with: pip install -e .[archive]"
+            "archiving needs the archive extra — install with: uv sync --extra archive"
         ) from exc
 
 
@@ -61,7 +61,7 @@ def key_tuples(frame: pd.DataFrame, columns: Sequence[str]) -> set[tuple]:
     """The frame's natural-key tuples, timestamps normalized so DB and Parquet rows match."""
     keys: set[tuple] = set()
     for row in frame[list(columns)].itertuples(index=False):
-        keys.add(tuple(as_utc(v) if isinstance(v, datetime | pd.Timestamp) else v for v in row))
+        keys.add(tuple(as_utc(v) if isinstance(v, (datetime, pd.Timestamp)) else v for v in row))
     return keys
 
 

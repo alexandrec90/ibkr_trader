@@ -1,0 +1,37 @@
+# NewsAPI search queries, tied to tickers.txt symbols. Format: TICKER,search query
+# Used by: ingest news --mapping-file news-keywords.txt  (VS Code task "ingest: newsapi
+# headlines (news-keywords.txt)").
+#
+# Free-tier math: ~100 requests/day, one request per line per run, articles delayed 24 h.
+# The batch skips symbols already fetched in the last 12 h and stops at a 90-request
+# budget, so this file can safely hold up to ~90 lines — but every line still costs a
+# request when stale, so add deliberately.
+#
+# Queries support NewsAPI syntax (quoted phrases, AND/OR/NOT). Plain company names work,
+# but tune ambiguous ones — e.g. 'Visa' also matches travel-visa stories; check what a
+# query returns on newsapi.org before trusting its sentiment downstream.
+
+AAPL,Apple Inc
+MSFT,Microsoft
+NVDA,Nvidia
+AMZN,Amazon
+GOOGL,Google
+META,Meta Platforms
+TSLA,Tesla
+AMD,AMD
+NFLX,Netflix
+SHOP,Shopify
+INTC,Intel
+DIS,Disney
+COST,Costco
+WMT,Walmart
+SBUX,Starbucks
+NKE,Nike
+MCD,McDonald's
+JPM,JPMorgan
+V,Visa Inc
+RY,Royal Bank of Canada
+TD,TD Bank
+BNS,Scotiabank
+ENB,Enbridge
+SU,Suncor
