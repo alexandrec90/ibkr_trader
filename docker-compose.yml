@@ -1,7 +1,15 @@
 # Local dev + single-VM cloud deployment.
 # Usual dev loop: `docker compose up -d db` and run the app natively.
+#
+# The explicit project name below pins the Compose project regardless of the checkout
+# directory. Without it, running `docker compose up` from a git worktree (directory name
+# `ibkr_trader-a` etc.) would derive a different project name and silently create a second
+# Postgres container + pgdata volume and collide on host port 5433. With it, every worktree
+# resolves to the same shared infra containers. See docs/parallel-worktrees.md.
 # The paper ib-gateway service needs TWS_USERID_PAPER/TWS_PASSWORD_PAPER in .env and a human to
 # approve 2FA periodically.
+
+name: ibkr_trader
 
 services:
   db:
