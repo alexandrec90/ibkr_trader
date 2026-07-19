@@ -291,6 +291,53 @@ def test_train_run_flows_history_floor_into_limits(monkeypatch, tmp_path):
     assert seen["n_trials"] == 9
 
 
+def test_train_run_can_project_artifact_to_local_mlflow(monkeypatch, tmp_path):
+    from ibkr_trader.db import session as session_mod
+    from ibkr_trader.signals import tracking as tracking_mod
+    from ibkr_trader.signals import train as train_mod
+
+    seen = {}
+
+    @contextmanager
+    def fake_session():
+        yield object()
+
+    artifact_dir = tmp_path / "models" / "ml_lt" / "v1"
+
+    def fake_train(*args, **kwargs):
+        return SimpleNamespace(metadata={}, artifact_dir=artifact_dir)
+
+    def fake_track(path, tracking_dir):
+        seen["artifact_dir"] = path
+        seen["tracking_dir"] = tracking_dir
+        return SimpleNamespace(run_id="run-123", tracking_uri=tracking_dir.resolve().as_uri())
+
+    monkeypatch.setattr(session_mod, "get_session", fake_session)
+    monkeypatch.setattr(train_mod, "train_from_db", fake_train)
+    monkeypatch.setattr(tracking_mod, "log_training_run", fake_track)
+    monkeypatch.setattr(cli, "_print_train_summary", lambda metadata: None)
+    mlflow_dir = tmp_path / "tracking"
+    result = runner.invoke(
+        cli.app,
+        [
+            "train",
+            "run",
+            "--end",
+            "2025-01-01",
+            "--symbols",
+            "AAPL",
+            "--track-mlflow",
+            "--mlflow-dir",
+            str(mlflow_dir),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert seen == {"artifact_dir": artifact_dir, "tracking_dir": mlflow_dir}
+    assert "MLflow: run run-123" in result.output
+    assert mlflow_dir.resolve().as_uri() in result.output
+
+
 def test_train_run_rejects_unknown_search():
     result = runner.invoke(
         cli.app,

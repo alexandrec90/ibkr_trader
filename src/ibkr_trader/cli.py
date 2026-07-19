@@ -779,6 +779,12 @@ def train_run(
         TrainSearch.optuna, help="capacity search strategy (optuna is deterministic TPE)"
     ),
     n_trials: int = typer.Option(50, min=1, help="Optuna trial budget (ignored by grid)"),
+    track_mlflow: bool = typer.Option(
+        False,
+        "--track-mlflow",
+        help="project metadata into a local MLflow file store (needs [tracking])",
+    ),
+    mlflow_dir: str = typer.Option("mlruns", help="local MLflow store used with --track-mlflow"),
 ):
     """Build the supervised dataset, walk-forward validate (LightGBM + linear floor), fit the
     final model and write a versioned artifact under models/ml_lt/."""
@@ -787,6 +793,7 @@ def train_run(
 
     from ibkr_trader.db.session import get_session
     from ibkr_trader.signals.eligibility import EligibilityLimits
+    from ibkr_trader.signals.tracking import log_training_run
     from ibkr_trader.signals.train import train_from_db
 
     start_dt = datetime.strptime(start, "%Y-%m-%d").replace(tzinfo=UTC)
@@ -806,12 +813,17 @@ def train_run(
                 search=search.value,
                 n_trials=n_trials,
             )
-    except (RuntimeError, ValueError) as exc:
+        tracking_run = (
+            log_training_run(result.artifact_dir, Path(mlflow_dir)) if track_mlflow else None
+        )
+    except (FileNotFoundError, RuntimeError, ValueError) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1) from None
 
     _print_train_summary(result.metadata)
     typer.echo(f"\nartifact: {result.artifact_dir}")
+    if tracking_run is not None:
+        typer.echo(f"MLflow: run {tracking_run.run_id} · local store {tracking_run.tracking_uri}")
 
 
 @train_app.command("report")

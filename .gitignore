@@ -24,6 +24,7 @@ docs/*
 !docs/*.md
 TODO.md
 models/
+mlruns/
 reports/
 *.parquet
 *.csv

@@ -72,6 +72,12 @@ class PriceBar(Base):
         Index("ix_price_bars_instrument_ts", "instrument_id", "ts"),
     )
 
+    # ORM primary key is ``id`` alone. On Postgres the TimescaleDB migration
+    # (f7b8c9d0e1f2) replaces this with a composite PRIMARY KEY (id, ts) because a hypertable
+    # requires the partitioning column in every unique/PK constraint. That divergence is
+    # deliberate and safe: ``id`` stays globally unique via its sequence, ORM UPDATEs still
+    # target rows by ``id``, Alembic autogenerate does not diff primary keys, and SQLite (tests)
+    # keeps the single-column integer PK it needs for autoincrement.
     id: Mapped[int] = mapped_column(SqliteFriendlyBigInt, primary_key=True)
     instrument_id: Mapped[int] = mapped_column(ForeignKey("instruments.id"))
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True))

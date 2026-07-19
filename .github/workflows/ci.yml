@@ -30,7 +30,7 @@ jobs:
         # importorskip optional dependencies, so without the extras CI can silently skip them.
         # The dev group installs by default.
         # Python comes from .python-version (3.12); numpy's stubs need >= 3.12 to parse.
-        run: uv sync --frozen --extra ml --extra archive --extra research --extra sentiment --extra dashboard
+        run: uv sync --frozen --extra ml --extra tracking --extra archive --extra research --extra sentiment --extra dashboard
 
       - name: Ruff lint
         run: uv run ruff check src tests

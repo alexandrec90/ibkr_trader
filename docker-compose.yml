@@ -13,7 +13,12 @@ name: ibkr_trader
 
 services:
   db:
-    image: postgres:16
+    # TimescaleDB is Postgres 16 plus the timescaledb extension (price_bars is a compressed
+    # hypertable — see migrations/…_timescaledb_price_bars_hypertable.py and
+    # docs/remote-archive.md). The image is a drop-in Postgres: without CREATE EXTENSION it
+    # behaves exactly like postgres:16, and the schema migration only converts price_bars when
+    # the extension is present, so tests/CI on plain Postgres or SQLite are unaffected.
+    image: timescale/timescaledb:2.17.2-pg16
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-trader}
