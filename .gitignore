@@ -20,7 +20,8 @@ htmlcov/
 
 # Data & runtime artifacts
 data/
-docs/
+docs/*
+!docs/*.md
 TODO.md
 models/
 reports/
