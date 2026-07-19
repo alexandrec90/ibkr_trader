@@ -53,6 +53,14 @@ exhaustive capacity grid. Each artifact's `metadata.json` records the strategy, 
 trial outcomes, winning fold IC, and elapsed search time; `ibkr-trader train report` displays
 the strategy and timing with the existing walk-forward results.
 
+For an optional local comparison UI, install `uv sync --extra ml --extra tracking` and add
+`--track-mlflow` to `train run` (`--mlflow-dir mlruns` is the default). Tracking is forced to
+an explicit local filesystem store. It logs the artifact's exact `metadata.json` plus derived
+comparison columns; `models/ml_lt/<version>/metadata.json` remains authoritative.
+The command also sets MLflow's required `MLFLOW_ALLOW_FILE_STORE=true` opt-in for the process.
+To browse the runs later, set that variable again and run
+`uv run mlflow ui --backend-store-uri mlruns --host 127.0.0.1`.
+
 ## Layout
 
 ```text

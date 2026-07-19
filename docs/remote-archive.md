@@ -13,6 +13,55 @@ DB — and the archive holds only:
 Never archived: **daily bars** (the training/backtest input — `archive bars` refuses
 `"1 day"` outright), and **orders / executions** (tax + audit trail).
 
+## Hot storage: TimescaleDB compression for `price_bars`
+
+The archive above offloads *cold* data. The *hot* window that stays in Postgres is kept small
+by TimescaleDB: `price_bars` is a **hypertable** partitioned on `ts` (~1 month chunks) with
+native columnar compression (`compress_segmentby = instrument_id, bar_size`,
+`compress_orderby = ts DESC`). A policy compresses chunks older than **7 days**; the most
+recent chunk stays row-oriented so the read-then-write bar upsert stays cheap. Timescale
+transparently decompresses older chunks on write, so upserts and same-day corrections into a
+compressed range still work and the `(instrument_id, ts, bar_size, source, what_to_show)`
+uniqueness is still enforced.
+
+This is transparent to the app: the SQLAlchemy models, queries, backtester, and archive
+commands are unchanged. The one Postgres-only detail is that the migration widens the
+`price_bars` primary key to `(id, ts)` (a hypertable needs the partition column in every
+unique/PK constraint); the ORM still declares `id` alone, which is what SQLite tests need. On
+plain Postgres or SQLite the schema migration is a **no-op**, so tests and CI never require
+the extension.
+
+The dev database image is `timescale/timescaledb:2.17.2-pg16` (see `docker-compose.yml`) — a
+drop-in Postgres 16; without `CREATE EXTENSION timescaledb` it behaves exactly like
+`postgres:16`.
+
+### Backing up / rebuilding the DB volume
+
+The extension lives in the image, so switching images (or upgrading Postgres major versions)
+means dumping and restoring the `pgdata` volume. **Always `pg_dump` to a dated file first:**
+
+```bash
+# 1. quiesce writers and back up (plain SQL, portable across the image swap)
+docker compose stop app
+docker compose exec -T db pg_dump -U trader -d ibkr_trader --no-owner --no-privileges \
+  > "pgdata_backup_$(date +%Y%m%d_%H%M%S).sql"
+
+# 2. swap the image (edit docker-compose.yml) and recreate the volume from empty
+docker compose stop db && docker compose rm -f db
+docker volume rm ibkr_trader_pgdata
+docker compose up -d db          # waits healthy on the new image
+
+# 3. restore, then let migrations convert price_bars into a hypertable
+docker compose exec -T db psql -U trader -d ibkr_trader < pgdata_backup_YYYYMMDD_HHMMSS.sql
+uv run alembic upgrade head
+docker compose start app
+```
+
+The dump is plain Postgres (no Timescale objects), so it restores cleanly onto either image;
+`alembic upgrade head` then applies the hypertable/compression migration when the extension is
+present. Keep backups out of git (they hold the full DB) — write them to a scratch/external
+path, never the repo.
+
 ## Safety model
 
 1. Rows are grouped into monthly Parquet partitions and **merged** into any existing
