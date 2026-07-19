@@ -12,12 +12,23 @@ import typer
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
+from typer import rich_utils
 from typer.testing import CliRunner
 
 from ibkr_trader import cli
 from ibkr_trader.db.models import BacktestRun, Base
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _wide_rich_panels(monkeypatch):
+    """Pin a wide console so rich never wraps error messages mid-substring.
+
+    At the default captured width (80) the wrap point depends on the tmp_path length, so
+    substring asserts like "TICKER,search term" would pass or fail by path-length luck.
+    """
+    monkeypatch.setattr(rich_utils, "MAX_WIDTH", 500)
 
 
 def _all_output(result) -> str:
