@@ -104,7 +104,10 @@ def tracked_yahoo_symbols(session: Session) -> list[str]:
     instruments = session.scalars(
         select(Instrument)
         .join(PriceBar, PriceBar.instrument_id == Instrument.id)
-        .where(PriceBar.source == "yahoo")
+        # CASH (FX) instruments also carry yahoo-source bars, but their Yahoo ticker is
+        # "PAIR=X", not the equity format — they are refreshed by scheduler.poll_fx via
+        # yahoo_fx.YahooFxConnector, never by the equity price poll.
+        .where(PriceBar.source == "yahoo", Instrument.sec_type != "CASH")
         .distinct()
         .order_by(Instrument.symbol)
     ).all()

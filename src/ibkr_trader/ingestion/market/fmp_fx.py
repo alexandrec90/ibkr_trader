@@ -27,7 +27,9 @@ def _quote_currency(pair: str) -> str:
     return pair[3:6].upper() if len(pair) >= 6 else "CAD"
 
 
-def _get_or_create_fx_instrument(session: Session, pair: str) -> Instrument:
+def get_or_create_fx_instrument(session: Session, pair: str) -> Instrument:
+    """The CASH instrument for a pair — shared with the Yahoo FX connector (yahoo_fx.py) so
+    both providers write bars against one instrument row."""
     symbol = pair.upper()
     instrument = session.scalar(
         select(Instrument).where(Instrument.symbol == symbol, Instrument.sec_type == "CASH")
@@ -87,7 +89,7 @@ class FmpFxConnector(Connector):
         )
 
         with get_session() as session:
-            instrument = _get_or_create_fx_instrument(session, fx_symbol)
+            instrument = get_or_create_fx_instrument(session, fx_symbol)
             count = 0
             for row in rows:
                 values = fmp._bar_values(row)

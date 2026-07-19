@@ -70,8 +70,27 @@ def _dataset():
     return df
 
 
-def test_train_writes_a_versioned_artifact_and_report_reads_it_back(tmp_path: Path):
+def test_train_writes_a_versioned_artifact_and_report_reads_it_back(tmp_path: Path, monkeypatch):
     df = _dataset()
+    search_record = {
+        "method": "optuna",
+        "sampler": "TPESampler",
+        "seed": 7,
+        "n_trials": 3,
+        "completed_count": 2,
+        "pruned_count": 1,
+        "duration_seconds": 1.25,
+        "search_space": {"num_leaves": {"type": "int", "low": 7, "high": 31}},
+        "best_trial": {"params": FAST_LGBM, "mean_fold_ic": 0.04},
+        "winner": {"params": FAST_LGBM, "mean_fold_ic": 0.04},
+    }
+    monkeypatch.setattr(
+        "ibkr_trader.signals.train.select_lgbm_params_optuna",
+        lambda df, folds, *, seed, n_trials: (
+            dict(DEFAULT_LGBM_PARAMS) | FAST_LGBM,
+            search_record,
+        ),
+    )
     result = train_on_dataset(
         df,
         models_dir=tmp_path,
@@ -80,7 +99,8 @@ def test_train_writes_a_versioned_artifact_and_report_reads_it_back(tmp_path: Pa
         seed=7,
         test_size=6,
         min_train=12,
-        lgbm_params=FAST_LGBM,
+        search="optuna",
+        n_trials=3,
     )
 
     # artifact on disk: model + metadata + latest marker
@@ -107,6 +127,8 @@ def test_train_writes_a_versioned_artifact_and_report_reads_it_back(tmp_path: Pa
     }
     assert metadata["lgbm_params"]["n_estimators"] == 40
     assert metadata["lgbm_params"]["random_state"] == 7
+    assert metadata["lgbm_search"] == search_record
+    assert metadata["lgbm_grid_search"] is None
     assert metadata["ridge"]["model_file"] == RIDGE_FILE
     assert metadata["ridge"]["numeric_feature_columns"]
     assert "sector" not in metadata["ridge"]["numeric_feature_columns"]
@@ -156,6 +178,8 @@ def test_second_run_bumps_the_version_and_moves_latest(tmp_path: Path):
     first = train_on_dataset(df, **kwargs)
     second = train_on_dataset(df, **kwargs)
     assert (first.version, second.version) == ("v1", "v2")
+    assert second.metadata["lgbm_search"]["method"] == "explicit"
+    assert second.metadata["lgbm_grid_search"] == second.metadata["lgbm_search"]
     assert (tmp_path / "ml_lt" / "latest").read_text() == "v2"
     assert load_latest_metadata(tmp_path)["version"] == "v2"
     assert (tmp_path / "ml_lt" / "v1" / MODEL_FILE).exists()  # old artifacts are kept

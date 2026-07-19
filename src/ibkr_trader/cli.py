@@ -1,6 +1,9 @@
 """Typer CLI — entry point `ibkr-trader` (see [project.scripts] in pyproject.toml)."""
 
+import csv
 import sys
+from enum import StrEnum
+from typing import cast
 
 import typer
 
@@ -24,6 +27,15 @@ archive_app = typer.Typer(
     "and restore it (docs/remote-archive.md; needs the [archive] extra + ARCHIVE_* in .env)."
 )
 app.add_typer(archive_app, name="archive")
+sentiment_app = typer.Typer(help="Manage local sentiment models and re-score stored text.")
+app.add_typer(sentiment_app, name="sentiment")
+
+
+class TrainSearch(StrEnum):
+    """Supported LightGBM capacity selectors exposed by ``train run``."""
+
+    optuna = "optuna"
+    grid = "grid"
 
 
 def _read_universe(universe_file: str, symbols: str) -> list[str]:
@@ -39,6 +51,53 @@ def _read_universe(universe_file: str, symbols: str) -> list[str]:
     if not universe:
         raise typer.BadParameter("empty universe")
     return universe
+
+
+@app.command("check-data")
+def check_data(
+    symbols: str = typer.Option("", help="comma-separated symbols to validate"),
+    universe_file: str = typer.Option("", help="symbols to validate, one per line"),
+    days: int = typer.Option(365, min=1, help="recent calendar days to inspect"),
+):
+    """Validate recent downstream price inputs without repairing or deleting bad rows."""
+    from datetime import UTC, datetime, timedelta
+
+    from pandera.errors import SchemaErrors
+
+    from ibkr_trader.backtest.engine import _load_series
+    from ibkr_trader.db.session import get_session
+    from ibkr_trader.signals.schemas import format_schema_errors
+
+    if bool(symbols.strip()) == bool(universe_file.strip()):
+        raise typer.BadParameter("provide exactly one of --symbols or --universe-file")
+    universe = _read_universe(universe_file, symbols)
+    now = datetime.now(UTC)
+    start = now - timedelta(days=days)
+    # Include provider-glitch rows dated after now so ts_not_future can report them.
+    far_future = datetime.max.replace(tzinfo=UTC)
+    checked_rows = 0
+    failures = 0
+
+    with get_session() as session:
+        for symbol in universe:
+            try:
+                series = _load_series(session, symbol, start, far_future, validate=True)
+            except SchemaErrors as exc:
+                failures += 1
+                typer.echo(f"{symbol}: data-quality violations", err=True)
+                for line in format_schema_errors(exc):
+                    typer.echo(f"  {line}", err=True)
+                continue
+            if series is None:
+                typer.echo(f"{symbol}: no recent daily bars")
+                continue
+            checked_rows += len(series.dates)
+            typer.echo(f"{symbol}: ok ({len(series.dates)} rows)")
+
+    if failures:
+        typer.echo(f"FAILED: {failures} instrument(s) violated the price schema", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(f"OK: {checked_rows} recent price rows passed")
 
 
 @app.command()
@@ -317,12 +376,27 @@ def ingest_fx(
     pair: str = typer.Option("USDCAD", help="currency pair, e.g. USDCAD (close = CAD per 1 USD)"),
     date_from: str = typer.Option("", help="YYYY-MM-DD"),
     date_to: str = typer.Option("", help="YYYY-MM-DD"),
+    source: str = typer.Option(
+        "fmp", help="fmp (official-ish, ~5y free history) | yahoo (deep history, ~2003+)"
+    ),
 ):
     """Ingest daily FX rates (the simulator converts US holdings to CAD via these)."""
-    from ibkr_trader.ingestion.market.fmp_fx import FmpFxConnector
+    from ibkr_trader.ingestion.base import Connector
+
+    connector: Connector
+    if source == "fmp":
+        from ibkr_trader.ingestion.market.fmp_fx import FmpFxConnector
+
+        connector = FmpFxConnector()
+    elif source == "yahoo":
+        from ibkr_trader.ingestion.market.yahoo_fx import YahooFxConnector
+
+        connector = YahooFxConnector()
+    else:
+        raise typer.BadParameter(f"unknown source {source!r} (fmp|yahoo)")
 
     try:
-        count = FmpFxConnector().fetch(pair=pair, date_from=date_from, date_to=date_to)
+        count = connector.fetch(pair=pair, date_from=date_from, date_to=date_to)
     except RuntimeError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1) from None
@@ -337,6 +411,12 @@ def backtest_run(
     account: str = typer.Option("", help="rrsp|tfsa|fhsa|lira|nonreg (default: config)"),
     start: str = typer.Option("2015-01-01", help="window start YYYY-MM-DD"),
     end: str = typer.Option("2025-01-01", help="window end YYYY-MM-DD"),
+    eval_start: str = typer.Option(
+        "",
+        help="first decision date YYYY-MM-DD; bars from --start onward warm up features "
+        "(e.g. --start 2008-06-01 --eval-start 2010-01-01 gives 2010 decisions a full "
+        "momentum/history lookback instead of a year of forced cash)",
+    ),
     start_capital: float = typer.Option(100_000.0, help="starting capital (CAD)"),
     min_history_days: int = typer.Option(
         252, min=1, help="minimum as-of listing history in trading days"
@@ -367,6 +447,12 @@ def backtest_run(
 
     start_dt = datetime.strptime(start, "%Y-%m-%d").replace(tzinfo=UTC)
     end_dt = datetime.strptime(end, "%Y-%m-%d").replace(tzinfo=UTC)
+    try:
+        eval_start_date = datetime.strptime(eval_start, "%Y-%m-%d").date() if eval_start else None
+    except ValueError:
+        raise typer.BadParameter("--eval-start must be YYYY-MM-DD") from None
+    if eval_start_date is not None and eval_start_date <= start_dt.date():
+        raise typer.BadParameter("--eval-start must be after --start (it needs warm-up bars)")
     config = RegisteredStrategyConfig(
         account=account_type,
         start_capital=start_capital,
@@ -374,6 +460,7 @@ def backtest_run(
         rebalance_band=settings.rebalance_band,
         benchmark_symbol=settings.benchmark_symbol,
         eligibility=EligibilityLimits(min_history_days=min_history_days),
+        eval_start=eval_start_date,
     )
     cost_model = RegisteredAccountCostModel(
         churn_penalty_bps=settings.churn_penalty_bps,
@@ -496,7 +583,8 @@ def backtest_oos(
     start: str = typer.Option("2015-01-01", help="dataset window start YYYY-MM-DD"),
     sim_start: str = typer.Option(
         "2021-08-01",
-        help="simulation bar-load start YYYY-MM-DD (keep on/after USDCAD coverage, 2021-07-08)",
+        help="simulation bar-load start YYYY-MM-DD (USDCAD coverage starts 2003-09-17; "
+        "owner policy floor for decisions is 2010)",
     ),
     universe_file: str = typer.Option("tickers.txt", help="one symbol per line"),
     symbols: str = typer.Option("", help="comma-separated symbols (overrides --universe-file)"),
@@ -572,6 +660,58 @@ def backtest_oos(
         _print_backtest_result(result, account_type.value)
 
 
+@backtest_app.command("factor-report")
+def backtest_factor_report(
+    run_id: int | None = typer.Option(
+        None, help="persisted ml_lt_oos/ml_lt_ridge_oos run (default: latest with predictions)"
+    ),
+    output_dir: str = typer.Option(
+        "", help="optional local directory for an HTML summary and PNG tear sheet"
+    ),
+    max_loss: float = typer.Option(
+        0.35, min=0.0, max=1.0, help="maximum factor rows Alphalens may drop"
+    ),
+):
+    """Diagnose persisted fold-OOS scores with IC decay, quantiles, and turnover."""
+    from pathlib import Path
+
+    from ibkr_trader.backtest.factor_report import generate_factor_report
+    from ibkr_trader.db.session import get_session
+
+    try:
+        with get_session() as session:
+            report = generate_factor_report(
+                session,
+                run_id,
+                max_loss=max_loss,
+                output_dir=Path(output_dir) if output_dir else None,
+            )
+    except (RuntimeError, ValueError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+
+    metadata = report["metadata"]
+    dropped = report["diagnostics"]
+    typer.echo(
+        f"\nOOS factor report · run {metadata['run_id']} · {metadata['strategy']} · "
+        f"{dropped['clean_rows']}/{dropped['input_rows']} rows retained"
+    )
+    typer.echo(
+        "  returns: native-currency close-to-close research diagnostic; portfolio promotion "
+        "still uses the CAD/total-return after-cost engine"
+    )
+    for title, key in (
+        ("mean rank IC and decay", "mean_ic"),
+        ("mean return by factor quantile", "quantile_returns"),
+        ("quantile shape", "quantile_diagnostics"),
+        ("quantile turnover (monthly factor observations)", "turnover"),
+    ):
+        typer.echo(f"\n{title}")
+        typer.echo(report[key].to_string(float_format=lambda value: f"{value:+.4f}"))
+    for artifact in report["artifacts"]:
+        typer.echo(f"\nsaved: {artifact}")
+
+
 @backtest_app.command("compare")
 def backtest_compare(
     strategy: str | None = typer.Option(None, help="filter to one strategy (default: all)"),
@@ -635,6 +775,10 @@ def train_run(
     min_history_days: int = typer.Option(
         252, min=1, help="minimum as-of listing history in trading days"
     ),
+    search: TrainSearch = typer.Option(
+        TrainSearch.optuna, help="capacity search strategy (optuna is deterministic TPE)"
+    ),
+    n_trials: int = typer.Option(50, min=1, help="Optuna trial budget (ignored by grid)"),
 ):
     """Build the supervised dataset, walk-forward validate (LightGBM + linear floor), fit the
     final model and write a versioned artifact under models/ml_lt/."""
@@ -659,6 +803,8 @@ def train_run(
                 test_size=test_size,
                 min_train=min_train,
                 limits=EligibilityLimits(min_history_days=min_history_days),
+                search=search.value,
+                n_trials=n_trials,
             )
     except (RuntimeError, ValueError) as exc:
         typer.echo(f"error: {exc}", err=True)
@@ -726,6 +872,15 @@ def _print_train_summary(metadata: dict) -> None:
     for name in model_names:
         overall = validation.get("overall_ic", {}).get(name) or {}
         typer.echo(f"  overall {name}: {ic_cell(overall).strip()} mean ±std across test dates")
+    search = metadata.get("lgbm_search") or {}
+    if search:
+        detail = f" · {search.get('duration_seconds', 0.0):.1f}s"
+        if search.get("method") == "optuna":
+            detail += (
+                f" · {search.get('completed_count', '?')} completed / "
+                f"{search.get('pruned_count', '?')} pruned"
+            )
+        typer.echo(f"  parameter search: {search.get('method', '?')}{detail}")
     typer.echo(f"  {metadata.get('note', '')}")
 
 
@@ -747,6 +902,55 @@ def _parse_date(value: str, option: str):
         return datetime.strptime(value, "%Y-%m-%d").date()
     except ValueError:
         raise typer.BadParameter(f"{option} must be YYYY-MM-DD") from None
+
+
+def _print_query_result(connection, *, csv_output: bool) -> None:
+    columns = [item[0] for item in connection.description or []]
+    rows = connection.fetchall()
+    if csv_output:
+        writer = csv.writer(sys.stdout, lineterminator="\n")
+        writer.writerow(columns)
+        writer.writerows(rows)
+        return
+    display_rows = [["NULL" if value is None else str(value) for value in row] for row in rows]
+    widths = [
+        max(len(str(column)), *(len(row[index]) for row in display_rows))
+        for index, column in enumerate(columns)
+    ]
+    typer.echo(" | ".join(str(column).ljust(widths[index]) for index, column in enumerate(columns)))
+    typer.echo("-+-".join("-" * width for width in widths))
+    for row in display_rows:
+        typer.echo(" | ".join(value.ljust(widths[index]) for index, value in enumerate(row)))
+
+
+@archive_app.command("query")
+def archive_query(
+    sql: str = typer.Argument(..., help="one read-only SELECT statement"),
+    csv_output: bool = typer.Option(False, "--csv", help="emit CSV with a header"),
+):
+    """Run one research-only SELECT against the bars and raw_payloads archive views."""
+    from ibkr_trader.archive.lens import connect_lens
+    from ibkr_trader.config import get_settings
+
+    if not sql.lstrip().lower().startswith(("select", "with")):
+        typer.echo("error: archive query accepts one SELECT statement only", err=True)
+        raise typer.Exit(code=1)
+
+    connection = None
+    try:
+        connection = connect_lens(get_settings())
+        duckdb_module = __import__("duckdb")
+        statements = connection.extract_statements(sql)
+        if len(statements) != 1 or statements[0].type != duckdb_module.StatementType.SELECT:
+            raise ValueError("archive query accepts one SELECT statement only")
+        connection.execute(sql)
+        _print_query_result(connection, csv_output=csv_output)
+    except Exception as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    finally:
+        if connection is not None:
+            connection.close()
 
 
 @archive_app.command("bars")
@@ -867,7 +1071,7 @@ def archive_status():
 
 @app.command("score-sentiment")
 def score_sentiment_command():
-    """VADER-score every news/social row where sentiment IS NULL (also done hourly by serve).
+    """Score every unscored news/social row with the configured model.
 
     Scoring marks a row consumed, which lets the prune job drop its raw payload.
     """
@@ -877,12 +1081,89 @@ def score_sentiment_command():
     typer.echo(f"scored {counts}")
 
 
+@sentiment_app.command("download")
+def sentiment_download():
+    """Download ProsusAI/finbert into the local Hugging Face cache."""
+    from ibkr_trader.signals.finbert import download_model
+
+    try:
+        download_model()
+    except (OSError, RuntimeError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo("FinBERT model cached and ready")
+
+
+@sentiment_app.command("rescore")
+def sentiment_rescore(
+    model: str = typer.Option("finbert", help="target model: finbert or vader"),
+    limit: int | None = typer.Option(None, min=1, help="maximum rows across both tables"),
+):
+    """Re-score stored rows not already produced by the selected model."""
+    from ibkr_trader.db.session import get_session
+    from ibkr_trader.signals.sentiment import SentimentModel, rescore
+
+    normalized = model.lower()
+    if normalized not in {"vader", "finbert"}:
+        raise typer.BadParameter("must be vader or finbert", param_hint="--model")
+    try:
+        with get_session() as session:
+            counts = rescore(session, model=cast(SentimentModel, normalized), limit=limit)
+    except RuntimeError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(f"rescored {sum(counts.values())} rows with {normalized}: {counts}")
+
+
+@app.command()
+def dashboard(
+    port: int = typer.Option(8501, help="local port for the Streamlit server"),
+):
+    """Launch the local results dashboard (Streamlit) — leaderboard, equity/drawdown charts,
+    and a form to run new backtests. Needs the [dashboard] extra (uv sync --extra dashboard).
+    Blocks; Ctrl-C to stop."""
+    import importlib.util
+    import subprocess
+    from importlib.resources import files
+    from pathlib import Path
+
+    if importlib.util.find_spec("streamlit") is None:
+        typer.echo("error: streamlit is not installed — run `uv sync --extra dashboard`", err=True)
+        raise typer.Exit(code=1)
+
+    # Without a credentials file, streamlit's first run stops at an interactive email prompt
+    # (even with stdin detached, it just hangs) — bootstrap the opt-out it would write.
+    credentials = Path.home() / ".streamlit" / "credentials.toml"
+    if not credentials.exists():
+        credentials.parent.mkdir(parents=True, exist_ok=True)
+        credentials.write_text('[general]\nemail = ""\n', encoding="utf-8")
+
+    app_path = files("ibkr_trader.dashboard").joinpath("app.py")
+    raise typer.Exit(
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "streamlit",
+                "run",
+                str(app_path),
+                "--server.port",
+                str(port),
+                # local tool: no telemetry, no first-run email prompt
+                "--browser.gatherUsageStats",
+                "false",
+            ],
+            check=False,
+        ).returncode
+    )
+
+
 @app.command()
 def serve():
     """Long-running mode: APScheduler jobs for periodic ingestion, scoring and raw pruning.
 
     Polls Reddit / Finnhub news / Google Trends on the cadence in Settings, backfills Finnhub
-    news history to the free-tier floor, VADER-scores unscored rows, and drops the ``raw``
+    news history to the free-tier floor, scores unscored rows, and drops the ``raw``
     blob on rows already sentiment-scored. No trading loop — that stays out until backtests +
     paper validation justify it. Blocks; Ctrl-C to stop.
     """

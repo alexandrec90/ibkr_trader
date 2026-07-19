@@ -18,6 +18,7 @@ import itertools
 import json
 import platform
 import re
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -38,6 +39,7 @@ from ibkr_trader.signals.dataset import (
 from ibkr_trader.signals.eligibility import EligibilityLimits
 from ibkr_trader.signals.features import FEATURE_SET_VERSION
 from ibkr_trader.signals.validation import (
+    Fold,
     FoldResult,
     SupervisedModel,
     evaluate_walk_forward,
@@ -75,6 +77,14 @@ LGBM_CAPACITY_GRID: dict[str, tuple[int, ...]] = {
     "n_estimators": (100, 200, 400),
 }
 
+#: Inclusive integer ranges matching the old grid's lower/upper bounds. Optuna may sample
+#: every integer inside them; widening the parameter set itself remains an explicit follow-up.
+LGBM_OPTUNA_SEARCH_SPACE: dict[str, range] = {
+    "num_leaves": range(7, 32),
+    "min_child_samples": range(20, 101),
+    "n_estimators": range(100, 401),
+}
+
 _CATEGORICAL_FEATURES = ("sector",)  # encoded as LightGBM native categoricals
 
 
@@ -85,6 +95,15 @@ def _require_ml() -> None:
     except ImportError as exc:  # pragma: no cover - exercised only without the extra
         raise RuntimeError(
             "training needs the ML extra — install with: pip install -e .[ml]"
+        ) from exc
+
+
+def _require_optuna() -> None:
+    try:
+        import optuna  # noqa: F401
+    except ImportError as exc:  # pragma: no cover - exercised only without the extra
+        raise RuntimeError(
+            "Optuna search needs the ML extra — install with: pip install -e .[ml]"
         ) from exc
 
 
@@ -315,6 +334,162 @@ def select_lgbm_params(
     }
 
 
+def _normalise_optuna_space(
+    search_space: Mapping[str, Sequence[int]] | None,
+) -> tuple[dict[str, tuple[int, ...]], dict[str, dict[str, Any]]]:
+    keys = ("num_leaves", "min_child_samples", "n_estimators")
+    raw = LGBM_OPTUNA_SEARCH_SPACE if search_space is None else search_space
+    if set(raw) != set(keys):
+        raise ValueError(f"Optuna search space must contain exactly: {', '.join(keys)}")
+    values_by_key: dict[str, tuple[int, ...]] = {}
+    metadata: dict[str, dict[str, Any]] = {}
+    for key in keys:
+        values = tuple(raw[key])
+        if not values or any(
+            isinstance(value, bool) or not isinstance(value, int) for value in values
+        ):
+            raise ValueError(f"Optuna search space {key!r} must contain integers")
+        if len(values) != len(set(values)):
+            raise ValueError(f"Optuna search space {key!r} contains duplicate values")
+        ordered = tuple(sorted(values))
+        values_by_key[key] = ordered
+        contiguous = ordered == tuple(range(ordered[0], ordered[-1] + 1))
+        metadata[key] = (
+            {"type": "int", "low": ordered[0], "high": ordered[-1], "step": 1}
+            if contiguous
+            else {"type": "categorical", "choices": list(ordered)}
+        )
+    return values_by_key, metadata
+
+
+def _evaluate_lgbm_fold(
+    df: pd.DataFrame,
+    fold: Fold,
+    params: dict[str, Any],
+    *,
+    seed: int,
+) -> float | None:
+    """Evaluate one candidate/fold, kept separate so pruning is unit-testable."""
+    name = "candidate"
+    result = evaluate_walk_forward(
+        df,
+        [fold],
+        {name: partial(LgbmModel, params, seed=seed)},
+    )[0]
+    return result.ic_mean(name)
+
+
+def select_lgbm_params_optuna(
+    df: pd.DataFrame,
+    folds: Sequence[Fold],
+    *,
+    seed: int,
+    n_trials: int = 50,
+    search_space: Mapping[str, Sequence[int]] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Select LightGBM capacity with deterministic TPE and median fold pruning.
+
+    ``search_space`` is primarily an equivalence-test seam. Consecutive values become an
+    inclusive integer range; non-consecutive values become exact categorical choices.
+    """
+    _require_ml()
+    _require_optuna()
+    if n_trials < 1:
+        raise ValueError("n_trials must be >= 1")
+    if not folds:
+        raise ValueError("Optuna search needs at least one walk-forward fold")
+
+    import optuna
+    from optuna.trial import TrialState
+
+    values_by_key, space_metadata = _normalise_optuna_space(search_space)
+    sampler = optuna.samplers.TPESampler(seed=seed)
+    pruner = optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=1)
+    study = optuna.create_study(direction="maximize", sampler=sampler, pruner=pruner)
+    started = time.perf_counter()
+
+    # A caller can provide a small finite space for an oracle/equivalence run. Cover it once
+    # when the trial budget permits; the production default remains sampled integer ranges.
+    if search_space is not None:
+        exact_candidates = list(itertools.product(*(values_by_key[key] for key in values_by_key)))
+        if len(exact_candidates) <= n_trials:
+            for values in exact_candidates:
+                study.enqueue_trial(dict(zip(values_by_key, values, strict=True)))
+
+    def objective(trial) -> float:
+        capacity: dict[str, Any] = {}
+        for key, values in values_by_key.items():
+            spec = space_metadata[key]
+            if spec["type"] == "int":
+                capacity[key] = trial.suggest_int(key, values[0], values[-1])
+            else:
+                capacity[key] = trial.suggest_categorical(key, list(values))
+
+        fold_ics: list[float | None] = []
+        for step, fold in enumerate(folds):
+            fold_ics.append(_evaluate_lgbm_fold(df, fold, capacity, seed=seed))
+            valid = [value for value in fold_ics if value is not None]
+            running_mean = float(np.mean(valid)) if valid else -np.inf
+            trial.set_user_attr("fold_ics", fold_ics)
+            trial.set_user_attr("mean_fold_ic", float(np.mean(valid)) if valid else None)
+            trial.set_user_attr("std_fold_ic", float(np.std(valid)) if valid else None)
+            trial.set_user_attr("n_folds", len(valid))
+            trial.report(running_mean, step=step)
+            if trial.should_prune():
+                raise optuna.TrialPruned()
+
+        valid = [value for value in fold_ics if value is not None]
+        return float(np.mean(valid)) if valid else -np.inf
+
+    study.optimize(objective, n_trials=n_trials, n_jobs=1, show_progress_bar=False)
+    duration_seconds = time.perf_counter() - started
+
+    candidates = [
+        {
+            "number": trial.number,
+            "state": trial.state.name.lower(),
+            "params": {key: int(value) for key, value in trial.params.items()},
+            "mean_fold_ic": trial.user_attrs.get("mean_fold_ic"),
+            "std_fold_ic": trial.user_attrs.get("std_fold_ic"),
+            "n_folds": trial.user_attrs.get("n_folds", 0),
+            "fold_ics": trial.user_attrs.get("fold_ics", []),
+        }
+        for trial in study.trials
+    ]
+    completed = [
+        candidate
+        for candidate, trial in zip(candidates, study.trials, strict=True)
+        if trial.state == TrialState.COMPLETE and candidate["mean_fold_ic"] is not None
+    ]
+    if not completed:
+        raise ValueError("LightGBM Optuna search produced no valid fold ICs")
+
+    def selection_key(candidate: dict[str, Any]) -> tuple[float, float]:
+        return (
+            float(candidate["mean_fold_ic"]),
+            -float(candidate["std_fold_ic"]),
+        )
+
+    winner = max(completed, key=selection_key)
+    selected = dict(DEFAULT_LGBM_PARAMS) | dict(winner["params"])
+    return selected, {
+        "method": "optuna",
+        "selection_metric": "mean fold rank IC",
+        "tie_break": "lower std of fold rank IC",
+        "sampler": "TPESampler",
+        "pruner": "MedianPruner",
+        "seed": seed,
+        "n_trials": n_trials,
+        "completed_count": sum(trial.state == TrialState.COMPLETE for trial in study.trials),
+        "pruned_count": sum(trial.state == TrialState.PRUNED for trial in study.trials),
+        "duration_seconds": duration_seconds,
+        "search_space": space_metadata,
+        "trials": candidates,
+        "best_trial": winner,
+        "winner": winner,
+    }
+
+
 def train_on_dataset(
     df: pd.DataFrame,
     *,
@@ -327,6 +502,8 @@ def train_on_dataset(
     lgbm_params: dict[str, Any] | None = None,
     benchmark_symbol: str = "XEQT",
     min_history_days: int = 252,
+    search: str = "optuna",
+    n_trials: int = 50,
 ) -> TrainResult:
     """Walk-forward evaluate, fit the final model on the full window, write the artifact.
 
@@ -341,11 +518,24 @@ def train_on_dataset(
     folds = walk_forward_folds(
         sorted(df["date"].unique()), test_size=test_size, min_train=min_train
     )
-    if lgbm_params is None:
-        selected_lgbm_params, grid_search = select_lgbm_params(df, folds, seed=seed)
+    if search not in {"optuna", "grid"}:
+        raise ValueError("search must be 'optuna' or 'grid'")
+    if lgbm_params is None and search == "optuna":
+        selected_lgbm_params, search_metadata = select_lgbm_params_optuna(
+            df, folds, seed=seed, n_trials=n_trials
+        )
+    elif lgbm_params is None:
+        started = time.perf_counter()
+        selected_lgbm_params, search_metadata = select_lgbm_params(df, folds, seed=seed)
+        search_metadata = {
+            "method": "grid",
+            "duration_seconds": time.perf_counter() - started,
+            **search_metadata,
+        }
     else:
         selected_lgbm_params = dict(DEFAULT_LGBM_PARAMS) | dict(lgbm_params)
-        grid_search = {
+        search_metadata = {
+            "method": "explicit",
             "selection_metric": "explicit parameters (grid skipped)",
             "tie_break": None,
             "grid": None,
@@ -418,7 +608,9 @@ def train_on_dataset(
             "overall_ic": {name: summarize_ics(fold_results, name) for name in model_names},
         },
         "lgbm_params": {**final.params, "random_state": seed},
-        "lgbm_grid_search": grid_search,
+        "lgbm_search": search_metadata,
+        # Kept for older artifact readers; new code should use the generic key above.
+        "lgbm_grid_search": search_metadata if search_metadata["method"] != "optuna" else None,
         "seed": seed,
         "library_versions": library_versions,
         "note": HONEST_EXPECTATIONS,
@@ -443,6 +635,8 @@ def train_from_db(
     min_train: int = 24,
     lgbm_params: dict[str, Any] | None = None,
     limits: EligibilityLimits | None = None,
+    search: str = "optuna",
+    n_trials: int = 50,
 ) -> TrainResult:
     """Build the dataset from Postgres and run ``train_on_dataset`` (the CLI entry point)."""
     _require_ml()
@@ -465,6 +659,8 @@ def train_from_db(
         lgbm_params=lgbm_params,
         benchmark_symbol=benchmark_symbol,
         min_history_days=(limits or EligibilityLimits()).min_history_days,
+        search=search,
+        n_trials=n_trials,
     )
 
 

@@ -22,6 +22,20 @@ ZSP.TO
 XUU.TO
 XBB.TO
 ZAG.TO
+XSP.TO
+XAW.TO
+
+# --- US-listed broad ETFs (deep history: SPY 1993, QQQ/IWM ~2000, EFA/EEM/AGG ~2003 —
+# they give pre-2013 backtests US exposure that CAD-domiciled S&P ETFs, listed ~2012+,
+# cannot; also the survivorship-bias-free "ETF floor" universe, tickers-etfs.txt) ---
+SPY
+VTI
+VOO
+QQQ
+IWM
+EFA
+EEM
+AGG
 
 # --- TSX large caps: financials ---
 RY.TO

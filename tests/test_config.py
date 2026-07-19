@@ -4,6 +4,11 @@ from ibkr_trader.accounts import AccountType
 from ibkr_trader.config import Settings
 
 
+def test_sentiment_defaults_to_vader_and_accepts_finbert():
+    assert Settings(_env_file=None).sentiment_model == "vader"
+    assert Settings(sentiment_model="finbert", _env_file=None).sentiment_model == "finbert"
+
+
 def test_account_specific_environment_variables_are_loaded(monkeypatch):
     monkeypatch.setenv("IBKR_PAPER_ACCOUNT", "DU1234567")
     monkeypatch.setenv("IBKR_MARGIN_ACCOUNT", "U-MARGIN")

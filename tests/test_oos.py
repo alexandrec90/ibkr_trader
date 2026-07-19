@@ -19,10 +19,12 @@ from ibkr_trader.backtest.oos import (
     OOS_MODEL_VERSION,
     FoldModel,
     FoldSwitchingAllocator,
+    build_oos_prediction_frame,
     run_oos_backtest,
 )
-from ibkr_trader.db.models import BacktestRun, Base, Instrument, PriceBar
+from ibkr_trader.db.models import BacktestRun, Base, Instrument, Prediction, PriceBar
 from ibkr_trader.signals.eligibility import Candidate, EligibilityLimits
+from ibkr_trader.signals.validation import Fold
 
 OPEN_LIMITS = EligibilityLimits(min_price=0.0, min_avg_dollar_volume=0.0, min_history_days=1)
 CHEAP = RegisteredAccountCostModel(
@@ -149,6 +151,31 @@ def test_allocate_without_a_decision_date_raises():
         allocator.allocate(_candidates([1]), {})
 
 
+def test_build_oos_prediction_frame_keeps_only_each_folds_test_rows():
+    df = pd.DataFrame(
+        {
+            "instrument_id": [1, 2, 1, 2],
+            "symbol": ["S1", "S2", "S1", "S2"],
+            "date": [FOLD_1["test_start"]] * 2 + [FOLD_2["test_start"]] * 2,
+            "return_12m": [0.1, 0.2, 0.3, 0.4],
+            "volatility": [0.2] * 4,
+        }
+    )
+    folds = [
+        Fold(fold_id=0, train_dates=(date(2020, 1, 1),), test_dates=(FOLD_1["test_start"],)),
+        Fold(fold_id=1, train_dates=(date(2020, 1, 1),), test_dates=(FOLD_2["test_start"],)),
+    ]
+    models = [
+        _fold_model(0, **FOLD_1, value=0.9),
+        _fold_model(1, **FOLD_2, value=0.1),
+    ]
+
+    predictions = build_oos_prediction_frame(df, folds, models, FEATURES)
+
+    assert predictions.shape == (4, 5)
+    assert predictions.groupby("fold_id")["score"].first().to_dict() == {0: 0.9, 1: 0.1}
+
+
 def _sqlite_session() -> Session:
     engine = create_engine(
         "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
@@ -230,3 +257,12 @@ def test_oos_backtest_end_to_end_smoke_on_synthetic_panel():
     assert by_name["ml_lt_ridge_oos"].params["model_version"] == OOS_MODEL_VERSION
     # all five persisted (the in-run buy-and-hold benchmark sub-simulations are not)
     assert session.scalar(select(func.count()).select_from(BacktestRun)) == 5
+    assert all(result.run_id is not None for result in oos.results)
+    assert session.scalar(select(func.count()).select_from(Prediction)) > 0
+    prediction_run_ids = set(session.scalars(select(Prediction.backtest_run_id)))
+    model_run_ids = {
+        result.run_id
+        for result in oos.results
+        if result.strategy in {"ml_lt_oos", "ml_lt_ridge_oos"}
+    }
+    assert prediction_run_ids == model_run_ids

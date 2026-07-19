@@ -23,6 +23,7 @@ data/
 docs/
 TODO.md
 models/
+reports/
 *.parquet
 *.csv
 !tests/fixtures/*.csv

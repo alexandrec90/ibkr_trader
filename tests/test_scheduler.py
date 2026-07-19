@@ -415,6 +415,7 @@ def test_poll_fx_starts_from_newest_stored_bar(monkeypatch):
 
     from ibkr_trader.db.models import Instrument, PriceBar
     from ibkr_trader.ingestion.market.fmp_fx import FmpFxConnector
+    from ibkr_trader.ingestion.market.yahoo_fx import YahooFxConnector
 
     scope = _sqlite_session_scope()
     with scope() as session:
@@ -437,20 +438,28 @@ def test_poll_fx_starts_from_newest_stored_bar(monkeypatch):
         )
 
     seen = {}
+    yahoo_pairs = []
 
-    def fake_fetch(self, pair="", date_from="", **kwargs):
+    def fake_fmp_fetch(self, pair="", date_from="", **kwargs):
         seen[pair] = date_from
         return 5
 
-    monkeypatch.setattr(scheduler, "get_session", scope)
-    monkeypatch.setattr(FmpFxConnector, "fetch", fake_fetch)
+    def fake_yahoo_fetch(self, pair="", **kwargs):
+        yahoo_pairs.append(pair)
+        return 2
 
-    assert scheduler.poll_fx(["USDCAD"]) == 5
+    monkeypatch.setattr(scheduler, "get_session", scope)
+    monkeypatch.setattr(FmpFxConnector, "fetch", fake_fmp_fetch)
+    monkeypatch.setattr(YahooFxConnector, "fetch", fake_yahoo_fetch)
+
+    assert scheduler.poll_fx(["USDCAD"]) == 7  # both providers refreshed per pair
     assert seen == {"USDCAD": "2026-07-04"}  # newest bar minus the 3-day overlap
+    assert yahoo_pairs == ["USDCAD"]  # yahoo does its own incremental bookkeeping
 
 
 def test_poll_fx_empty_history_fetches_full_range(monkeypatch):
     from ibkr_trader.ingestion.market.fmp_fx import FmpFxConnector
+    from ibkr_trader.ingestion.market.yahoo_fx import YahooFxConnector
 
     scope = _sqlite_session_scope()
     seen = {}
@@ -461,9 +470,27 @@ def test_poll_fx_empty_history_fetches_full_range(monkeypatch):
 
     monkeypatch.setattr(scheduler, "get_session", scope)
     monkeypatch.setattr(FmpFxConnector, "fetch", fake_fetch)
+    monkeypatch.setattr(YahooFxConnector, "fetch", lambda self, pair="", **kwargs: 0)
 
     assert scheduler.poll_fx(["EURCAD"]) == 9
     assert seen == {"EURCAD": ""}  # no stored bars -> connector default (full history)
+
+
+def test_poll_fx_provider_failures_are_isolated(monkeypatch):
+    """One provider blowing up must not stop the other (or the pair loop)."""
+    from ibkr_trader.ingestion.market.fmp_fx import FmpFxConnector
+    from ibkr_trader.ingestion.market.yahoo_fx import YahooFxConnector
+
+    scope = _sqlite_session_scope()
+
+    def broken_fmp(self, pair="", date_from="", **kwargs):
+        raise RuntimeError("fmp down")
+
+    monkeypatch.setattr(scheduler, "get_session", scope)
+    monkeypatch.setattr(FmpFxConnector, "fetch", broken_fmp)
+    monkeypatch.setattr(YahooFxConnector, "fetch", lambda self, pair="", **kwargs: 4)
+
+    assert scheduler.poll_fx(["USDCAD"]) == 4  # yahoo still contributed
 
 
 def test_run_sentiment_scoring_uses_a_session(monkeypatch):

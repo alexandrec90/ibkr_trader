@@ -67,4 +67,7 @@ and review it before upgrading.
 - Skeleton stubs raise `NotImplementedError` with a `TODO(skeleton)` comment describing the
   intended implementation — replace stub-by-stub, keep the comments' intent.
 - Use `ib_async` (maintained fork), never `ib_insync`/raw `ibapi` directly.
+- The DuckDB archive lens is research-only; `signals/`, `backtest/`, and `execution/` never
+  import it. Restore archived data to Postgres before it feeds the real pipeline.
+- New heavy dataframe work may use Polars; never rewrite working pandas code merely to adopt it.
 - Line length 100 (ruff). Python ≥ 3.11.

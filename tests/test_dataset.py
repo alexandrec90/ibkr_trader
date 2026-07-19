@@ -5,6 +5,8 @@ import math
 from datetime import UTC, date, datetime, timedelta
 
 import numpy as np
+import pytest
+from pandera.errors import SchemaErrors
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -21,6 +23,7 @@ from ibkr_trader.signals.dataset import (
 )
 from ibkr_trader.signals.eligibility import EligibilityLimits
 from ibkr_trader.signals.features import CorporateData, FeatureInputs, build_features_asof
+from ibkr_trader.signals.schemas import NUMERIC_FEATURE_COLUMNS
 
 OPEN_LIMITS = EligibilityLimits(min_price=0.0, min_avg_dollar_volume=0.0, min_history_days=1)
 
@@ -247,6 +250,33 @@ def test_sector_is_a_column_and_meta_columns_are_not_features():
     assert df[df["instrument_id"] == 2]["sector"].isna().all()
     assert not set(feature_columns(df)) & set(META_COLUMNS)
     assert {"return_12m", "momentum_12_1", "volatility"} <= set(feature_columns(df))
+    assert set(NUMERIC_FEATURE_COLUMNS) <= set(feature_columns(df))
+
+
+def test_dataset_rejects_nonfinite_assembled_features_by_default(monkeypatch):
+    from ibkr_trader.signals import dataset as dataset_module
+
+    universe, benchmark = _panel()
+
+    def bad_features(universe, eligible_ids, day, **kwargs):
+        return {iid: {"history_days": np.inf} for iid in eligible_ids}
+
+    monkeypatch.setattr(dataset_module, "_features_asof", bad_features)
+    with pytest.raises(SchemaErrors, match="finite_values"):
+        _build(universe, benchmark)
+
+
+def test_dataset_validation_escape_hatch_is_explicit(monkeypatch):
+    from ibkr_trader.signals import dataset as dataset_module
+
+    universe, benchmark = _panel()
+
+    def bad_features(universe, eligible_ids, day, **kwargs):
+        return {iid: {"history_days": np.inf} for iid in eligible_ids}
+
+    monkeypatch.setattr(dataset_module, "_features_asof", bad_features)
+    frame = _build(universe, benchmark, validate=False)
+    assert np.isinf(frame["history_days"]).all()
 
 
 # --- the DB wrapper --------------------------------------------------------------------------

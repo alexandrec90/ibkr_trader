@@ -44,6 +44,15 @@ way with `. .venv/bin/activate` if you prefer.
    (port 4004, needs `TWS_USERID_PAPER`/`TWS_PASSWORD_PAPER` in `.env`).
 3. `ibkr-trader ibkr-check` — connects and prints account + a delayed quote.
 
+## ML training
+
+Install the ML extra with `uv sync --extra ml`, then run `ibkr-trader train run --end
+YYYY-MM-DD`. LightGBM capacity selection defaults to deterministic Optuna TPE search with
+median pruning (`--search optuna --n-trials 50`). Use `--search grid` to run the original
+exhaustive capacity grid. Each artifact's `metadata.json` records the strategy, search space,
+trial outcomes, winning fold IC, and elapsed search time; `ibkr-trader train report` displays
+the strategy and timing with the existing walk-forward results.
+
 ## Layout
 
 ```text

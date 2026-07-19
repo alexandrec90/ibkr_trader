@@ -183,6 +183,7 @@ class NewsArticle(Base):
     summary: Mapped[str | None] = mapped_column(Text)
     symbols: Mapped[list | None] = mapped_column(JSON)  # extracted tickers
     sentiment: Mapped[float | None] = mapped_column(Float)  # filled by signals stage
+    sentiment_model: Mapped[str | None] = mapped_column(String(32))
     raw: Mapped[dict | None] = mapped_column(JSON)
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
@@ -206,6 +207,7 @@ class SocialPost(Base):
     num_comments: Mapped[int | None] = mapped_column(BigInteger)
     symbols: Mapped[list | None] = mapped_column(JSON)
     sentiment: Mapped[float | None] = mapped_column(Float)
+    sentiment_model: Mapped[str | None] = mapped_column(String(32))
     raw: Mapped[dict | None] = mapped_column(JSON)
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
@@ -225,11 +227,18 @@ class TrendPoint(Base):
 
 class Prediction(Base):
     __tablename__ = "predictions"
-    __table_args__ = (Index("ix_predictions_instrument_ts", "instrument_id", "ts"),)
+    __table_args__ = (
+        Index("ix_predictions_instrument_ts", "instrument_id", "ts"),
+        UniqueConstraint("backtest_run_id", "instrument_id", "ts"),
+    )
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    id: Mapped[int] = mapped_column(SqliteFriendlyBigInt, primary_key=True)
     model_name: Mapped[str] = mapped_column(String(64))
     model_version: Mapped[str] = mapped_column(String(32), default="0")
+    # Null for deployed/forward predictions. OOS research predictions point at the exact
+    # backtest run whose fitted fold models produced them, so they cannot be mistaken for
+    # in-sample values or mixed across validation invocations.
+    backtest_run_id: Mapped[int | None] = mapped_column(ForeignKey("backtest_runs.id"))
     instrument_id: Mapped[int] = mapped_column(ForeignKey("instruments.id"))
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True))  # as-of time
     horizon: Mapped[str] = mapped_column(String(16))  # e.g. "1d", "5d"

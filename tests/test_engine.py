@@ -390,6 +390,16 @@ def test_engine_run_loads_bars_benchmarks_and_persists():
     persisted = session.scalar(select(BacktestRun))
     assert persisted is not None
     assert persisted.params["universe"] == result.params["universe"]
+    # both daily equity curves ride along in the metrics JSON for the dashboard,
+    # as [iso-date, CAD] rows matching the in-memory curve
+    assert persisted.metrics["equity_curve"] == [
+        [day.isoformat(), round(float(value), 2)] for day, value in result.equity_curve
+    ]
+    bench_curve = persisted.metrics["benchmark_equity_curve"]
+    assert len(bench_curve) == len(result.equity_curve)
+    assert [row[0] for row in bench_curve] == [row[0] for row in persisted.metrics["equity_curve"]]
+    # the returned (non-persisted) metrics stay scalar-only — curves are a storage concern
+    assert "equity_curve" not in result.metrics
 
 
 def test_load_series_uses_one_source_and_never_double_counts():
@@ -439,3 +449,30 @@ def test_engine_run_raises_when_no_bars_found():
         raise AssertionError("expected ValueError for empty universe")
     except ValueError:
         pass
+
+
+def test_utc_timestamps_canonicalizes_zoneinfo_and_guards_naive():
+    """psycopg returns tz-aware values whose tzinfo can be 'Etc/UTC' (zoneinfo) — pandas then
+    types the column datetime64[ns, Etc/UTC] and the schema's ts_utc check rejects the frame.
+    The loader adapter must canonicalize aware values to datetime.UTC, restore UTC on naive
+    SQLite values, and pass naive non-SQLite values through so validation fails loudly."""
+    from zoneinfo import ZoneInfo
+
+    import pandas as pd
+
+    from ibkr_trader.backtest.engine import _utc_timestamps
+
+    aware_etc = datetime(2026, 7, 17, tzinfo=ZoneInfo("Etc/UTC"))
+    naive = datetime(2026, 7, 17)
+
+    out = _utc_timestamps([aware_etc], sqlite=False)
+    assert out[0].tzinfo is UTC
+    assert out[0] == aware_etc  # same instant, canonical tzinfo
+
+    assert _utc_timestamps([naive], sqlite=True)[0].tzinfo is UTC
+    assert _utc_timestamps([naive], sqlite=False)[0].tzinfo is None  # loud downstream failure
+
+    frame = pd.DataFrame({"ts": _utc_timestamps([aware_etc], sqlite=False)})
+    assert str(frame["ts"].dtype) == "datetime64[us, UTC]" or str(frame["ts"].dtype).endswith(
+        "UTC]"
+    )

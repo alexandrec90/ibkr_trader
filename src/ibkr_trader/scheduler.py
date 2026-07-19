@@ -285,12 +285,20 @@ _FX_REFRESH_OVERLAP_DAYS = 3
 
 
 def poll_fx(pairs: list[str]) -> int:
-    """Refresh daily FX bars from the newest stored bar forward (full history when empty)."""
+    """Refresh daily FX bars from the newest stored bar forward (full history when empty).
+
+    Both providers are refreshed per pair: FMP (the original series) and Yahoo (the deep
+    ~2003+ backfill, see yahoo_fx.py). The backtest loader picks exactly one source per
+    window by widest coverage, so keeping both current stops a long window from ever
+    preferring a stale-but-longer series. Each provider fails independently.
+    """
     from datetime import timedelta
 
     from ibkr_trader.ingestion.market.fmp_fx import FmpFxConnector
+    from ibkr_trader.ingestion.market.yahoo_fx import YahooFxConnector
 
-    connector = FmpFxConnector()
+    fmp_connector = FmpFxConnector()
+    yahoo_connector = YahooFxConnector()
     total = 0
     for pair in pairs:
         with get_session() as session:
@@ -303,9 +311,15 @@ def poll_fx(pairs: list[str]) -> int:
             (newest.date() - timedelta(days=_FX_REFRESH_OVERLAP_DAYS)).isoformat() if newest else ""
         )
         try:
-            total += connector.fetch(pair=pair, date_from=date_from)
+            total += fmp_connector.fetch(pair=pair, date_from=date_from)
         except Exception:
-            logger.exception("fx poll failed for %s", pair)
+            logger.exception("fmp fx poll failed for %s", pair)
+        try:
+            # incremental from the newest yahoo-source bar; when the yahoo series doesn't
+            # exist yet this is the full-history deep backfill (one request, self-healing)
+            total += yahoo_connector.fetch(pair=pair)
+        except Exception:
+            logger.exception("yahoo fx poll failed for %s", pair)
     logger.info("fx poll upserted %d bars across %d pairs", total, len(pairs))
     return total
 

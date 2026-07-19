@@ -4,7 +4,7 @@ monkeypatched in-memory SQLite session)."""
 
 import re
 from contextlib import contextmanager
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -114,6 +114,66 @@ def test_backtest_run_flows_history_floor_into_config(monkeypatch):
     assert seen["floor"] == 63
 
 
+def test_backtest_run_flows_eval_start_into_config(monkeypatch):
+    from datetime import date
+
+    from ibkr_trader.backtest import engine as engine_mod
+
+    seen = {}
+
+    def fake_run(self, strategy, universe, start, end, *, config, persist):
+        seen["eval_start"] = config.eval_start
+        return SimpleNamespace()
+
+    monkeypatch.setattr(engine_mod.BacktestEngine, "run", fake_run)
+    monkeypatch.setattr(cli, "_print_backtest_result", lambda result, account: None)
+    result = runner.invoke(
+        cli.app,
+        [
+            "backtest",
+            "run",
+            "--symbols",
+            "AAPL",
+            "--start",
+            "2008-06-01",
+            "--eval-start",
+            "2010-01-01",
+        ],
+    )
+    assert result.exit_code == 0
+    assert seen["eval_start"] == date(2010, 1, 1)
+
+
+def test_backtest_run_eval_start_default_is_none(monkeypatch):
+    from ibkr_trader.backtest import engine as engine_mod
+
+    seen = {}
+
+    def fake_run(self, strategy, universe, start, end, *, config, persist):
+        seen["eval_start"] = config.eval_start
+        return SimpleNamespace()
+
+    monkeypatch.setattr(engine_mod.BacktestEngine, "run", fake_run)
+    monkeypatch.setattr(cli, "_print_backtest_result", lambda result, account: None)
+    result = runner.invoke(cli.app, ["backtest", "run", "--symbols", "AAPL"])
+    assert result.exit_code == 0
+    assert seen["eval_start"] is None
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--eval-start", "not-a-date"],
+        ["--start", "2010-01-01", "--eval-start", "2010-01-01"],  # needs warm-up bars before it
+        ["--start", "2015-01-01", "--eval-start", "2012-01-01"],
+    ],
+)
+def test_backtest_run_bad_eval_start_is_refused(args):
+    result = runner.invoke(cli.app, ["backtest", "run", "--symbols", "AAPL", *args])
+    assert result.exit_code != 0
+    assert "--eval-start" in result.output
+
+
 def test_backtest_oos_flows_history_floor_into_config(monkeypatch):
     from ibkr_trader.backtest import oos as oos_mod
     from ibkr_trader.db import session as session_mod
@@ -152,6 +212,43 @@ def test_backtest_oos_flows_history_floor_into_config(monkeypatch):
     assert seen["floor"] == 63
 
 
+def test_factor_report_cli_prints_summary_and_passes_run_id(monkeypatch):
+    import pandas as pd
+
+    from ibkr_trader.backtest import factor_report as report_mod
+    from ibkr_trader.db import session as session_mod
+
+    seen = {}
+
+    @contextmanager
+    def fake_session():
+        yield object()
+
+    def fake_report(session, run_id, **kwargs):
+        seen["run_id"] = run_id
+        return {
+            "metadata": {"run_id": run_id, "strategy": "ml_lt_ridge_oos"},
+            "diagnostics": {"clean_rows": 10, "input_rows": 12},
+            "mean_ic": pd.DataFrame({"mean_ic": [0.05]}, index=["21D"]),
+            "quantile_returns": pd.DataFrame({"21D": [0.01]}, index=["Q5"]),
+            "quantile_diagnostics": pd.DataFrame(
+                {"q5_minus_q1": [0.02], "monotonic_ish": [True]}, index=["21D"]
+            ),
+            "turnover": pd.DataFrame({"mean": [0.25]}, index=["1M"]),
+            "artifacts": [],
+        }
+
+    monkeypatch.setattr(session_mod, "get_session", fake_session)
+    monkeypatch.setattr(report_mod, "generate_factor_report", fake_report)
+
+    result = runner.invoke(cli.app, ["backtest", "factor-report", "--run-id", "42"])
+
+    assert result.exit_code == 0
+    assert seen["run_id"] == 42
+    assert "OOS factor report" in result.output
+    assert "mean rank IC" in result.output
+
+
 def test_train_run_flows_history_floor_into_limits(monkeypatch, tmp_path):
     from ibkr_trader.db import session as session_mod
     from ibkr_trader.signals import train as train_mod
@@ -164,6 +261,8 @@ def test_train_run_flows_history_floor_into_limits(monkeypatch, tmp_path):
 
     def fake_train(session, universe, start, end, **kwargs):
         seen["floor"] = kwargs["limits"].min_history_days
+        seen["search"] = kwargs["search"]
+        seen["n_trials"] = kwargs["n_trials"]
         return SimpleNamespace(metadata={}, artifact_dir=tmp_path / "v-test")
 
     monkeypatch.setattr(session_mod, "get_session", fake_session)
@@ -180,10 +279,26 @@ def test_train_run_flows_history_floor_into_limits(monkeypatch, tmp_path):
             "AAPL",
             "--min-history-days",
             "63",
+            "--search",
+            "grid",
+            "--n-trials",
+            "9",
         ],
     )
     assert result.exit_code == 0
     assert seen["floor"] == 63
+    assert seen["search"] == "grid"
+    assert seen["n_trials"] == 9
+
+
+def test_train_run_rejects_unknown_search():
+    result = runner.invoke(
+        cli.app,
+        ["train", "run", "--end", "2025-01-01", "--search", "random"],
+    )
+    assert result.exit_code == 2
+    assert "optuna" in _plain(_all_output(result))
+    assert "grid" in _plain(_all_output(result))
 
 
 def test_train_report_without_artifact_exits_nonzero(tmp_path):
@@ -515,6 +630,55 @@ def _patch_session(monkeypatch, session: Session) -> None:
     monkeypatch.setattr("ibkr_trader.db.session.get_session", fake_get_session)
 
 
+def _seed_check_data_bar(session: Session, close: float) -> None:
+    from ibkr_trader.db.models import Instrument, PriceBar
+
+    instrument = Instrument(symbol="AAA", exchange="TSX", currency="CAD")
+    session.add(instrument)
+    session.flush()
+    session.add(
+        PriceBar(
+            instrument_id=instrument.id,
+            ts=datetime.now(UTC) - timedelta(days=1),
+            bar_size="1 day",
+            source="yahoo",
+            what_to_show="ADJUSTED_LAST",
+            open=10.0,
+            high=11.0,
+            low=9.0,
+            close=close,
+            volume=100.0,
+        )
+    )
+    session.commit()
+
+
+def test_check_data_clean_sqlite_db_exits_zero(monkeypatch):
+    session = _make_session()
+    _seed_check_data_bar(session, 10.0)
+    _patch_session(monkeypatch, session)
+
+    result = runner.invoke(cli.app, ["check-data", "--symbols", "AAA"])
+
+    assert result.exit_code == 0
+    assert "AAA: ok (1 rows)" in result.output
+    assert "OK: 1 recent price rows passed" in result.output
+
+
+def test_check_data_bad_sqlite_row_exits_nonzero_and_identifies_row(monkeypatch):
+    session = _make_session()
+    _seed_check_data_bar(session, -1.0)
+    _patch_session(monkeypatch, session)
+
+    result = runner.invoke(cli.app, ["check-data", "--symbols", "AAA"])
+    output = _all_output(result)
+
+    assert result.exit_code == 1
+    assert "AAA: data-quality violations" in output
+    assert "row 0: close failed close_positive" in output
+    assert "value=-1.0" in output
+
+
 def test_backtest_compare_empty_db(monkeypatch):
     _patch_session(monkeypatch, _make_session())
     result = runner.invoke(cli.app, ["backtest", "compare"])
@@ -629,6 +793,12 @@ def test_print_train_summary_prints_folds_and_overall_ic(capsys):
                 }
             ],
         },
+        "lgbm_search": {
+            "method": "optuna",
+            "duration_seconds": 12.34,
+            "completed_count": 17,
+            "pruned_count": 3,
+        },
         "note": "purged",
     }
     cli._print_train_summary(metadata)
@@ -636,6 +806,7 @@ def test_print_train_summary_prints_folds_and_overall_ic(capsys):
     assert "ml_lt v3" in out
     assert "1000 rows" in out
     assert "overall ridge: +0.070 ±0.080 (12)" in out
+    assert "parameter search: optuna · 12.3s · 17 completed / 3 pruned" in out
 
 
 # --- archive commands (local backend in tmp_path + in-memory DB) ------------------------
@@ -648,7 +819,11 @@ def _patch_archive_settings(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr("ibkr_trader.archive.store.get_settings", lambda: settings)
 
 
-def test_archive_commands_refuse_unconfigured_backend():
+def test_archive_commands_refuse_unconfigured_backend(monkeypatch):
+    from ibkr_trader.config import Settings
+
+    settings = Settings(_env_file=None, archive_backend="none")
+    monkeypatch.setattr("ibkr_trader.archive.store.get_settings", lambda: settings)
     result = runner.invoke(cli.app, ["archive", "status"])
     assert result.exit_code == 1
     assert "no archive backend configured" in _all_output(result)
@@ -739,3 +914,176 @@ def test_archive_restore_bars_rejects_bad_date(monkeypatch, tmp_path):
     )
     assert result.exit_code != 0
     assert "--start must be YYYY-MM-DD" in _plain(_all_output(result))
+
+
+# --- sentiment model management --------------------------------------------------------
+
+
+class _FakeFinbertScorer:
+    model_name = "finbert"
+
+    def score_many(self, texts, *, batch_size):
+        return [0.4] * len(texts)
+
+
+def _add_sentiment_articles(session: Session, count: int) -> None:
+    from ibkr_trader.db.models import NewsArticle
+
+    now = datetime.now(UTC)
+    session.add_all(
+        [
+            NewsArticle(
+                source="finnhub",
+                external_id=f"sentiment-{index}",
+                published_at=now,
+                title=f"headline {index}",
+                sentiment=0.1,
+                sentiment_model="vader",
+                fetched_at=now,
+            )
+            for index in range(count)
+        ]
+    )
+    session.commit()
+
+
+def test_sentiment_download_cli_invokes_explicit_download(monkeypatch):
+    from ibkr_trader.signals import finbert
+
+    called = []
+    monkeypatch.setattr(finbert, "download_model", lambda: called.append(True))
+    result = runner.invoke(cli.app, ["sentiment", "download"])
+
+    assert result.exit_code == 0
+    assert "FinBERT model cached and ready" in result.output
+    assert called == [True]
+
+
+def test_sentiment_rescore_cli_rejects_unknown_model():
+    result = runner.invoke(cli.app, ["sentiment", "rescore", "--model", "unknown"])
+    assert result.exit_code == 2
+    assert "must be vader or finbert" in _plain(_all_output(result))
+
+
+def test_sentiment_rescore_cli_is_idempotent(monkeypatch):
+    from ibkr_trader.db.models import NewsArticle
+    from ibkr_trader.signals import sentiment as sentiment_module
+
+    session = _make_session()
+    _add_sentiment_articles(session, 2)
+    _patch_session(monkeypatch, session)
+    monkeypatch.setattr(sentiment_module, "scorer_for_model", lambda model: _FakeFinbertScorer())
+
+    first = runner.invoke(cli.app, ["sentiment", "rescore", "--model", "finbert"])
+    second = runner.invoke(cli.app, ["sentiment", "rescore", "--model", "finbert"])
+
+    assert first.exit_code == 0
+    assert "rescored 2 rows with finbert" in first.output
+    assert second.exit_code == 0
+    assert "rescored 0 rows with finbert" in second.output
+    assert session.query(NewsArticle).filter_by(sentiment_model="finbert").count() == 2
+
+
+def test_sentiment_rescore_cli_respects_global_limit(monkeypatch):
+    from ibkr_trader.db.models import NewsArticle
+    from ibkr_trader.signals import sentiment as sentiment_module
+
+    session = _make_session()
+    _add_sentiment_articles(session, 3)
+    _patch_session(monkeypatch, session)
+    monkeypatch.setattr(sentiment_module, "scorer_for_model", lambda model: _FakeFinbertScorer())
+
+    result = runner.invoke(cli.app, ["sentiment", "rescore", "--model", "finbert", "--limit", "2"])
+
+    assert result.exit_code == 0
+    assert "rescored 2 rows with finbert" in result.output
+    assert session.query(NewsArticle).filter_by(sentiment_model="finbert").count() == 2
+    assert session.query(NewsArticle).filter_by(sentiment_model="vader").count() == 1
+
+
+def test_ingest_fx_source_yahoo_uses_yahoo_connector(monkeypatch):
+    from ibkr_trader.ingestion.market import yahoo_fx
+
+    seen = {}
+
+    def fake_fetch(self, pair="", date_from="", date_to="", **kwargs):
+        seen["pair"] = pair
+        seen["date_from"] = date_from
+        return 4200
+
+    monkeypatch.setattr(yahoo_fx.YahooFxConnector, "fetch", fake_fetch)
+    result = runner.invoke(cli.app, ["ingest", "fx", "--source", "yahoo", "--pair", "usdcad"])
+
+    assert result.exit_code == 0
+    assert "upserted 4200 FX bars for USDCAD" in result.output
+    assert seen == {"pair": "usdcad", "date_from": ""}
+
+
+def test_ingest_fx_default_source_is_fmp(monkeypatch):
+    from ibkr_trader.ingestion.market import fmp_fx
+
+    monkeypatch.setattr(fmp_fx.FmpFxConnector, "fetch", lambda self, **kw: 3)
+    result = runner.invoke(cli.app, ["ingest", "fx"])
+
+    assert result.exit_code == 0
+    assert "upserted 3 FX bars for USDCAD" in result.output
+
+
+def test_ingest_fx_unknown_source_is_refused():
+    result = runner.invoke(cli.app, ["ingest", "fx", "--source", "boc"])
+    assert result.exit_code != 0
+    assert "unknown source" in result.output
+
+
+def test_dashboard_refuses_without_streamlit(monkeypatch):
+    import importlib.util
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    result = runner.invoke(cli.app, ["dashboard"])
+    assert result.exit_code == 1
+    assert "uv sync --extra dashboard" in _all_output(result)
+
+
+def test_dashboard_launches_streamlit_run_on_app_file(monkeypatch, tmp_path):
+    import importlib.util
+    import pathlib
+    import subprocess
+
+    seen = {}
+
+    def fake_run(cmd, check):
+        seen["cmd"] = cmd
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(pathlib.Path, "home", lambda: tmp_path)
+    result = runner.invoke(cli.app, ["dashboard", "--port", "9000"])
+
+    assert result.exit_code == 0
+    cmd = seen["cmd"]
+    assert cmd[1:4] == ["-m", "streamlit", "run"]
+    assert cmd[4].endswith("app.py") and "dashboard" in cmd[4]
+    assert cmd[5:7] == ["--server.port", "9000"]
+    # first-run email prompt suppressed by bootstrapping the opt-out credentials file
+    assert (tmp_path / ".streamlit" / "credentials.toml").read_text(
+        encoding="utf-8"
+    ) == '[general]\nemail = ""\n'
+
+
+def test_dashboard_keeps_existing_credentials(monkeypatch, tmp_path):
+    import importlib.util
+    import pathlib
+    import subprocess
+
+    creds = tmp_path / ".streamlit" / "credentials.toml"
+    creds.parent.mkdir(parents=True)
+    creds.write_text('[general]\nemail = "me@example.com"\n', encoding="utf-8")
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
+    monkeypatch.setattr(subprocess, "run", lambda cmd, check: SimpleNamespace(returncode=0))
+    monkeypatch.setattr(pathlib.Path, "home", lambda: tmp_path)
+    result = runner.invoke(cli.app, ["dashboard"])
+
+    assert result.exit_code == 0
+    assert "me@example.com" in creds.read_text(encoding="utf-8")  # untouched

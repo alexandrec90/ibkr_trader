@@ -28,6 +28,10 @@ from ibkr_trader.backtest.engine import (
 )
 from ibkr_trader.signals.eligibility import EligibilityLimits, screen
 from ibkr_trader.signals.features import CorporateData, load_corporate_inputs
+from ibkr_trader.signals.schemas import (
+    NUMERIC_FEATURE_COLUMNS,
+    validate_feature_frame,
+)
 
 #: The label's forward horizon, in monthly rebalance periods. Walk-forward validation must
 #: purge at least this many months between a train window's end and its test window's start.
@@ -88,6 +92,7 @@ def build_dataset_from_panel(
     end: date,
     limits: EligibilityLimits | None = None,
     horizon_months: int = LABEL_HORIZON_MONTHS,
+    validate: bool = True,
 ) -> pd.DataFrame:
     """Pure dataset core over in-memory panels — no DB, no network.
 
@@ -142,12 +147,29 @@ def build_dataset_from_panel(
             row.update(features.get(iid, {}))
             rows.append(row)
 
-    if not rows:
-        return pd.DataFrame(columns=list(META_COLUMNS) + ["sector"])
-    df = pd.DataFrame(rows)
-    df = _rank_labels(df)
+    if rows:
+        df = _rank_labels(pd.DataFrame(rows))
+    else:
+        df = pd.DataFrame(
+            {
+                "instrument_id": pd.Series(dtype="int64"),
+                "symbol": pd.Series(dtype="object"),
+                "date": pd.Series(dtype="object"),
+                "fwd_excess_return": pd.Series(dtype="float64"),
+                "label": pd.Series(dtype="float64"),
+                "sector": pd.Series(dtype="object"),
+            }
+        )
+    # A versioned training frame has a stable column contract. Missing observations stay NaN;
+    # a feature missing for the entire requested window must not silently remove its column.
+    for column in NUMERIC_FEATURE_COLUMNS:
+        if column not in df:
+            df[column] = pd.Series(index=df.index, dtype="float64")
+    if "sector" not in df:
+        df["sector"] = pd.Series(index=df.index, dtype="object")
     ordered = [c for c in META_COLUMNS if c in df.columns] + sorted(feature_columns(df))
-    return df[ordered].reset_index(drop=True)
+    df = df[ordered].reset_index(drop=True)
+    return validate_feature_frame(df) if validate else df
 
 
 def build_dataset(
@@ -159,6 +181,7 @@ def build_dataset(
     benchmark_symbol: str = "XEQT",
     limits: EligibilityLimits | None = None,
     horizon_months: int = LABEL_HORIZON_MONTHS,
+    validate: bool = True,
 ) -> pd.DataFrame:
     """Load bars/FX/corporate data from Postgres and build the supervised dataset.
 
@@ -166,15 +189,15 @@ def build_dataset(
     rows end ``horizon_months`` before the last bar in the window. Raises ValueError when the
     universe or the benchmark has no bars — an excess-return label can't exist without XEQT.
     """
-    panel = _load_universe(session, list(universe), start, end)
+    panel = _load_universe(session, list(universe), start, end, validate=validate)
     if not panel:
         raise ValueError(f"no daily bars found for {list(universe)!r} in the requested window")
-    benchmark = _load_series(session, benchmark_symbol, start, end)
+    benchmark = _load_series(session, benchmark_symbol, start, end, validate=validate)
     if benchmark is None:
         raise ValueError(
             f"benchmark {benchmark_symbol!r} has no bars — the label is excess-vs-benchmark"
         )
-    fx = _load_series(session, "USDCAD", start, end)
+    fx = _load_series(session, "USDCAD", start, end, validate=validate)
     corporate = {iid: load_corporate_inputs(session, iid) for iid in panel}
     return build_dataset_from_panel(
         panel,
@@ -185,4 +208,5 @@ def build_dataset(
         end=end.astimezone(UTC).date() if end.tzinfo else end.date(),
         limits=limits,
         horizon_months=horizon_months,
+        validate=validate,
     )

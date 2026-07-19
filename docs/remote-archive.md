@@ -62,18 +62,32 @@ Restores are idempotent: `restore-bars` inserts only missing bars (recreating in
 rows by symbol/exchange/currency if the DB was rebuilt); `restore-raw` refills only
 currently-NULL payloads and never inserts rows.
 
-## Training on archived data directly
+## Exploring the archive with DuckDB
 
-Partitions are self-describing (symbol, exchange, currency, ts, OHLCV), so exploratory
-work can query the archive without touching Postgres, e.g. with DuckDB against R2:
+Install the research lens alongside the archive tools:
 
-```sql
-INSTALL httpfs; LOAD httpfs;
-CREATE SECRET (TYPE s3, KEY_ID '…', SECRET '…', ENDPOINT '<account>.r2.cloudflarestorage.com');
-SELECT symbol, ts, close
-FROM read_parquet('s3://<bucket>/price_bars/bar_size=1_min/2024-*.parquet')
-WHERE symbol = 'AAPL';
+```bash
+uv sync --extra archive --extra research
 ```
 
-Anything that feeds the real pipeline still goes through `restore-bars` first — model and
-backtest code stays DB-only by design.
+The lens exposes two views over the configured local or S3/R2 archive without restoring
+data: `bars` has `symbol`, `exchange`, `currency`, `ts`, `bar_size`, `source`,
+`what_to_show`, OHLC, and `volume`; `raw_payloads` has `source`, `external_id`, `event_ts`,
+`fetched_at`, and `raw_json`.
+
+```bash
+ibkr-trader archive query \
+  "SELECT ts, close FROM bars WHERE symbol = 'XEQT.TO' AND ts >= '2025-01-01' ORDER BY ts"
+
+# CSV for a pipe or research script
+ibkr-trader archive query --csv \
+  "SELECT source, count(*) AS payloads FROM raw_payloads GROUP BY source"
+```
+
+DuckDB scans the Parquet files in place and pushes column and predicate filters into the
+scan. The connection is in memory, attaches no writable database, and the CLI accepts one
+`SELECT` statement only. It is a read-only research lens, not a second system of record.
+
+Anything that feeds signals, model training, backtests, or execution must still go through
+`archive restore-bars` or `archive restore-raw` first. Those paths remain Postgres-only by
+design; never import the lens from `signals/`, `backtest/`, or `execution/`.

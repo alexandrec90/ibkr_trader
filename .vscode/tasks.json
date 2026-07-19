@@ -16,8 +16,11 @@
     {
       "label": "ibkr: gateway vnc",
       "type": "process",
-      "command": "${env:ProgramFiles}\\TigerVNC\\vncviewer.exe",
-      "args": ["-SecurityTypes", "VncAuth", "127.0.0.1::5900"],
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": [
+        "${workspaceFolder}\\.vscode\\vnc_viewer.py",
+        "${env:ProgramFiles}\\TigerVNC\\vncviewer.exe"
+      ],
       "problemMatcher": []
     },
     {
@@ -574,6 +577,139 @@
       "problemMatcher": []
     },
     {
+      "label": "backtest: run",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\ibkr-trader.exe",
+      "args": [
+        "backtest",
+        "run",
+        "--strategy",
+        "${input:btStrategy}",
+        "--account",
+        "${input:btAccount}",
+        "--universe-file",
+        "${input:btUniverseFile}",
+        "--start",
+        "${input:btStart}",
+        "--eval-start",
+        "${input:btEvalStart}",
+        "--end",
+        "${input:btEnd}"
+      ],
+      "options": {
+        "env": {
+          "DATABASE_URL": "postgresql+psycopg://trader:trader@127.0.0.1:5433/ibkr_trader?connect_timeout=5"
+        }
+      },
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "backtest: run (ETF floor, 2010+)",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\ibkr-trader.exe",
+      "args": [
+        "backtest",
+        "run",
+        "--strategy",
+        "${input:btStrategy}",
+        "--account",
+        "${input:btAccount}",
+        "--universe-file",
+        "tickers-etfs.txt",
+        "--start",
+        "2008-06-02",
+        "--eval-start",
+        "2010-01-04",
+        "--end",
+        "2030-01-01"
+      ],
+      "options": {
+        "env": {
+          "DATABASE_URL": "postgresql+psycopg://trader:trader@127.0.0.1:5433/ibkr_trader?connect_timeout=5"
+        }
+      },
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "backtest: compare (leaderboard)",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\ibkr-trader.exe",
+      "args": ["backtest", "compare", "--sort-by", "${input:btSortBy}"],
+      "options": {
+        "env": {
+          "DATABASE_URL": "postgresql+psycopg://trader:trader@127.0.0.1:5433/ibkr_trader?connect_timeout=5"
+        }
+      },
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "backtest: oos (honest per-fold)",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\ibkr-trader.exe",
+      "args": [
+        "backtest",
+        "oos",
+        "--end",
+        "${input:oosEnd}",
+        "--start",
+        "2008-06-02",
+        "--sim-start",
+        "2010-01-04",
+        "--account",
+        "${input:btAccount}"
+      ],
+      "options": {
+        "env": {
+          "DATABASE_URL": "postgresql+psycopg://trader:trader@127.0.0.1:5433/ibkr_trader?connect_timeout=5"
+        }
+      },
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "train: run",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\ibkr-trader.exe",
+      "args": ["train", "run", "--end", "${input:trainEnd}"],
+      "options": {
+        "env": {
+          "DATABASE_URL": "postgresql+psycopg://trader:trader@127.0.0.1:5433/ibkr_trader?connect_timeout=5"
+        }
+      },
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "dashboard: up (Streamlit)",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\ibkr-trader.exe",
+      "args": ["dashboard"],
+      "options": {
+        "env": {
+          "DATABASE_URL": "postgresql+psycopg://trader:trader@127.0.0.1:5433/ibkr_trader?connect_timeout=5"
+        }
+      },
+      "isBackground": true,
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "ingest: yahoo fx backfill (USDCAD deep history)",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\ibkr-trader.exe",
+      "args": ["ingest", "fx", "--pair", "${input:fxPair}", "--source", "yahoo"],
+      "options": {
+        "env": {
+          "DATABASE_URL": "postgresql+psycopg://trader:trader@127.0.0.1:5433/ibkr_trader?connect_timeout=5"
+        }
+      },
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "problemMatcher": []
+    },
+    {
       "label": "todo: tidy (move done items to end)",
       "type": "process",
       "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
@@ -631,6 +767,63 @@
       "type": "promptString",
       "description": "FX pair to pull from FMP (close = quote currency per 1 base)",
       "default": "USDCAD"
+    },
+    {
+      "id": "btStrategy",
+      "type": "pickString",
+      "description": "Allocator to simulate",
+      "options": ["ml_lt_ridge", "ml_lt", "momentum_lt", "equal_weight", "buy_and_hold"],
+      "default": "ml_lt_ridge"
+    },
+    {
+      "id": "btAccount",
+      "type": "pickString",
+      "description": "Registered account to simulate (drives US-dividend withholding)",
+      "options": ["tfsa", "rrsp", "fhsa", "lira", "nonreg"],
+      "default": "tfsa"
+    },
+    {
+      "id": "btUniverseFile",
+      "type": "promptString",
+      "description": "Universe file (tickers.txt = stocks+ETFs, tickers-etfs.txt = ETF floor)",
+      "default": "tickers.txt"
+    },
+    {
+      "id": "btStart",
+      "type": "promptString",
+      "description": "Bar-load start (warm-up bars for features; USDCAD coverage starts 2003-09-17)",
+      "default": "2008-06-02"
+    },
+    {
+      "id": "btEvalStart",
+      "type": "promptString",
+      "description": "First decision date (owner policy floor: 2010, to skip the 2008-09 recession)",
+      "default": "2010-01-04"
+    },
+    {
+      "id": "btEnd",
+      "type": "promptString",
+      "description": "Window end (a far-future date just means 'through the newest bar')",
+      "default": "2030-01-01"
+    },
+    {
+      "id": "btSortBy",
+      "type": "pickString",
+      "description": "Leaderboard ranking metric",
+      "options": ["sharpe", "calmar", "cagr", "total_return", "excess_return", "max_drawdown"],
+      "default": "calmar"
+    },
+    {
+      "id": "oosEnd",
+      "type": "promptString",
+      "description": "OOS dataset window end (labels stop 12 months earlier)",
+      "default": "2026-07-01"
+    },
+    {
+      "id": "trainEnd",
+      "type": "promptString",
+      "description": "Training dataset window end (labels stop 12 months earlier)",
+      "default": "2026-07-01"
     }
   ]
 }

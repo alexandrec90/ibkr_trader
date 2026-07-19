@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 
 import numpy as np
+import pandas as pd
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -43,6 +44,7 @@ from ibkr_trader.signals.features import (
     load_corporate_inputs,
 )
 from ibkr_trader.signals.portfolio import Allocator, Weights, get_allocator
+from ibkr_trader.signals.schemas import validate_price_frame
 
 
 @dataclass
@@ -117,6 +119,7 @@ class BacktestResult:
     costs_cad: float = 0.0
     tax_cad: float = 0.0
     fx_cost_cad: float = 0.0
+    run_id: int | None = None  # populated after a persisted BacktestRun is flushed
 
 
 def _fx_to_cad(currency: str, fx: Series | None, day: date) -> float:
@@ -429,6 +432,7 @@ class BacktestEngine:
         config: RegisteredStrategyConfig | None = None,
         session: Session | None = None,
         persist: bool = True,
+        validate: bool = True,
     ) -> BacktestResult:
         """Load daily bars for ``symbols`` from the DB and simulate ``strategy`` over them.
 
@@ -445,6 +449,7 @@ class BacktestEngine:
             config=config,
             session=session,
             persist=persist,
+            validate=validate,
         )
 
     def run_allocator(
@@ -459,6 +464,7 @@ class BacktestEngine:
         session: Session | None = None,
         persist: bool = True,
         extra_params: dict | None = None,
+        validate: bool = True,
     ) -> BacktestResult:
         """Like ``run`` but for an explicitly built (possibly unregistered) allocator.
 
@@ -470,13 +476,31 @@ class BacktestEngine:
 
         if session is not None:
             return self._run_with_session(
-                session, allocator, name, symbols, start, end, config, persist, extra_params
+                session,
+                allocator,
+                name,
+                symbols,
+                start,
+                end,
+                config,
+                persist,
+                extra_params,
+                validate,
             )
         from ibkr_trader.db.session import get_session
 
         with get_session() as owned:
             return self._run_with_session(
-                owned, allocator, name, symbols, start, end, config, persist, extra_params
+                owned,
+                allocator,
+                name,
+                symbols,
+                start,
+                end,
+                config,
+                persist,
+                extra_params,
+                validate,
             )
 
     def _run_with_session(
@@ -490,9 +514,10 @@ class BacktestEngine:
         config: RegisteredStrategyConfig,
         persist: bool,
         extra_params: dict | None = None,
+        validate: bool = True,
     ) -> BacktestResult:
-        universe = _load_universe(session, symbols, start, end)
-        fx = _load_series(session, "USDCAD", start, end)
+        universe = _load_universe(session, symbols, start, end, validate=validate)
+        fx = _load_series(session, "USDCAD", start, end, validate=validate)
         if not universe:
             raise ValueError(f"no daily bars found for {symbols!r} in the requested window")
 
@@ -551,17 +576,30 @@ class BacktestEngine:
             )
 
         if persist:
-            session.add(
-                BacktestRun(
-                    strategy=result.strategy,
-                    params=result.params,
-                    start=result.start,
-                    end=result.end,
-                    metrics=result.metrics,
-                    created_at=datetime.now(tz=UTC),
-                )
+            # Daily equity curves ride along in the metrics JSON (~40 KB for 5y of dailies)
+            # so the dashboard can plot a run without re-simulating it. Scalar-only consumers
+            # (compare, snapshot report) read named keys and ignore these.
+            run = BacktestRun(
+                strategy=result.strategy,
+                params=result.params,
+                start=result.start,
+                end=result.end,
+                metrics={
+                    **result.metrics,
+                    "equity_curve": _curve_json(result.equity_curve),
+                    "benchmark_equity_curve": _curve_json(bench.equity_curve),
+                },
+                created_at=datetime.now(tz=UTC),
             )
+            session.add(run)
+            session.flush()
+            result.run_id = run.id
         return result
+
+
+def _curve_json(equity_curve: list) -> list[list]:
+    """(date, equity) pairs as JSON-serializable [iso-date, rounded-CAD] rows."""
+    return [[day.isoformat(), round(float(value), 2)] for day, value in equity_curve]
 
 
 #: When one instrument has bars from several providers in the same what_to_show bucket, the
@@ -609,6 +647,26 @@ def _pick_source(
     return min(counts, key=rank)[0]
 
 
+def _utc_timestamps(values: list[datetime], *, sqlite: bool) -> list[datetime]:
+    """Canonicalize DB timestamps to ``datetime.UTC`` for the price-frame schema.
+
+    - SQLite drops timezone info; its fixtures still represent the model's documented UTC
+      timestamps, so naive values are re-stamped as UTC there.
+    - Postgres (psycopg) returns aware values whose tzinfo may be a zoneinfo alias like
+      ``Etc/UTC``; pandas then types the column ``datetime64[ns, Etc/UTC]``, which the
+      schema's ``ts_utc`` check rejects. ``astimezone(UTC)`` is lossless and canonical.
+    - A naive value from a non-SQLite database is passed through untouched so the schema
+      fails loudly instead of this adapter guessing a timezone.
+    """
+    out: list[datetime] = []
+    for value in values:
+        if value.tzinfo is None:
+            out.append(value.replace(tzinfo=UTC) if sqlite else value)
+        else:
+            out.append(value.astimezone(UTC))
+    return out
+
+
 def _load_series(
     session: Session,
     symbol: str,
@@ -617,6 +675,7 @@ def _load_series(
     *,
     bar_size: str = "1 day",
     what_to_show: str = "ADJUSTED_LAST",
+    validate: bool = True,
 ) -> Series | None:
     """Load one instrument's daily bars into a Series. Falls back to TRADES if no adjusted bars
     exist for it (so a universe ingested only as TRADES still runs). Bars come from exactly one
@@ -643,15 +702,30 @@ def _load_series(
             )
         )
         if rows:
+            sqlite = session.get_bind().dialect.name == "sqlite"
+            timestamps = _utc_timestamps([bar.ts for bar in rows], sqlite=sqlite)
+            frame = pd.DataFrame(
+                {
+                    "instrument_id": [bar.instrument_id for bar in rows],
+                    "ts": timestamps,
+                    "open": [bar.open for bar in rows],
+                    "high": [bar.high for bar in rows],
+                    "low": [bar.low for bar in rows],
+                    "close": [bar.close for bar in rows],
+                    "volume": [bar.volume for bar in rows],
+                }
+            )
+            if validate:
+                frame = validate_price_frame(frame)
             return Series(
                 instrument_id=instrument.id,
                 symbol=instrument.symbol,
                 currency=instrument.currency,
                 exchange=instrument.exchange,
-                dates=[bar.ts.date() for bar in rows],
-                opens=[bar.open for bar in rows],
-                closes=[bar.close for bar in rows],
-                volumes=[bar.volume or 0.0 for bar in rows],
+                dates=[timestamp.date() for timestamp in frame["ts"]],
+                opens=frame["open"].tolist(),
+                closes=frame["close"].tolist(),
+                volumes=frame["volume"].fillna(0.0).tolist(),
                 asset_class=getattr(instrument, "asset_class", None),
                 leveraged=bool(getattr(instrument, "leveraged", False)),
             )
@@ -659,11 +733,16 @@ def _load_series(
 
 
 def _load_universe(
-    session: Session, symbols: list[str], start: datetime, end: datetime
+    session: Session,
+    symbols: list[str],
+    start: datetime,
+    end: datetime,
+    *,
+    validate: bool = True,
 ) -> dict[int, Series]:
     universe: dict[int, Series] = {}
     for symbol in symbols:
-        series = _load_series(session, symbol, start, end)
+        series = _load_series(session, symbol, start, end, validate=validate)
         if series is not None:
             universe[series.instrument_id] = series
     return universe

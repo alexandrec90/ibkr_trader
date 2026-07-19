@@ -32,6 +32,7 @@ from ibkr_trader.backtest.engine import (
     BacktestResult,
     RegisteredStrategyConfig,
 )
+from ibkr_trader.db.models import Prediction
 from ibkr_trader.signals.dataset import LABEL_HORIZON_MONTHS, build_dataset, feature_columns
 from ibkr_trader.signals.eligibility import Candidate
 from ibkr_trader.signals.portfolio import (
@@ -180,6 +181,67 @@ def fit_fold_models(
     return fold_models
 
 
+def build_oos_prediction_frame(
+    df: pd.DataFrame,
+    folds: Sequence[Fold],
+    fold_models: Sequence[FoldModel],
+    feature_cols: Sequence[str],
+) -> pd.DataFrame:
+    """Predict each fold's test rows once, preserving the fold provenance.
+
+    This is the reusable signal source for factor research. It deliberately consumes the
+    already-fitted fold models from the OOS run; report code never fits or reloads a model.
+    """
+    models_by_id = {fold.fold_id: fold for fold in fold_models}
+    rows: list[pd.DataFrame] = []
+    for fold in folds:
+        fitted = models_by_id.get(fold.fold_id)
+        if fitted is None:
+            raise ValueError(f"missing fitted model for fold {fold.fold_id}")
+        test = df[df["date"].isin(fold.test_dates)].copy()
+        if test.empty:
+            raise ValueError(f"fold {fold.fold_id} has no test rows")
+        predicted = fitted.model.predict(test[list(feature_cols)])
+        if len(predicted) != len(test):
+            raise ValueError(
+                f"fold {fold.fold_id} returned {len(predicted)} predictions for {len(test)} rows"
+            )
+        test["score"] = predicted
+        test["fold_id"] = fold.fold_id
+        rows.append(test[["instrument_id", "symbol", "date", "score", "fold_id"]])
+    result = pd.concat(rows, ignore_index=True)
+    if result[["instrument_id", "date"]].duplicated().any():
+        raise ValueError("OOS folds produced duplicate instrument/date predictions")
+    return result
+
+
+def persist_oos_predictions(
+    session: Session,
+    run_id: int,
+    model_name: str,
+    predictions: pd.DataFrame,
+) -> None:
+    """Attach auditable fold predictions to one persisted OOS backtest run."""
+    created_at = datetime.now(tz=UTC)
+    session.add_all(
+        [
+            Prediction(
+                model_name=model_name,
+                model_version=OOS_MODEL_VERSION,
+                backtest_run_id=run_id,
+                instrument_id=int(row.instrument_id),
+                ts=datetime.combine(row.date, datetime.min.time(), tzinfo=UTC),
+                horizon="12m",
+                score=float(row.score),
+                features={"fold_id": int(row.fold_id), "signal_source": "oos-fold"},
+                created_at=created_at,
+            )
+            for row in predictions.itertuples(index=False)
+        ]
+    )
+    session.flush()
+
+
 @dataclass
 class OosBacktest:
     """One `backtest oos` invocation: the stitched OOS span and all five strategies' runs."""
@@ -255,19 +317,24 @@ def run_oos_backtest(
     engine = BacktestEngine(cost_model=cost_model)
     results: list[BacktestResult] = []
     for name, factory in factories.items():
-        allocator = FoldSwitchingAllocator(name, fit_fold_models(df, folds, factory), features)
-        results.append(
-            engine.run_allocator(
-                allocator,
-                symbols,
-                sim_start,
-                sim_end,
-                config=config,
-                session=session,
-                persist=persist,
-                extra_params=extra_params,
-            )
+        fold_models = fit_fold_models(df, folds, factory)
+        predictions = build_oos_prediction_frame(df, folds, fold_models, features)
+        allocator = FoldSwitchingAllocator(name, fold_models, features)
+        result = engine.run_allocator(
+            allocator,
+            symbols,
+            sim_start,
+            sim_end,
+            config=config,
+            session=session,
+            persist=persist,
+            extra_params=extra_params,
         )
+        if persist:
+            if result.run_id is None:  # defensive: engine persistence must provide provenance
+                raise RuntimeError("persisted OOS backtest did not expose its run id")
+            persist_oos_predictions(session, result.run_id, name, predictions)
+        results.append(result)
     for baseline in baselines:
         results.append(
             engine.run_allocator(

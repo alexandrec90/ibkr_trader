@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from ibkr_trader.db.models import Base, NewsArticle, SocialPost
+from ibkr_trader.signals import sentiment as sentiment_module
 from ibkr_trader.signals.features import score_sentiment
 from ibkr_trader.signals.sentiment import score_pending
 
@@ -83,7 +84,7 @@ class TestScorePending:
         )
         session.commit()
 
-        counts = score_pending(session)
+        counts = score_pending(session, model="vader")
         session.commit()
 
         assert counts == {"news_articles": 1, "social_posts": 1}
@@ -91,17 +92,23 @@ class TestScorePending:
         untouched = session.scalar(select(NewsArticle).where(NewsArticle.external_id == "a2"))
         post = session.scalar(select(SocialPost).where(SocialPost.external_id == "p1"))
         assert scored.sentiment is not None and scored.sentiment > 0
+        assert scored.sentiment_model == "vader"
         assert untouched.sentiment == 0.9
+        assert untouched.sentiment_model is None
         assert post.sentiment is not None and post.sentiment < 0
+        assert post.sentiment_model == "vader"
 
     def test_idempotent_second_run_scores_nothing(self):
         session = _session()
         session.add(_article("a1", "great news", None))
         session.commit()
 
-        assert score_pending(session)["news_articles"] == 1
+        assert score_pending(session, model="vader")["news_articles"] == 1
         session.commit()
-        assert score_pending(session) == {"news_articles": 0, "social_posts": 0}
+        assert score_pending(session, model="vader") == {
+            "news_articles": 0,
+            "social_posts": 0,
+        }
 
     def test_empty_text_rows_still_get_marked_scored(self):
         # A row with no scorable text must score 0.0 (not stay NULL), or the job would
@@ -110,7 +117,7 @@ class TestScorePending:
         session.add(_post("p1", None, None))
         session.commit()
 
-        assert score_pending(session)["social_posts"] == 1
+        assert score_pending(session, model="vader")["social_posts"] == 1
         session.commit()
         post = session.scalar(select(SocialPost).where(SocialPost.external_id == "p1"))
         assert post.sentiment == 0.0
@@ -120,7 +127,7 @@ class TestScorePending:
         session.add_all([_article(f"a{i}", f"headline {i} is excellent", None) for i in range(5)])
         session.commit()
 
-        counts = score_pending(session, batch_size=2)
+        counts = score_pending(session, batch_size=2, model="vader")
         session.commit()
 
         assert counts["news_articles"] == 5
@@ -132,3 +139,34 @@ class TestScorePending:
     def test_rejects_nonpositive_batch_size(self):
         with pytest.raises(ValueError, match="batch_size"):
             score_pending(_session(), batch_size=0)
+
+    def test_settings_selects_scorer_and_stamps_its_name(self, monkeypatch):
+        session = _session()
+        session.add(_article("a1", "headline", None))
+        session.commit()
+        selected = []
+
+        class FakeFinbert:
+            model_name = "finbert"
+
+            def score_many(self, texts, *, batch_size):
+                return [0.25] * len(texts)
+
+        monkeypatch.setattr(
+            sentiment_module,
+            "get_settings",
+            lambda: type("Settings", (), {"sentiment_model": "finbert"})(),
+        )
+
+        def fake_factory(model):
+            selected.append(model)
+            return FakeFinbert()
+
+        monkeypatch.setattr(sentiment_module, "scorer_for_model", fake_factory)
+        assert score_pending(session)["news_articles"] == 1
+        session.commit()
+
+        article = session.scalar(select(NewsArticle).where(NewsArticle.external_id == "a1"))
+        assert selected == ["finbert"]
+        assert article.sentiment == 0.25
+        assert article.sentiment_model == "finbert"

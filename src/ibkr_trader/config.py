@@ -76,7 +76,10 @@ class Settings(BaseSettings):
     finnhub_backfill_days: int = 365
     finnhub_backfill_chunk_days: int = 30
     finnhub_backfill_max_requests: int = 2000
-    # Cadence for VADER-scoring rows where sentiment IS NULL (news + social). Scoring also
+    # Sentiment scorer and cadence for rows where sentiment IS NULL (news + social). FinBERT
+    # loads from the local HF cache only; populate it with `ibkr-trader sentiment download`.
+    sentiment_model: Literal["vader", "finbert"] = "vader"
+    # Scoring also
     # unlocks raw-payload pruning, so this indirectly bounds disk usage.
     score_sentiment_minutes: int = 60
     # Daily-bar refresh: incremental Yahoo fetch for every yahoo-tracked instrument plus FX

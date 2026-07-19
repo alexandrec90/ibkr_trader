@@ -297,7 +297,10 @@ def test_tracked_yahoo_symbols_returns_only_yahoo_sourced_instruments():
         us = Instrument(symbol="AAPL", exchange="SMART", currency="USD")
         fmp_only = Instrument(symbol="NVDA", exchange="SMART", currency="USD")
         bare = Instrument(symbol="ZZZ", exchange="SMART", currency="USD")  # no bars at all
-        session.add_all([tsx, us, fmp_only, bare])
+        # FX CASH instruments carry yahoo bars too (yahoo_fx backfill) but their Yahoo ticker
+        # is "PAIR=X" — the equity poll must never pick them up.
+        cash = Instrument(symbol="USDCAD", exchange="IDEALPRO", currency="CAD", sec_type="CASH")
+        session.add_all([tsx, us, fmp_only, bare, cash])
         session.flush()
 
         def bar(instrument, source, day):
@@ -320,13 +323,15 @@ def test_tracked_yahoo_symbols_returns_only_yahoo_sourced_instruments():
                 bar(tsx, "yahoo", date(2024, 1, 3)),  # two bars, must not duplicate
                 bar(us, "yahoo", date(2024, 1, 2)),
                 bar(fmp_only, "fmp", date(2024, 1, 2)),
+                bar(cash, "yahoo", date(2024, 1, 2)),
             ]
         )
 
     with session_cm() as session:
         symbols = yahoo_common.tracked_yahoo_symbols(session)
 
-    # TSX names get their Yahoo suffix back; fmp-only and bar-less instruments are excluded
+    # TSX names get their Yahoo suffix back; fmp-only, bar-less and CASH (FX) instruments
+    # are excluded
     assert symbols == ["AAPL", "XEQT.TO"]
 
 
