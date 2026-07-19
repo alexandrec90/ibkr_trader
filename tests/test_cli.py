@@ -171,7 +171,7 @@ def test_backtest_run_eval_start_default_is_none(monkeypatch):
 def test_backtest_run_bad_eval_start_is_refused(args):
     result = runner.invoke(cli.app, ["backtest", "run", "--symbols", "AAPL", *args])
     assert result.exit_code != 0
-    assert "--eval-start" in result.output
+    assert "--eval-start" in _plain(_all_output(result))
 
 
 def test_backtest_oos_flows_history_floor_into_config(monkeypatch):
