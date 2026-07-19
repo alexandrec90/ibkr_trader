@@ -48,7 +48,13 @@ def _make_artifact(
     artifact.mkdir(parents=True)
     (artifact / "model.txt").write_text("stub booster — tests inject a fake instead\n")
     (artifact / "ridge.joblib").write_text("stub ridge — tests inject a fake instead\n")
-    sklearn_version = sklearn_version or importlib_metadata.version("scikit-learn")
+    if sklearn_version is None:
+        try:
+            sklearn_version = importlib_metadata.version("scikit-learn")
+        except importlib_metadata.PackageNotFoundError:
+            # Without the [ml] extra only the missing-extra tests run; they raise before
+            # any code reads this pin, so a placeholder keeps the artifact valid.
+            sklearn_version = "1.0.0"
     metadata = {
         "model": "ml_lt",
         "version": version,
