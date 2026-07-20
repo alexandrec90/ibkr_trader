@@ -53,10 +53,9 @@ sentiment = [
     "transformers>=4.40",
     "torch>=2.2",
 ]
-# Local results dashboard (`ibkr-trader dashboard`). Same guarded-import pattern as [ml]:
-# dashboard/data.py stays importable without these; only dashboard/app.py needs them.
-dashboard = [
-    "streamlit>=1.36",
+# Static HTML results report (`ibkr-trader report`). Same guarded-import pattern as [ml]:
+# dashboard/data.py stays importable without this; only dashboard/report.py needs plotly.
+report = [
     "plotly>=5.22",
 ]
 
@@ -120,9 +119,3 @@ skip_covered = true
 
 [tool.coverage.run]
 branch = true
-# dashboard/app.py IS tested (tests/test_dashboard_app.py drives it via streamlit's headless
-# AppTest), but streamlit executes the script inside its ScriptRunner thread, which coverage's
-# tracer (both ctrace and sysmon cores) never attributes — the file always reads 0% no matter
-# how much of it the tests exercise. Excluding it from *measurement* keeps the fail_under
-# ratchet meaningful for everything coverage can actually see.
-omit = ["*/ibkr_trader/dashboard/app.py"]

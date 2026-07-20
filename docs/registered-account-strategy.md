@@ -117,15 +117,16 @@ optimized by construction. Provided today:
 ibkr-trader backtest run --strategy ml_lt_ridge --account tfsa \
     --universe-file tickers.txt --start 2008-06-02 --eval-start 2010-01-04 --end 2030-01-01
 ibkr-trader backtest compare --sort-by calmar        # leaderboard
-ibkr-trader dashboard    # Streamlit UI: leaderboard, equity/drawdown charts, run launcher
-                         # (needs the [dashboard] extra: uv sync --extra dashboard)
+ibkr-trader report       # static HTML report: leaderboard + equity/drawdown charts, opens in
+                         # the browser; no server stays resident (needs the [report] extra:
+                         # uv sync --extra report)
 ```
 
 Every persisted run stores its daily equity curve (and the benchmark's) in
-`backtest_runs.metrics` — that is what the dashboard plots; runs persisted before curve
+`backtest_runs.metrics` — that is what the report plots; runs persisted before curve
 storage list but don't chart. VS Code tasks cover all of this: `backtest: run`,
 `backtest: run (ETF floor, 2010+)`, `backtest: compare`, `backtest: oos`, `train: run`,
-`dashboard: up`.
+`report: generate`.
 
 **Survivorship bounds:** `tickers.txt` results are upper bounds (curated from today's
 survivors). `tickers-etfs.txt` — 24 broad-market ETFs (XIU/XIC/XBB/XSP listed 1999-2002,

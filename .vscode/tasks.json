@@ -683,16 +683,15 @@
       "problemMatcher": []
     },
     {
-      "label": "dashboard: up (Streamlit)",
+      "label": "report: generate (static HTML)",
       "type": "process",
       "command": "${workspaceFolder}\\.venv\\Scripts\\ibkr-trader.exe",
-      "args": ["dashboard"],
+      "args": ["report"],
       "options": {
         "env": {
           "DATABASE_URL": "postgresql+psycopg://trader:trader@127.0.0.1:5433/ibkr_trader?connect_timeout=5"
         }
       },
-      "isBackground": true,
       "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
       "problemMatcher": []
     },

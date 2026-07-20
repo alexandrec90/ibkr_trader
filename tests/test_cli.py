@@ -1093,55 +1093,31 @@ def test_ingest_fx_unknown_source_is_refused():
     assert "unknown source" in result.output
 
 
-def test_dashboard_refuses_without_streamlit(monkeypatch):
+def test_report_refuses_without_plotly(monkeypatch):
     import importlib.util
 
-    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
-    result = runner.invoke(cli.app, ["dashboard"])
+    real_find_spec = importlib.util.find_spec
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda name: None if name == "plotly" else real_find_spec(name),
+    )
+    result = runner.invoke(cli.app, ["report"])
     assert result.exit_code == 1
-    assert "uv sync --extra dashboard" in _all_output(result)
+    assert "uv sync --extra report" in _all_output(result)
 
 
-def test_dashboard_launches_streamlit_run_on_app_file(monkeypatch, tmp_path):
-    import importlib.util
-    import pathlib
-    import subprocess
+def test_report_writes_html_file(monkeypatch, tmp_path):
+    pytest.importorskip("plotly")
+    _patch_session(monkeypatch, _make_session())
+    # build_report_from_db is imported lazily inside the command; patch it at the source module.
+    from ibkr_trader.dashboard import report as report_mod
 
-    seen = {}
+    monkeypatch.setattr(report_mod, "build_report_from_db", lambda session, **kw: "<html>ok</html>")
 
-    def fake_run(cmd, check):
-        seen["cmd"] = cmd
-        return SimpleNamespace(returncode=0)
+    out = tmp_path / "r.html"
+    result = runner.invoke(cli.app, ["report", "--output", str(out), "--no-open"])
 
-    monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    monkeypatch.setattr(pathlib.Path, "home", lambda: tmp_path)
-    result = runner.invoke(cli.app, ["dashboard", "--port", "9000"])
-
-    assert result.exit_code == 0
-    cmd = seen["cmd"]
-    assert cmd[1:4] == ["-m", "streamlit", "run"]
-    assert cmd[4].endswith("app.py") and "dashboard" in cmd[4]
-    assert cmd[5:7] == ["--server.port", "9000"]
-    # first-run email prompt suppressed by bootstrapping the opt-out credentials file
-    assert (tmp_path / ".streamlit" / "credentials.toml").read_text(
-        encoding="utf-8"
-    ) == '[general]\nemail = ""\n'
-
-
-def test_dashboard_keeps_existing_credentials(monkeypatch, tmp_path):
-    import importlib.util
-    import pathlib
-    import subprocess
-
-    creds = tmp_path / ".streamlit" / "credentials.toml"
-    creds.parent.mkdir(parents=True)
-    creds.write_text('[general]\nemail = "me@example.com"\n', encoding="utf-8")
-
-    monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
-    monkeypatch.setattr(subprocess, "run", lambda cmd, check: SimpleNamespace(returncode=0))
-    monkeypatch.setattr(pathlib.Path, "home", lambda: tmp_path)
-    result = runner.invoke(cli.app, ["dashboard"])
-
-    assert result.exit_code == 0
-    assert "me@example.com" in creds.read_text(encoding="utf-8")  # untouched
+    assert result.exit_code == 0, _all_output(result)
+    assert out.read_text(encoding="utf-8") == "<html>ok</html>"
+    assert f"wrote {out}" in result.output
