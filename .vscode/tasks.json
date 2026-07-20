@@ -188,6 +188,20 @@
       "problemMatcher": []
     },
     {
+      "label": "git: sync branch with origin/main (no stash)",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": [
+        "${workspaceFolder}\\.vscode\\git_sync_branch.py"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
       "label": "agents: sync from claude",
       "type": "shell",
       "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
