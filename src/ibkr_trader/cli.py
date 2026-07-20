@@ -3,6 +3,7 @@
 import csv
 import sys
 from enum import StrEnum
+from pathlib import Path
 from typing import cast
 
 import typer
@@ -1128,46 +1129,41 @@ def sentiment_rescore(
 
 
 @app.command()
-def dashboard(
-    port: int = typer.Option(8501, help="local port for the Streamlit server"),
+def report(
+    output: Path = typer.Option(
+        Path("report.html"), "--output", "-o", help="path to write the HTML report to"
+    ),
+    rebase: bool | None = typer.Option(
+        None,
+        "--rebase/--no-rebase",
+        help="rebase each curve to 100 at its first point (default: on when >1 series overlays)",
+    ),
+    open_browser: bool = typer.Option(
+        True, "--open/--no-open", help="open the report in the default browser when done"
+    ),
 ):
-    """Launch the local results dashboard (Streamlit) — leaderboard, equity/drawdown charts,
-    and a form to run new backtests. Needs the [dashboard] extra (uv sync --extra dashboard).
-    Blocks; Ctrl-C to stop."""
-    import importlib.util
-    import subprocess
-    from importlib.resources import files
-    from pathlib import Path
+    """Render persisted backtest_runs to a self-contained static HTML report — leaderboard plus
+    interactive Plotly equity/drawdown charts, no server. Runs briefly and exits (nothing stays
+    resident), so it's laptop-friendly. Needs the [report] extra (uv sync --extra report).
 
-    if importlib.util.find_spec("streamlit") is None:
-        typer.echo("error: streamlit is not installed — run `uv sync --extra dashboard`", err=True)
+    Run new backtests with `ibkr-trader backtest run`, then regenerate this to view them.
+    """
+    import importlib.util
+    import webbrowser
+
+    if importlib.util.find_spec("plotly") is None:
+        typer.echo("error: plotly is not installed — run `uv sync --extra report`", err=True)
         raise typer.Exit(code=1)
 
-    # Without a credentials file, streamlit's first run stops at an interactive email prompt
-    # (even with stdin detached, it just hangs) — bootstrap the opt-out it would write.
-    credentials = Path.home() / ".streamlit" / "credentials.toml"
-    if not credentials.exists():
-        credentials.parent.mkdir(parents=True, exist_ok=True)
-        credentials.write_text('[general]\nemail = ""\n', encoding="utf-8")
+    from ibkr_trader.dashboard.report import build_report_from_db
+    from ibkr_trader.db.session import get_session
 
-    app_path = files("ibkr_trader.dashboard").joinpath("app.py")
-    raise typer.Exit(
-        subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "streamlit",
-                "run",
-                str(app_path),
-                "--server.port",
-                str(port),
-                # local tool: no telemetry, no first-run email prompt
-                "--browser.gatherUsageStats",
-                "false",
-            ],
-            check=False,
-        ).returncode
-    )
+    with get_session() as session:
+        html = build_report_from_db(session, rebased=rebase)
+    output.write_text(html, encoding="utf-8")
+    typer.echo(f"wrote {output}")
+    if open_browser:
+        webbrowser.open(output.resolve().as_uri())
 
 
 @app.command()
