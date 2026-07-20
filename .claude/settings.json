@@ -27,6 +27,6 @@
   },
 
   "effortLevel": "high",
-  "skipDangerousModePermissionPrompt": true,
-  "model": "claude-fable-5[1m]"
+  "skipDangerousModePermistreamlit ssionPrompt": true,
+  "model": "opus"
 }
