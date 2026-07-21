@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
-import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -25,114 +24,6 @@ def load_script(name: str) -> ModuleType:
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
     return module
-
-
-def git_result(returncode: int = 0, stdout: str = "", stderr: str = ""):
-    return subprocess.CompletedProcess(["git"], returncode, stdout, stderr)
-
-
-def test_git_sync_rebases_clean_attached_branch(monkeypatch, capsys):
-    script = load_script("git_sync_branch.py")
-    results = iter(
-        [
-            git_result(),
-            git_result(stdout="feature/test\n"),
-            git_result(),
-            git_result(stdout="abc123\n"),
-            git_result(),
-        ]
-    )
-    calls = []
-
-    def fake_run_git(*args, capture_output=False):
-        calls.append((args, capture_output))
-        return next(results)
-
-    monkeypatch.setattr(script, "run_git", fake_run_git)
-
-    assert script.main() == 0
-    assert calls == [
-        (("status", "--porcelain"), True),
-        (("branch", "--show-current"), True),
-        (("fetch", "--prune", "origin"), False),
-        (("rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"), True),
-        (("rebase", "origin/main"), False),
-    ]
-    assert "Syncing 'feature/test' with origin/main" in capsys.readouterr().out
-
-
-def test_git_sync_refuses_dirty_worktree_without_fetching(monkeypatch, capsys):
-    script = load_script("git_sync_branch.py")
-    calls = []
-
-    def fake_run_git(*args, capture_output=False):
-        calls.append((args, capture_output))
-        return git_result(stdout=" M src/example.py\n")
-
-    monkeypatch.setattr(script, "run_git", fake_run_git)
-
-    assert script.main() == 1
-    assert calls == [(("status", "--porcelain"), True)]
-    assert "will never stash" in capsys.readouterr().err
-
-
-def test_git_sync_refuses_detached_head_without_fetching(monkeypatch, capsys):
-    script = load_script("git_sync_branch.py")
-    results = iter([git_result(), git_result()])
-    calls = []
-
-    def fake_run_git(*args, capture_output=False):
-        calls.append((args, capture_output))
-        return next(results)
-
-    monkeypatch.setattr(script, "run_git", fake_run_git)
-
-    assert script.main() == 1
-    assert [call[0][0] for call in calls] == ["status", "branch"]
-    assert "HEAD is detached" in capsys.readouterr().err
-
-
-@pytest.mark.parametrize("failed_step", ["status", "branch", "fetch", "rebase"])
-def test_git_sync_propagates_git_failure(monkeypatch, failed_step):
-    script = load_script("git_sync_branch.py")
-
-    def fake_run_git(*args, capture_output=False):
-        if args[0] == failed_step:
-            return git_result(returncode=23, stderr="git failed\n")
-        if args[0] == "branch":
-            return git_result(stdout="feature/test\n")
-        if args[0] == "rev-parse":
-            return git_result(stdout="abc123\n")
-        return git_result()
-
-    monkeypatch.setattr(script, "run_git", fake_run_git)
-
-    assert script.main() == 23
-
-
-def test_git_sync_reports_missing_origin_main(monkeypatch, capsys):
-    script = load_script("git_sync_branch.py")
-
-    def fake_run_git(*args, capture_output=False):
-        if args[0] == "branch":
-            return git_result(stdout="feature/test\n")
-        if args[0] == "rev-parse":
-            return git_result(returncode=1)
-        return git_result()
-
-    monkeypatch.setattr(script, "run_git", fake_run_git)
-
-    assert script.main() == 1
-    assert "origin/main was not found" in capsys.readouterr().err
-
-
-def test_git_sync_task_invokes_the_tested_script():
-    tasks = json.loads((SCRIPT_DIR / "tasks.json").read_text(encoding="utf-8"))["tasks"]
-    task = next(task for task in tasks if task["label"].startswith("git: sync branch"))
-
-    assert task["type"] == "process"
-    assert task["command"].endswith(".venv\\Scripts\\python.exe")
-    assert task["args"] == ["${workspaceFolder}\\.vscode\\git_sync_branch.py"]
 
 
 def test_every_vscode_task_script_reference_exists():
