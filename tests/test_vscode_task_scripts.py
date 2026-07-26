@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import re
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -13,6 +14,16 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_DIR = REPO_ROOT / ".vscode"
+
+# VS Code reads tasks.json as JSONC, and ours carries a comment block explaining the label
+# convention. Match strings first so a `//` inside one (the DATABASE_URL values) is kept.
+_JSONC_STRING_OR_COMMENT = re.compile(r'"(?:\\.|[^"\\])*"|//[^\n]*|/\*.*?\*/', re.DOTALL)
+
+
+def strip_jsonc_comments(text: str) -> str:
+    return _JSONC_STRING_OR_COMMENT.sub(
+        lambda match: match.group(0) if match.group(0).startswith('"') else "", text
+    )
 
 
 def load_script(name: str) -> ModuleType:
@@ -26,8 +37,15 @@ def load_script(name: str) -> ModuleType:
     return module
 
 
+def test_strip_jsonc_comments_keeps_double_slashes_inside_strings():
+    source = '{\n  // a comment\n  "url": "postgresql://trader@host:5433/db", /* trailing */\n}'
+
+    assert strip_jsonc_comments(source) == '{\n  \n  "url": "postgresql://trader@host:5433/db", \n}'
+
+
 def test_every_vscode_task_script_reference_exists():
-    tasks = json.loads((SCRIPT_DIR / "tasks.json").read_text(encoding="utf-8"))["tasks"]
+    raw = strip_jsonc_comments((SCRIPT_DIR / "tasks.json").read_text(encoding="utf-8"))
+    tasks = json.loads(raw)["tasks"]
     prefix = "${workspaceFolder}\\.vscode\\"
     references = [
         argument
