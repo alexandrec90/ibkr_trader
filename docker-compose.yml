@@ -25,8 +25,14 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trader}
       POSTGRES_DB: ${POSTGRES_DB:-ibkr_trader}
     ports:
-      # host 5433 because a local PostgreSQL already occupies 5432 on the dev machine
-      - "127.0.0.1:5433:5432"
+      # Host 5433 because a local PostgreSQL already occupies 5432 on the dev machine.
+      # That is slot 1 in devkit's ports.toml, which is the machine-wide registry of
+      # which checkout owns which host port; the default here must keep matching it.
+      # Kept as a variable rather than a literal so the port can move without editing
+      # this file — note that unlike carameli, worktrees here deliberately SHARE one
+      # db container (see the `name:` pin above and docs/parallel-worktrees.md), so
+      # this is not a per-worktree offset.
+      - "127.0.0.1:${DB_HOST_PORT:-5433}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:

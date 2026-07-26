@@ -894,6 +894,50 @@ def test_archive_status_empty(monkeypatch, tmp_path):
     assert "archive is empty" in result.output
 
 
+def test_archive_catalog_empty_then_populated_and_rebuild(monkeypatch, tmp_path):
+    pytest.importorskip("pyarrow")
+    from ibkr_trader.db.models import Instrument, PriceBar
+
+    _patch_archive_settings(monkeypatch, tmp_path)
+
+    empty = runner.invoke(cli.app, ["archive", "catalog"])
+    assert empty.exit_code == 0
+    assert "catalog is empty" in empty.output
+
+    session = _make_session()
+    session.add(Instrument(id=1, symbol="AAPL", exchange="SMART", currency="USD"))
+    session.add(
+        PriceBar(
+            instrument_id=1,
+            ts=datetime(2020, 1, 15, 14, 30, tzinfo=UTC),
+            bar_size="1 min",
+            source="ibkr",
+            what_to_show="TRADES",
+            open=9.0,
+            high=11.0,
+            low=8.0,
+            close=10.0,
+            volume=100.0,
+        )
+    )
+    session.commit()
+    _patch_session(monkeypatch, session)
+    assert runner.invoke(cli.app, ["archive", "bars", "--older-than-days", "365"]).exit_code == 0
+
+    # status ignores the catalog manifest; catalog summarizes the dataset
+    status = runner.invoke(cli.app, ["archive", "status"])
+    assert "1 object(s)" in status.output
+
+    listed = runner.invoke(cli.app, ["archive", "catalog"])
+    assert listed.exit_code == 0
+    assert "price_bars: 1 rows" in listed.output
+    assert "key=symbol+exchange+currency+ts+bar_size+source+what_to_show" in listed.output
+
+    rebuilt = runner.invoke(cli.app, ["archive", "catalog", "--rebuild"])
+    assert rebuilt.exit_code == 0
+    assert "price_bars: 1 rows" in rebuilt.output
+
+
 def test_archive_bars_roundtrip_via_cli(monkeypatch, tmp_path):
     pytest.importorskip("pyarrow")
     from ibkr_trader.db.models import Instrument, PriceBar

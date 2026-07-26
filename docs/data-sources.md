@@ -13,7 +13,7 @@
 | Yahoo fundamentals (yfinance) | Dividends (decades), share counts (~2015+), sector/industry/name (current only), income/balance/cashflow statements (**only ~4-5 annual / ~5-7 quarterly** periods → snapshot forward), earnings report dates (back to ~2001). ETFs return dividends only. | Same unofficial scraper + shared ≥2 s throttle as prices | — | `ingestion/market/yahoo_fundamentals.py` |
 | Reddit API (PRAW) | Posts/comments from r/wallstreetbets, r/investing, r/stocks, r/CanadianInvestor | OAuth, ~100 queries/min | `REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET`, `REDDIT_USER_AGENT` | `ingestion/social/reddit.py` |
 | Google Trends (pytrends) | Search-interest time series per keyword | Unofficial/scraper — fragile, throttle hard | — | `ingestion/social/google_trends.py` |
-| IBKR TWS API | Historical bars + live/delayed quotes for traded instruments | Pacing rules; see [ibkr/03](ibkr/03-market-data-and-historical.md) | `IBKR_*` | `ingestion/market/ibkr_historical.py` |
+| IBKR TWS API | Historical bars + live/delayed quotes for traded instruments | Pacing rules; see [IBKR reference 03](reference/ibkr/03-market-data-and-historical.md) | `IBKR_*` | `ingestion/market/ibkr_historical.py` |
 | Questrade API (candidate, not wired) | OHLC candles (max 2 000/request), quotes, account data — owner has a Questrade account, API is free for clients (OAuth refresh token via App Hub) | Per-second/hour caps on the [rate-limiting page](https://www.questrade.com/api/documentation/rate-limiting) — verify before building | — | — |
 
 ## Design rules

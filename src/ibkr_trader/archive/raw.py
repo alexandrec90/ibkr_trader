@@ -21,6 +21,7 @@ import pandas as pd
 from sqlalchemy import null, select, update
 from sqlalchemy.orm import Session
 
+from ibkr_trader.archive.catalog import record_partition, spec_for
 from ibkr_trader.archive.parquet_io import (
     ArchiveResult,
     as_utc,
@@ -37,14 +38,15 @@ from ibkr_trader.db.models import NewsArticle, SocialPost
 @dataclass(frozen=True)
 class _RawTable:
     model: type[NewsArticle] | type[SocialPost]
+    dataset: str  # catalog dataset name, matches a DATASET_SPECS entry
     prefix: str  # partition prefix, e.g. "raw/news_articles/"
     source_column: str  # "source" (news) | "platform" (social)
     event_ts_column: str  # timestamp the partition month comes from
 
 
 _TABLES = (
-    _RawTable(NewsArticle, "raw/news_articles/", "source", "published_at"),
-    _RawTable(SocialPost, "raw/social_posts/", "platform", "created_at"),
+    _RawTable(NewsArticle, "news_articles", "raw/news_articles/", "source", "published_at"),
+    _RawTable(SocialPost, "social_posts", "raw/social_posts/", "platform", "created_at"),
 )
 #: Natural key of a payload row inside a partition.
 _RAW_KEY = ("source", "external_id")
@@ -110,8 +112,9 @@ def archive_raw_payloads(
         for (year, month), group in sorted(grouped, key=lambda item: item[0]):
             key = _partition_key(table, int(year), int(month))
             upload = group.drop(columns=["_id"])
-            merge_into_partition(store, key, upload, _RAW_KEY)
+            merged = merge_into_partition(store, key, upload, _RAW_KEY)
             verify_partition(store, key, key_tuples(upload, _RAW_KEY), _RAW_KEY)
+            record_partition(store, spec_for(table.dataset), key, merged, now=now)
             for ids in chunked(group["_id"].tolist()):
                 session.execute(update(model).where(model.id.in_(ids)).values(raw=null()))
             result.objects[key] = len(group)

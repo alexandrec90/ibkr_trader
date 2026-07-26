@@ -1067,9 +1067,13 @@ def archive_restore_raw(
 
 @archive_app.command("status")
 def archive_status():
-    """List archived objects and their sizes."""
+    """List archived data objects and their sizes (catalog metadata is shown by `catalog`)."""
+    from ibkr_trader.archive.catalog import CATALOG_PREFIX
+
     try:
-        objects = _archive_store().list_objects()
+        objects = [
+            obj for obj in _archive_store().list_objects() if not obj.key.startswith(CATALOG_PREFIX)
+        ]
     except Exception as exc:  # backend/network problems should print, not traceback
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1) from None
@@ -1080,6 +1084,40 @@ def archive_status():
     for obj in objects:
         typer.echo(f"  {obj.size / 1_048_576:>9.2f} MiB  {obj.key}")
     typer.echo(f"{len(objects)} object(s), {total / 1_048_576:.2f} MiB total")
+
+
+@archive_app.command("catalog")
+def archive_catalog(
+    rebuild: bool = typer.Option(
+        False, "--rebuild", help="recompute manifests by scanning every archived partition"
+    ),
+):
+    """Show the self-describing catalog: per dataset, its natural key, row count, and span.
+
+    ``--rebuild`` re-reads every partition to regenerate the manifests (needs the [archive]
+    extra) — use it to backfill a bucket archived before catalogging, or after a manual change.
+    """
+    from ibkr_trader.archive.catalog import load_catalog, rebuild_catalog
+
+    store = _archive_store()
+    try:
+        catalog = rebuild_catalog(store) if rebuild else load_catalog(store)
+    except Exception as exc:  # backend/network/parse problems should print, not traceback
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    if not catalog:
+        hint = "" if rebuild else " (run with --rebuild if the bucket predates catalogging)"
+        typer.echo(f"catalog is empty{hint}")
+        return
+    for name, manifest in sorted(catalog.items()):
+        if manifest.min_ts and manifest.max_ts:
+            span = f"{manifest.min_ts:%Y-%m-%d} → {manifest.max_ts:%Y-%m-%d}"
+        else:
+            span = "—"
+        typer.echo(
+            f"{name}: {manifest.total_rows} rows in {len(manifest.partitions)} partition(s), "
+            f"{span}  key={'+'.join(manifest.key_columns)}"
+        )
 
 
 @app.command("score-sentiment")

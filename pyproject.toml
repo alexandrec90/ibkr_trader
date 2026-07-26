@@ -113,7 +113,7 @@ testpaths = ["tests"]
 # Coverage is enforced in CI via `pytest --cov=ibkr_trader` (plain `pytest` stays fast locally).
 # The floor is a ratchet: raise it as coverage grows, never lower it to make a change pass.
 [tool.coverage.report]
-fail_under = 90.5
+fail_under = 90.8
 show_missing = true
 skip_covered = true
 

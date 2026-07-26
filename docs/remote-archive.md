@@ -99,7 +99,9 @@ host.
 ```bash
 ibkr-trader archive bars --older-than-days 365      # offload old intraday bars
 ibkr-trader archive raw --min-age-days 30           # offload scored raw payloads
-ibkr-trader archive status                          # list archived objects
+ibkr-trader archive status                          # list archived data objects
+ibkr-trader archive catalog                         # summarize datasets from the catalog
+ibkr-trader archive catalog --rebuild               # recompute the catalog from partitions
 
 # before training an intraday model on 2024 minute bars:
 ibkr-trader archive restore-bars --start 2024-01-01 --end 2024-12-31 --bar-size "1 min"
@@ -110,6 +112,32 @@ ibkr-trader archive restore-raw --start 2024-01-01 --end 2024-12-31
 Restores are idempotent: `restore-bars` inserts only missing bars (recreating instrument
 rows by symbol/exchange/currency if the DB was rebuilt); `restore-raw` refills only
 currently-NULL payloads and never inserts rows.
+
+## Catalog: a self-describing manifest per dataset
+
+Partitions follow stable prefixes, but knowing *what* is in the bucket otherwise means
+reading code for the naming convention. The catalog closes that gap: alongside the data,
+under `_catalog/<dataset>.json`, each dataset carries a small JSON manifest describing its
+natural key, its timestamp column, its column schema, and per-partition row counts and time
+spans. Anything with read access to the bucket can discover the contents from the manifests
+alone — no Postgres, no code. This is what lets a **separate project share the same bucket**:
+the catalog is the reuse contract (see
+[shared data-lake plan](plans/active/data-lake.md)).
+
+The datasets today are `price_bars`, `news_articles`, and `social_posts`. Manifests are
+written automatically as `archive bars` / `archive raw` upload and verify each partition, so
+they stay in step with the data. They are metadata, never a source of truth — derived from
+the partitions and rebuildable from them at any time:
+
+```bash
+ibkr-trader archive catalog            # print each dataset: rows, partitions, span, key
+ibkr-trader archive catalog --rebuild  # re-read every partition and regenerate the manifests
+```
+
+Use `--rebuild` to backfill a bucket that was archived before catalogging existed, or after a
+manual object change. Reading the catalog needs only the standard install; `--rebuild` re-reads
+the Parquet and so needs the `[archive]` extra. Manifests live under `_catalog/` and are
+excluded from `archive status` (which reports data objects only).
 
 ## Exploring the archive with DuckDB
 

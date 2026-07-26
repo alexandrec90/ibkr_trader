@@ -6,7 +6,7 @@ that compresses chunks older than 7 days. Recent chunks stay uncompressed so the
 bar upsert path stays cheap; Timescale transparently decompresses older chunks on write.
 
 TOOLS-06: justified once the service began growing toward retained intraday bars. See
-docs/plans/tools-06-timescaledb.md.
+docs/plans/completed/tools-06-timescaledb.md.
 
 The whole migration is **guarded** and does nothing unless the bind is Postgres *and* the
 TimescaleDB extension is actually available in the image:

@@ -9,6 +9,15 @@ back and verified. Orders and executions are never archived — they are the aud
 """
 
 from ibkr_trader.archive.bars import archive_price_bars, restore_price_bars
+from ibkr_trader.archive.catalog import (
+    DATASET_SPECS,
+    DatasetManifest,
+    DatasetSpec,
+    list_datasets,
+    load_catalog,
+    load_manifest,
+    rebuild_catalog,
+)
 from ibkr_trader.archive.raw import archive_raw_payloads, restore_raw_payloads
 from ibkr_trader.archive.store import (
     LocalDirStore,
@@ -19,12 +28,19 @@ from ibkr_trader.archive.store import (
 )
 
 __all__ = [
+    "DATASET_SPECS",
+    "DatasetManifest",
+    "DatasetSpec",
     "LocalDirStore",
     "ObjectStore",
     "S3ObjectStore",
     "StoredObject",
     "archive_price_bars",
     "archive_raw_payloads",
+    "list_datasets",
+    "load_catalog",
+    "load_manifest",
+    "rebuild_catalog",
     "restore_price_bars",
     "restore_raw_payloads",
     "store_from_settings",

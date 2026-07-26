@@ -3,7 +3,8 @@
 These deliberately never require TimescaleDB (or even Postgres): the whole point of the
 migration's guard is that it is a clean no-op anywhere the extension is absent, so CI and
 SQLite test runs stay green. The live hypertable/compression conversion is verified manually
-against the Timescale dev DB (recorded in docs/plans/tools-06-timescaledb.md), not here.
+against the Timescale dev DB
+(recorded in docs/plans/completed/tools-06-timescaledb.md), not here.
 """
 
 import types

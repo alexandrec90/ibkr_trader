@@ -18,6 +18,7 @@ import pandas as pd
 from sqlalchemy import delete, select, tuple_
 from sqlalchemy.orm import Session
 
+from ibkr_trader.archive.catalog import record_partition, spec_for
 from ibkr_trader.archive.parquet_io import (
     ArchiveResult,
     as_utc,
@@ -122,8 +123,9 @@ def archive_price_bars(
     for (bar_size, year, month), group in sorted(grouped, key=lambda item: item[0]):
         key = _partition_key(str(bar_size), int(year), int(month))
         upload = group.drop(columns=["_id"])
-        merge_into_partition(store, key, upload, _BAR_KEY)
+        merged = merge_into_partition(store, key, upload, _BAR_KEY)
         verify_partition(store, key, key_tuples(upload, _BAR_KEY), _BAR_KEY)
+        record_partition(store, spec_for("price_bars"), key, merged, now=now)
         for ids in chunked(group["_id"].tolist()):
             session.execute(delete(PriceBar).where(PriceBar.id.in_(ids)))
         result.objects[key] = len(group)
