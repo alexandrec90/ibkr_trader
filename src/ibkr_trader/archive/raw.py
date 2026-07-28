@@ -9,7 +9,7 @@ a row must already be sentiment-scored, so an unscored row never loses its paylo
 
 Privacy (Québec Law 25): payloads contain only what ingestion stored — authors are hashed
 before they ever reach the DB — but the bucket must still be private; see
-docs/remote-archive.md.
+docs/operations/remote-archive.md.
 """
 
 import json

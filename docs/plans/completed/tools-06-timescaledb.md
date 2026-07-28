@@ -8,7 +8,7 @@ The Phase 0 abort record is kept below as history; see **Phase 1 — implemented
 Read first: [README.md](../README.md) · [CLAUDE.md](../../../CLAUDE.md) ·
 [docker-compose.yml](../../../docker-compose.yml) ·
 [db/models.py](../../../src/ibkr_trader/db/models.py)
-(`PriceBar`) · [docs/remote-archive.md](../../remote-archive.md) (the existing disk-pressure
+(`PriceBar`) · [docs/operations/remote-archive.md](../../operations/remote-archive.md) (the existing disk-pressure
 answer) · `migrations/` (how manual `op.execute` migrations are written here)
 
 ## Context
@@ -98,7 +98,7 @@ Compose dev DB (host port 5433) with a full `pg_dump` backup taken first.
   bar_size`; `orderby = ts DESC`), and `add_compression_policy(… INTERVAL '7 days')`.
 - **Model:** `PriceBar` keeps `id`-only PK in the ORM (SQLite autoincrement + Alembic does not
   diff PKs → no autogenerate drift); a comment documents the Postgres composite PK.
-- **Docs:** hot-storage section + backup/rebuild procedure added to `docs/remote-archive.md`.
+- **Docs:** hot-storage section + backup/rebuild procedure added to `docs/operations/remote-archive.md`.
 - **Tests:** `tests/test_timescaledb_migration.py` — SQLite no-op (up + down) and guard logic
   (non-Postgres, plain-Postgres, Timescale-present). No test requires Timescale.
 
@@ -144,7 +144,7 @@ from a fresh empty Timescale database converts `price_bars` to a hypertable with
 ## Deliverables
 
 - Phase 0 numbers appended to this file + go/no-go verdict.
-- If go: compose change, backup procedure documented in `docs/remote-archive.md` (it's the
+- If go: compose change, backup procedure documented in `docs/operations/remote-archive.md` (it's the
   storage doc), the guarded migration, compression policy, and before/after size numbers.
 
 ## Testing (mandatory if go)

@@ -1,7 +1,7 @@
 # Plan TOOLS-03 — DuckDB read-only lens over the Parquet archive (+ Polars convention)
 
 Read first: [README.md](../README.md) · [CLAUDE.md](../../../CLAUDE.md) ·
-[docs/remote-archive.md](../../remote-archive.md) ·
+[docs/operations/remote-archive.md](../../operations/remote-archive.md) ·
 [archive/store.py](../../../src/ibkr_trader/archive/store.py) ·
 [archive/parquet_io.py](../../../src/ibkr_trader/archive/parquet_io.py)
 (key layout / partitioning) ·
@@ -43,7 +43,7 @@ it is **not** a Postgres replacement here: it becomes a read-only research lens.
    runs one statement through the lens, prints a table (and `--csv` for piping). Reject
    obvious non-SELECT statements with a clear message (defense in depth; the lens has
    nothing writable anyway).
-3. **Docs**: extend `docs/remote-archive.md` with a "Exploring the archive with DuckDB"
+3. **Docs**: extend `docs/operations/remote-archive.md` with a "Exploring the archive with DuckDB"
    section: example queries, the read-only rule, and the restore-first rule for anything
    that feeds models/backtests.
 4. **CLAUDE.md**: add the Polars convention bullet + one line stating the lens boundary

@@ -83,7 +83,7 @@ a task, you own stopping it before you finish.
 - `src/ibkr_trader/db/` — SQLAlchemy 2.0 models; migrations via Alembic (`migrations/`).
 - `src/ibkr_trader/archive/` — cold-data offload to object storage as Parquet (intraday
   bars, scored raw payloads) with verify-before-delete; daily bars and orders/executions
-  never leave Postgres. Needs the `[archive]` extra. See [docs/remote-archive.md](docs/remote-archive.md).
+  never leave Postgres. Needs the `[archive]` extra. See [docs/operations/remote-archive.md](docs/operations/remote-archive.md).
 - Postgres is the single source of truth; models/backtests never call external APIs.
 
 ## Conventions

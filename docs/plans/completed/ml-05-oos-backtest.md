@@ -1,10 +1,10 @@
 # Plan ML-05 — Per-fold out-of-sample backtest (the honest number)
 
-Read first: [README.md](README.md) · [CLAUDE.md](../../CLAUDE.md) ·
+Read first: [README.md](../README.md) · [CLAUDE.md](../../../CLAUDE.md) ·
 [ml-04-backtest-integration.md](ml-04-backtest-integration.md) (completion notes: leaderboard +
-why the verdict was "no") · [signals/validation.py](../../src/ibkr_trader/signals/validation.py)
-(fold mechanics) · [signals/train.py](../../src/ibkr_trader/signals/train.py) ·
-[backtest/engine.py](../../src/ibkr_trader/backtest/engine.py)
+why the verdict was "no") · [signals/validation.py](../../../src/ibkr_trader/signals/validation.py)
+(fold mechanics) · [signals/train.py](../../../src/ibkr_trader/signals/train.py) ·
+[backtest/engine.py](../../../src/ibkr_trader/backtest/engine.py)
 
 ## Context
 
@@ -47,7 +47,7 @@ Hard constraints a fresh session must know:
    decision date), `eval_start` no-op default, fold-switching allocator returns cash outside
    test spans, one end-to-end smoke on a synthetic panel.
 6. **Write-up:** record `backtest compare` output in this plan's completion notes and update
-   the ML-04 verdict line in [TODO.md](../../TODO.md) — promote `ml_lt` (or `ridge`) only if it
+   the ML-04 verdict line in [TODO.md](../../../TODO.md) — promote `ml_lt` (or `ridge`) only if it
    beats `momentum_lt` and `buy_and_hold` after costs **here**; otherwise say so plainly.
 
 ## Out of scope
@@ -76,7 +76,7 @@ Implemented as specified:
   there). Also added: `Allocator.asof(day)` (no-op default) so date-aware allocators learn the
   decision date, and `BacktestEngine.run_allocator(...)` for explicitly built allocators with
   `extra_params` merged into the persisted run params.
-- **[backtest/oos.py](../../src/ibkr_trader/backtest/oos.py):** `FoldSwitchingAllocator`
+- **[backtest/oos.py](../../../src/ibkr_trader/backtest/oos.py):** `FoldSwitchingAllocator`
   (unregistered; a decision at t uses the latest fold with `test_start ≤ t` — between two
   folds' test blocks that is deliberately the *older* model — and returns cash before the
   first test date / after the last test span). Leakage guard at construction **and** per
@@ -88,9 +88,9 @@ Implemented as specified:
   "oos-walkforward"`, fold count, universe hash, `feature_set_version`.
 - **CLI `backtest oos`:** dataset args mirror `train run` (start 2015-01-01, seed 42,
   test-size 6, min-train 24); `--sim-start` defaults to 2021-08-01 (USDCAD floor).
-- **Tests:** [tests/test_oos.py](../../tests/test_oos.py) (leakage guard, cash outside test
+- **Tests:** [tests/test_oos.py](../../../tests/test_oos.py) (leakage guard, cash outside test
   spans, per-fold model routing incl. the boundary day between folds, e2e smoke on a synthetic
-  sqlite panel) + `eval_start` tests in [tests/test_engine.py](../../tests/test_engine.py).
+  sqlite panel) + `eval_start` tests in [tests/test_engine.py](../../../tests/test_engine.py).
   pytest (113) / ruff / mypy green.
 
 ### Results (dev DB, TFSA, $100 000 CAD)

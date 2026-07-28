@@ -1,8 +1,8 @@
 # Plan ML-09 — Young-listings experiment (optional; gated on ML-05/06)
 
-Read first: [README.md](README.md) · [CLAUDE.md](../../CLAUDE.md) ·
-[signals/eligibility.py](../../src/ibkr_trader/signals/eligibility.py) (the 252-day floor) ·
-[signals/features.py](../../src/ibkr_trader/signals/features.py) (`FEATURE_SET_VERSION`) ·
+Read first: [README.md](../README.md) · [CLAUDE.md](../../../CLAUDE.md) ·
+[signals/eligibility.py](../../../src/ibkr_trader/signals/eligibility.py) (the 252-day floor) ·
+[signals/features.py](../../../src/ibkr_trader/signals/features.py) (`FEATURE_SET_VERSION`) ·
 [ml-05-oos-backtest.md](ml-05-oos-backtest.md) (the harness this experiment is judged by)
 
 ## Context
@@ -33,7 +33,7 @@ retrained. Bump and retrain in the same session, in that order.
    model prices that honestly (`history_days` lets it learn the IPO regime instead of being
    blind to it).
 4. **Universe process note:** the real gate on "noteworthy new stocks" is the static
-   [tickers.txt](../../tickers.txt), not the floor — document (in the strategy doc) how/when
+   [tickers.txt](../../../tickers.txt), not the floor — document (in the strategy doc) how/when
    new listings get added to `tickers-yahoo.txt` + the aggregate task, and that private
    companies (e.g. SpaceX) are out of scope entirely.
 5. **Verdict write-up:** completion notes + TODO — adopt the lower floor only if the OOS

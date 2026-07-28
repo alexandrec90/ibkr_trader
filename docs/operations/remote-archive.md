@@ -122,7 +122,7 @@ natural key, its timestamp column, its column schema, and per-partition row coun
 spans. Anything with read access to the bucket can discover the contents from the manifests
 alone — no Postgres, no code. This is what lets a **separate project share the same bucket**:
 the catalog is the reuse contract (see
-[shared data-lake plan](plans/active/data-lake.md)).
+[shared data-lake plan](../plans/active/data-lake.md)).
 
 The datasets today are `price_bars`, `news_articles`, and `social_posts`. Manifests are
 written automatically as `archive bars` / `archive raw` upload and verify each partition, so

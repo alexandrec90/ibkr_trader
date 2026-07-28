@@ -2,7 +2,7 @@
 
 > Researched 2026-07-04 from official IBKR sources. Items marked **[verify]** could not be
 > confirmed from primary documentation during research (IBKR Campus blocks automated fetching)
-> and should be double-checked by hand at https://www.interactivebrokers.com/campus/ibkr-api-page/ibkr-api-home/
+> and should be double-checked by hand at <https://www.interactivebrokers.com/campus/ibkr-api-page/ibkr-api-home/>
 
 ## API offerings
 
@@ -23,7 +23,7 @@ Notes:
 - An IB username can only have **one brokerage (trading-enabled) session at a time**. Logging
   into TWS with the same username kicks out the Gateway session (and vice versa). Plan separate
   usernames or use the paper account for the bot.
-- The classic docs at https://interactivebrokers.github.io/tws-api/ (v9.72+) are still accurate
+- The classic docs at <https://interactivebrokers.github.io/tws-api/> (v9.72+) are still accurate
   for fundamentals but are superseded by IBKR Campus docs, which must be browsed manually
   (automated fetching returns HTTP 403).
 
@@ -36,7 +36,7 @@ Reasons:
 - TWS API is the most complete API (orders, streaming + historical data, account data).
 - IB Gateway is a lighter, headless-friendly alternative to full TWS; community Docker images
   (see [05-running-in-docker.md](05-running-in-docker.md)) handle the login automation.
-- `ib_async` (https://github.com/ib-api-reloaded/ib_async) is the actively maintained fork of
+- `ib_async` (<https://github.com/ib-api-reloaded/ib_async>) is the actively maintained fork of
   the well-known `ib_insync` library (original author passed away in early 2024; the fork is
   the successor — do **not** depend on `ib-insync`, it is unmaintained). It wraps the raw
   socket API in a sane sync/async Python interface.
@@ -63,7 +63,7 @@ Reasons:
 
 ## Sources
 
-- https://www.interactivebrokers.com/en/trading/ib-api.php
-- https://interactivebrokers.github.io/tws-api/introduction.html
-- https://interactivebrokers.github.io/cpwebapi/
-- https://github.com/ib-api-reloaded/ib_async
+- <https://www.interactivebrokers.com/en/trading/ib-api.php>
+- <https://interactivebrokers.github.io/tws-api/introduction.html>
+- <https://interactivebrokers.github.io/cpwebapi/>
+- <https://github.com/ib-api-reloaded/ib_async>

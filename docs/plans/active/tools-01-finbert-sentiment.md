@@ -56,7 +56,7 @@ Facts that shape the design:
      network-touching step, explicit and owner-invoked).
    - `ibkr-trader sentiment rescore --model finbert [--limit N]` — re-scores rows whose
      `sentiment_model != 'finbert'` (or NULL) from surviving text, batched, idempotent.
-6. **Docs**: short note in `docs/data-sources.md` or a new `docs/sentiment.md`: model choice,
+6. **Docs**: short note in `docs/reference/data-sources.md` or a new `docs/sentiment.md`: model choice,
    scale mapping, how to download/rescore, the provenance column.
 
 ## Testing (mandatory, same commit)

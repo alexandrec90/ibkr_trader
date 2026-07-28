@@ -1,4 +1,4 @@
-"""Cold-data archive: Parquet files in object storage (docs/remote-archive.md).
+"""Cold-data archive: Parquet files in object storage (docs/operations/remote-archive.md).
 
 Postgres stays the source of truth for everything the trainer and backtests read (daily
 bars, corporate data, features). This package offloads only the bulk that nothing reads in

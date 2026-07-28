@@ -1,6 +1,6 @@
 # IBKR Orders — Lifecycle & API
 
-> Researched 2026-07-04. Primary source: https://interactivebrokers.github.io/tws-api/order_submission.html
+> Researched 2026-07-04. Primary source: <https://interactivebrokers.github.io/tws-api/order_submission.html>
 
 ## Order IDs
 
@@ -59,5 +59,5 @@ table stores it).
 
 ## Sources
 
-- https://interactivebrokers.github.io/tws-api/order_submission.html
-- https://ib-api-reloaded.github.io/ib_async/
+- <https://interactivebrokers.github.io/tws-api/order_submission.html>
+- <https://ib-api-reloaded.github.io/ib_async/>

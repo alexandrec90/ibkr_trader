@@ -161,5 +161,5 @@ def store_from_settings(settings: Settings | None = None) -> ObjectStore:
         return S3ObjectStore.from_settings(settings)
     raise RuntimeError(
         "no archive backend configured — set ARCHIVE_BACKEND=s3 (Cloudflare R2/Backblaze B2, "
-        "see docs/remote-archive.md) or ARCHIVE_BACKEND=local in .env"
+        "see docs/operations/remote-archive.md) or ARCHIVE_BACKEND=local in .env"
     )

@@ -40,7 +40,7 @@
   of these accounts and sits well clear of that line. The registered-account strategy in this
   repo is designed to *stay* clear of it: a hard per-account annual trade cap, minimum
   eligibility (no penny stocks, no leverage/inverse, liquid names only), long-only, no margin.
-  See [registered-account-strategy.md](registered-account-strategy.md). **[verify]** the
+  See [registered-account-strategy.md](../registered-account-strategy.md). **[verify]** the
   "carrying on a business in a TFSA" factors with a CPA before funding — this is engineering,
   not tax advice.
 - **Foreign (US) dividend withholding** differs by account and by the security's domicile — the
@@ -82,6 +82,6 @@
       low-turnover, quality-only strategy**; any higher-turnover/speculative work stays in a
       **non-registered (margin)** account. Never day-trade inside a registered account.
 - [ ] Keep every order/execution in Postgres + archive IBKR Flex statements (tax records).
-- [ ] Track data-source ToS for each connector in `docs/data-sources.md` before going beyond
+- [ ] Track data-source ToS for each connector in `docs/reference/data-sources.md` before going beyond
       free-tier personal use.
 - [ ] Re-read this file before ever enabling `ENVIRONMENT=live`.

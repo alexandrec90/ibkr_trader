@@ -2,7 +2,7 @@
 
 Read first: [README.md](../README.md) · [CLAUDE.md](../../../CLAUDE.md) ·
 [backtest/engine.py](../../../src/ibkr_trader/backtest/engine.py) ·
-[data-sources.md](../../data-sources.md) · [TODO.md](../../../TODO.md) §3
+[data-sources.md](../../reference/data-sources.md) · [TODO.md](../../../TODO.md) §3
 (open survivorship item)
 
 ## Context
@@ -28,7 +28,7 @@ that decision — it deliberately contains little code.
 3. **Data-source research (no purchases, no code):** evaluate delisted-inclusive daily-bar
    sources covering US + TSX — at minimum Norgate Data, Sharadar/Nasdaq Data Link, EODHD,
    FMP's paid tiers — for delisting coverage, TSX support, price, licensing for personal use.
-   Record findings + a recommendation in [data-sources.md](../../data-sources.md). The owner
+   Record findings + a recommendation in [data-sources.md](../../reference/data-sources.md). The owner
    decides whether to buy; do not subscribe to anything in-session.
 4. **Ingestion readiness note:** confirm the schema can hold dead tickers (instruments with an
    end-of-life date, bars that simply stop) and note any gaps as TODO items — implementation
