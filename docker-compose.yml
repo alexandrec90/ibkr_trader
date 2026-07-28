@@ -5,7 +5,7 @@
 # directory. Without it, running `docker compose up` from a git worktree (directory name
 # `ibkr_trader-a` etc.) would derive a different project name and silently create a second
 # Postgres container + pgdata volume and collide on host port 5433. With it, every worktree
-# resolves to the same shared infra containers. See docs/parallel-worktrees.md.
+# resolves to the same shared infra containers. See docs/operations/parallel-worktrees.md.
 # The paper ib-gateway service needs TWS_USERID_PAPER/TWS_PASSWORD_PAPER in .env and a human to
 # approve 2FA periodically.
 
@@ -15,7 +15,7 @@ services:
   db:
     # TimescaleDB is Postgres 16 plus the timescaledb extension (price_bars is a compressed
     # hypertable — see migrations/…_timescaledb_price_bars_hypertable.py and
-    # docs/remote-archive.md). The image is a drop-in Postgres: without CREATE EXTENSION it
+    # docs/operations/remote-archive.md). The image is a drop-in Postgres: without CREATE EXTENSION it
     # behaves exactly like postgres:16, and the schema migration only converts price_bars when
     # the extension is present, so tests/CI on plain Postgres or SQLite are unaffected.
     image: timescale/timescaledb:2.17.2-pg16
@@ -30,7 +30,7 @@ services:
       # which checkout owns which host port; the default here must keep matching it.
       # Kept as a variable rather than a literal so the port can move without editing
       # this file — note that unlike carameli, worktrees here deliberately SHARE one
-      # db container (see the `name:` pin above and docs/parallel-worktrees.md), so
+      # db container (see the `name:` pin above and docs/operations/parallel-worktrees.md), so
       # this is not a per-worktree offset.
       - "127.0.0.1:${DB_HOST_PORT:-5433}:5432"
     volumes:

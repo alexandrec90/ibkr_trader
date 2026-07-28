@@ -1,10 +1,10 @@
 # Plan ML-04 — Wire the trained model into the backtest leaderboard
 
-Read first: [README.md](README.md) · [CLAUDE.md](../../CLAUDE.md) ·
-[signals/predictor.py](../../src/ibkr_trader/signals/predictor.py) (registry contract in the
-module docstring) · [signals/portfolio.py](../../src/ibkr_trader/signals/portfolio.py)
-(`ScoreAllocator`) · [backtest/compare.py](../../src/ibkr_trader/backtest/compare.py) ·
-[docs/registered-account-strategy.md](../registered-account-strategy.md)
+Read first: [README.md](../README.md) · [CLAUDE.md](../../../CLAUDE.md) ·
+[signals/predictor.py](../../../src/ibkr_trader/signals/predictor.py) (registry contract in the
+module docstring) · [signals/portfolio.py](../../../src/ibkr_trader/signals/portfolio.py)
+(`ScoreAllocator`) · [backtest/compare.py](../../../src/ibkr_trader/backtest/compare.py) ·
+[docs/registered-account-strategy.md](../../registered-account-strategy.md)
 
 ## Context
 
@@ -41,7 +41,7 @@ costs, accounts, and leaderboard as `momentum_lt`. The engine and risk paths are
    feature-set-version mismatch → zero scores + warning, graceful error without `[ml]`
    installed.
 6. **Docs**: add `ml_lt` to the model list in
-   [registered-account-strategy.md](../registered-account-strategy.md) §The model; tick
+   [registered-account-strategy.md](../../registered-account-strategy.md) §The model; tick
    TODO.md.
 
 ## Out of scope

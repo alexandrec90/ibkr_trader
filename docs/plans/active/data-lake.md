@@ -30,9 +30,10 @@ a self-describing catalog (Phase 1).
 
 | Phase | What | Owner | Status |
 |---|---|---|---|
-| 0 | Decisions + infra: lake repo name, create **private** R2 bucket + API token, new GitHub repo | You | ☐ pending |
+| 0 | Decisions + infra: lake repo name, create **private** R2 bucket + API token, new GitHub repo | You | ◐ name decided (`data-lake`); bucket + repo still pending |
 | 1 | **Catalog layer** in this repo's `archive/` module (self-describing manifest per dataset) | Claude | ✅ done — see below |
-| 2 | Extract `ingestion/ + archive/ + lens` into a `data-lake` package; `ibkr_trader` depends on it | Claude | ☐ pending — needs Phase 0 + its own Plan |
+| 1.5 | **Extraction prep** in this repo: models split + config inversion (no new repo needed) | Claude | ✅ done — see below |
+| 2 | Extract `ingestion/ + archive/ + lens` into a `data-lake` package; `ibkr_trader` depends on it | Claude | ☐ pending — needs Phase 0 infra + its own Plan |
 | 3 | Cloud auto-pull: GitHub Actions (or CF Worker) cron writes Parquet → R2, pacing in the runner | Claude | ☐ pending — needs R2 secrets in CI |
 | 4 | Second consumer (sports-betting) reads the lake via the DuckDB lens + catalog | later | ☐ future |
 
@@ -50,18 +51,51 @@ Added `src/ibkr_trader/archive/catalog.py`:
   pyarrow needed); `rebuild_catalog` re-derives every manifest by scanning partitions (needs
   the `[archive]` extra) — the backfill/repair path.
 - CLI: `ibkr-trader archive catalog [--rebuild]`. `archive status` now excludes `_catalog/`.
-- Docs: [remote-archive.md](../../remote-archive.md) "Catalog" section. Tests:
+- Docs: [remote-archive.md](../../operations/remote-archive.md) "Catalog" section. Tests:
   `tests/test_archive_catalog.py` + a CLI roundtrip in `tests/test_cli.py`.
 
 The catalog is the **reuse contract** Phase 2+ builds on: a foreign project points DuckDB at
 the same R2 bucket, reads `_catalog/*.json` to discover datasets/keys/spans, and queries the
 partitions — no shared database, no shared code.
 
+### Phase 1.5 — extraction prep — done
+
+Phase 2 as originally written could not honor its own guardrail. `ingestion/` imported
+`db.models` 12×, `db.session` 11× and `config` 8×, and **`db/models.py` was one 324-line module
+holding all 17 table classes** — orders, executions and strategy snapshots included. Moving
+`ingestion/` into a shared package would have dragged the audit-trail table definitions into the
+package a foreign consumer imports. Two changes fix that, both in-place and revertible:
+
+- **Models split along the lake seam.** `db/base.py` (`Base`, `SqliteFriendlyBigInt`,
+  `JsonVariant`) + `db/lake_models.py` (10 shareable tables) + `db/trading_models.py`
+  (5 tables that never leave: `predictions`, `orders`, `executions`, `backtest_runs`,
+  `strategy_snapshots`). `db/models.py` is now a re-export façade, so all ~40 existing import
+  sites and Alembic's `target_metadata = Base.metadata` are untouched. **Emitted DDL is
+  byte-identical to before the split — no migration.** Dependency direction is trading → lake.
+- **Config inverted in the connector tree.** `Connector.__init__(settings=None)` +
+  a lazily-resolving `Connector.settings` property replaced 8 in-method `get_settings()` calls.
+  `ibkr_trader.config` went from 8 hard import-time dependencies to a single lazy import inside
+  `ingestion/base.py` — the one line Phase 2 swaps for the consumer's own config.
+
+Enforced by `tests/test_db_models_split.py` (partition is exhaustive/disjoint; audit-trail tables
+are never lake-side; `lake_models` may import nothing but `db.base`; `DATASET_SPECS` may only
+name lake tables) and `tests/test_connector_settings.py` (injection wins, fallback is lazy and
+cached, no ingestion module imports config at module scope). Both guardrails were mutation-checked
+— reclassifying `orders` as a lake table fails 3 tests, and a `lake_models → trading_models`
+import is caught by the AST check.
+
+`Feature` was placed **lake-side**, matching the plan's "derived features" line above. It has no
+FK to any trading table, so this is reversible if you'd rather features stayed private.
+
 ### Phase 2 — extraction (next, fresh session)
 
-- New repo `data-lake` (name TBD in Phase 0). Move `ingestion/`, `archive/`, and the DuckDB
-  `lens` into an installable package with a stable public API (connectors, `store_from_settings`,
-  the catalog readers, restore helpers).
+- New repo **`data-lake`** (name settled in Phase 0). Move `ingestion/`, `archive/`, `db/base.py`,
+  `db/lake_models.py`, and the DuckDB `lens` into an installable package with a stable public API
+  (connectors, `store_from_settings`, the catalog readers, restore helpers). `db/trading_models.py`
+  stays here and keeps importing the package's `Base` + `Instrument`.
+- Still to invert before the move: `ingestion/` calls `db.session.get_session()` 11× (the package
+  must accept a caller-supplied session factory rather than owning the engine). That is the one
+  remaining hard coupling; Phase 1.5 cleared config and the models.
 - `ibkr_trader` depends on it; its `signals/`/`backtest/`/`execution/` keep restoring into local
   Postgres. Update this repo's imports, tests, CI, and CLAUDE.md.
 - Watch: this repo's test suite + coverage floor shift when `ingestion/`/`archive/` leave. Make

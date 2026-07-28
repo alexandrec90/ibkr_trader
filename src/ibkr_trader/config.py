@@ -102,7 +102,7 @@ class Settings(BaseSettings):
     benchmark_symbol: str = "XEQT"  # buy-and-hold comparison
     ml_lt_model_dir: str = "models/ml_lt"  # trained ml_lt artifacts (<vN>/ dirs + latest marker)
 
-    # Cold-data archive (docs/remote-archive.md): intraday bars + scored raw payloads are
+    # Cold-data archive (docs/operations/remote-archive.md): intraday bars + scored raw payloads are
     # offloaded as Parquet to object storage to keep the local DB small. "s3" covers any
     # S3-compatible service (Cloudflare R2, Backblaze B2, MinIO); "local" is a plain directory.
     archive_backend: Literal["none", "local", "s3"] = "none"

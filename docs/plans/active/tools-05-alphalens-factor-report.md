@@ -6,7 +6,7 @@ Read first: [README.md](../README.md) · [CLAUDE.md](../../../CLAUDE.md) ·
 [signals/dataset.py](../../../src/ibkr_trader/signals/dataset.py)
 (how labels/returns are computed) · [db/models.py](../../../src/ibkr_trader/db/models.py)
 (`Prediction`, `PriceBar`) ·
-[docs/plans/ml-05-oos-backtest.md](../ml-05-oos-backtest.md)
+[docs/plans/completed/ml-05-oos-backtest.md](../completed/ml-05-oos-backtest.md)
 (context: what OOS evidence exists)
 
 ## Context

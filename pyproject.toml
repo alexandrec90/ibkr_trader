@@ -36,7 +36,7 @@ ml = [
 tracking = [
     "mlflow>=3.1",
 ]
-# Cold-data archive extra (docs/remote-archive.md): same guarded-import pattern as [ml].
+# Cold-data archive extra (docs/operations/remote-archive.md): same guarded-import pattern as [ml].
 archive = [
     "pyarrow>=17",
     "boto3>=1.34",

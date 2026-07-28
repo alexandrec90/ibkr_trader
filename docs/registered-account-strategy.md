@@ -1,7 +1,7 @@
 # Registered-Account Long-Term Strategy
 
 > ⚠️ Engineering design, not financial or tax advice. See
-> [legal-quebec-canada.md](legal-quebec-canada.md) and confirm anything consequential with a
+> [legal-quebec-canada.md](reference/legal-quebec-canada.md) and confirm anything consequential with a
 > CPA / Québec securities professional. `[verify]` markers flag facts to confirm.
 
 ## Goal
@@ -17,7 +17,7 @@ So this is deliberately **not** a short-term price-prediction system. The model 
 ## Why long-term / low-turnover (the legal core)
 
 Day-trading inside a TFSA is deemed **business income** by CRA and draws audits
-([legal doc §Tax](legal-quebec-canada.md#tax-the-part-most-likely-to-bite)). The defence is
+([legal doc §Tax](reference/legal-quebec-canada.md#tax-the-part-most-likely-to-bite)). The defence is
 *frequency and intent*: a low-turnover, quality-only, long-only, buy-and-hold approach is the
 normal, intended, tax-advantaged use of these accounts. Every hard constraint below exists to
 stay on the right side of that line **and** because it's simply better long-term investing.

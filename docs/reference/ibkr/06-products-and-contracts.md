@@ -40,9 +40,9 @@ possible to avoid ambiguous symbol definitions.
 
 ## Sources
 
-- https://interactivebrokers.github.io/tws-api/classIBApi_1_1Contract.html
-- https://interactivebrokers.github.io/tws-api/basic_contracts.html
-- https://www.interactivebrokers.com/campus/ibkr-api-page/contracts/
-- https://www.interactivebrokers.com/campus/ibkr-api-page/order-types/
-- https://www.interactivebrokers.com/campus/ibkr-api-page/event-contracts/
-- https://www.interactivebrokers.com/campus/ibkr-api-page/event-trading/
+- <https://interactivebrokers.github.io/tws-api/classIBApi_1_1Contract.html>
+- <https://interactivebrokers.github.io/tws-api/basic_contracts.html>
+- <https://www.interactivebrokers.com/campus/ibkr-api-page/contracts/>
+- <https://www.interactivebrokers.com/campus/ibkr-api-page/order-types/>
+- <https://www.interactivebrokers.com/campus/ibkr-api-page/event-contracts/>
+- <https://www.interactivebrokers.com/campus/ibkr-api-page/event-trading/>

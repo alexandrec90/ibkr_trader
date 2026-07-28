@@ -2,6 +2,8 @@
 
 Status of the build-out.
 Keep this file updated as items land — check things off, don't delete them.
+Larger, multi-session work lives in [docs/plans/](docs/plans/); this file is the backlog
+and the pointer to it.
 
 ## 1 · Ingestion (fill the database)
 
@@ -18,12 +20,12 @@ Keep this file updated as items land — check things off, don't delete them.
 
 ## 2 · Signals & features
 
-- [X] ~~*`score_sentiment()` ([features.py](src/ibkr_trader/signals/features.py)) — start with*~~ [2026-07-17]
+- [x] ~~*`score_sentiment()` ([features.py](src/ibkr_trader/signals/features.py)) — start with*~~ [2026-07-17]
       VADER; persisted by [signals/sentiment.py](src/ibkr_trader/signals/sentiment.py)
       `score_pending` into `news_articles.sentiment` / `social_posts.sentiment` (only
       `sentiment IS NULL` rows → idempotent). Runs hourly via the `sentiment_score` serve job
       and manually via `ibkr-trader score-sentiment`. Tested (`tests/test_sentiment.py`).
-- [X] ~~*Finnhub news history backfill*~~ [2026-07-17] — `finnhub_backfill` serve job (daily +
+- [x] ~~*Finnhub news history backfill*~~ [2026-07-17] — `finnhub_backfill` serve job (daily +
       on serve startup) walks company news backwards from each symbol's oldest stored article
       to a rolling floor (`FINNHUB_BACKFILL_DAYS`, default 365 — the free-tier depth), splits
       windows that hit the ~250-item response cap, budgets requests per run, self-heals with
@@ -49,19 +51,19 @@ those horizons mature). Automating this cadence in `serve` is a follow-up, not p
 - [ ] Validate cost model numbers against IBKR Canada's actual fee schedule (commission,
       spread/slippage bps) — currently conservative placeholders in `backtest/costs.py`
       (owner accepts the educated guesses for now, 2026-07-18).
-- [X] ~~*USDCAD deep history + 2010 decision floor*~~ [2026-07-18] — `yahoo_fx.py` backfills
+- [x] ~~*USDCAD deep history + 2010 decision floor*~~ [2026-07-18] — `yahoo_fx.py` backfills
       the same CASH instrument from Yahoo (`ingest fx --source yahoo`, coverage 2003-09-17+;
       `poll_fx` keeps both providers current; connector clamps Yahoo's occasionally
       inconsistent high/low). `backtest run --eval-start` starts decisions at a date (owner
       floor: 2010-01-04) while earlier bars warm up features. Tested
       (`tests/test_yahoo_fx.py`, scheduler/CLI/engine tests).
-- [X] ~~*Equity curves persisted + Streamlit dashboard*~~ [2026-07-18] — every persisted run
+- [x] ~~*Equity curves persisted + Streamlit dashboard*~~ [2026-07-18] — every persisted run
       stores `equity_curve`/`benchmark_equity_curve` in `backtest_runs.metrics`;
       `ibkr-trader dashboard` (`[dashboard]` extra) serves leaderboard + equity/drawdown
       charts + a run launcher. VS Code tasks: `backtest: run`, `backtest: run (ETF floor,
       2010+)`, `backtest: compare`, `backtest: oos`, `train: run`, `dashboard: up`. Tested
       (`tests/test_dashboard_data.py`, `tests/test_dashboard_app.py` via streamlit AppTest).
-- [X] ~~*Streamlit → static HTML report*~~ [2026-07-19] — the resident Streamlit server was
+- [x] ~~*Streamlit → static HTML report*~~ [2026-07-19] — the resident Streamlit server was
       too heavy for the 16 GB laptop (a leftover `streamlit run` survived a VS Code crash at
       90% RAM). Replaced by `ibkr-trader report` (`[report]` extra, plotly only): renders
       `backtest_runs` to one self-contained `report.html` (leaderboard + interactive
@@ -69,7 +71,7 @@ those horizons mature). Automating this cadence in `serve` is a follow-up, not p
       `ibkr-trader backtest run`, then regenerate. Streamlit dep, `dashboard/app.py`, the
       `[dashboard]` extra and the vendored skill are gone; `dashboard/data.py` unchanged.
       VS Code task: `report: generate`. Tested (`tests/test_dashboard_report.py`, CLI tests).
-- [X] ~~*ETF-floor universe (survivorship lower bound)*~~ [2026-07-18] — `tickers-etfs.txt`,
+- [x] ~~*ETF-floor universe (survivorship lower bound)*~~ [2026-07-18] — `tickers-etfs.txt`,
       24 broad-market ETFs (deep histories: SPY 1993, XIU 1999; US-listed ETFs added to
       `tickers-yahoo.txt` + aggregate). Quote ETF-floor results beside curated-stock upper
       bounds; real fix (PIT membership + delisted-data provider) still open below.
@@ -82,12 +84,14 @@ those horizons mature). Automating this cadence in `serve` is a follow-up, not p
 ## 4 · IBKR paper trading
 
 **Human prerequisites (can't be automated):**
+
 - [ ] Request paper account in Client Portal; note the `DU…` username → `.env`
 - [ ] Decide market data: free delayed vs. share live subscriptions with paper (24 h to apply)
 - [ ] First `docker compose --profile ibkr up -d` login + 2FA approval; plan for the ~weekly
       Sunday re-auth
 
 **Code:**
+
 - [ ] `ibkr-check` CLI — connect, print server time, managed accounts, one delayed quote
 - [ ] `IbkrBroker` ([ibkr_broker.py](src/ibkr_trader/execution/ibkr_broker.py)) — connect
       (fail loudly if account isn't `DU…` while `ENVIRONMENT=paper`), positions,
@@ -139,16 +143,14 @@ those horizons mature). Automating this cadence in `serve` is a follow-up, not p
 - [ ] Re-check official/current IBKR and deployment details as each area gets touched
       (gnzsnz env-var names before first gateway run; TSX exchange naming before trading CAD)
 - [ ] `mypy src` isn't clean-guaranteed yet — run and fix once implementations start landing
-- [ ] Commit cadence: working tree currently has uncommitted tweaks (127.0.0.1 DB URL,
-      tasks.json runner, `tickers.txt`) — commit them
 
-## ✅ Done
+## Done
 
-- [X] ~~***NewsAPI connector** ([newsapi.py](src/ibkr_trader/ingestion/news/newsapi.py)) —*~~ [2026-07-16]
+- [x] ~~***NewsAPI connector** ([newsapi.py](src/ibkr_trader/ingestion/news/newsapi.py)) —*~~ [2026-07-16]
       pagination, upsert on `(source, external_id=hash(url))`, set `fetched_at`
-- [X] ~~*Alpha Vantage / Finnhub candles — **optional**, only if FMP+Yahoo coverage proves*~~ [2026-07-16]
+- [x] ~~*Alpha Vantage / Finnhub candles — **optional**, only if FMP+Yahoo coverage proves*~~ [2026-07-16]
       insufficient (free tiers are tight; verify Finnhub candle access first)
-- [X] ~~*Daily price refresh in `serve`*~~ [2026-07-17] — `prices_poll` job (daily + on
+- [x] ~~*Daily price refresh in `serve`*~~ [2026-07-17] — `prices_poll` job (daily + on
       startup): incremental Yahoo bar fetch for every yahoo-tracked instrument
       (`tracked_yahoo_symbols`, universe + XEQT) plus FX pairs (`FX_PAIRS`, default USDCAD)
       from the newest stored bar. The `app` compose service (profile `app`,
@@ -201,9 +203,11 @@ those horizons mature). Automating this cadence in `serve` is a follow-up, not p
       thin — it's high-volume, watch the 16 GB disk.
 - [x] Project skeleton: config (paper-by-default gate), DB models, Alembic (initial migration
       applied), Docker compose (Postgres 5433 + opt-in ib-gateway), CLI, CLAUDE.md, tasks.json
-- [x] IBKR research pass + Québec legal notes + data-source survey (docs removed from repo;
-      re-check official/current sources before changing those areas)
-- [x] Multi-asset implementation roadmap completed
+- [x] IBKR research pass + Québec legal notes + data-source survey — written up in
+      [docs/reference/ibkr/](docs/reference/ibkr/), [docs/reference/legal-quebec-canada.md](docs/reference/legal-quebec-canada.md),
+      and [docs/reference/data-sources.md](docs/reference/data-sources.md). All three are point-in-time research:
+      re-check official/current sources before changing those areas.
+- [x] Multi-asset implementation roadmap completed — [docs/multi-asset-roadmap.md](docs/multi-asset-roadmap.md)
 - [x] **FMP price connector end-to-end** — `ingest prices <SYM> --source fmp`, upserts
       `price_bars`, handles `.TO` symbols, tested (`tests/test_fmp_connector.py`);
       `tickers.txt` universe + VS Code ingest tasks
@@ -311,7 +315,7 @@ those horizons mature). Automating this cadence in `serve` is a follow-up, not p
       booster; the honest OOS evidence is the fold ICs (lightgbm +0.035 ±0.112, under ridge's
       +0.121) and cannot support a 44% CAGR. Universe is survivorship-biased. Before §4 wiring:
       per-fold OOS backtest (done — ML-05, below) and/or paper-forward evaluation
-      (see docs/plans/ml-04-backtest-integration.md completion notes).
+      (see docs/plans/completed/ml-04-backtest-integration.md completion notes).
 - [x] **ML-05 — per-fold OOS backtest (the honest number)**
       ([backtest/oos.py](src/ibkr_trader/backtest/oos.py) `FoldSwitchingAllocator` +
       `run_oos_backtest`, CLI `backtest oos`, additive `RegisteredStrategyConfig.eval_start`
@@ -328,7 +332,7 @@ those horizons mature). Automating this cadence in `serve` is a follow-up, not p
       takes the deepest drawdown, and the universe stays survivorship-biased over one ~3y
       regime. No paper wiring off this alone: do ML-06 (`ml_lt_ridge` deployable) + ML-07
       (forward shadow) first; `momentum_lt` remains the reference strategy
-      (see docs/plans/ml-05-oos-backtest.md completion notes). Tests: `tests/test_oos.py`,
+      (see docs/plans/completed/ml-05-oos-backtest.md completion notes). Tests: `tests/test_oos.py`,
       `eval_start` guards in `tests/test_engine.py`.
 - [x] **ML-06 — deployable ridge + LightGBM capacity cut**
       ([train.py](src/ibkr_trader/signals/train.py), [predictor.py](src/ibkr_trader/signals/predictor.py),
@@ -355,7 +359,7 @@ those horizons mature). Automating this cadence in `serve` is a follow-up, not p
       +261.4% / 1.67 / −30.4%; ridge +107.8% versus +106.3% with ~−31% DD. The lower floor
       added only 9 dataset rows, exposing the static universe as the real young-listing gate.
       Keep 252; quarterly public-listing intake is documented in the strategy doc. Private
-      companies remain out of scope. See [completion notes](docs/plans/ml-09-young-listings.md).
+      companies remain out of scope. See [completion notes](docs/plans/completed/ml-09-young-listings.md).
 - [x] Guardrail tests: no look-ahead (fill at open t+1; features/eligibility use data ≤ t),
       trade-budget cap, FX-to-CAD, dividend withholding, and a survivorship label/warning on
       every run (IBKR has no delisted history).

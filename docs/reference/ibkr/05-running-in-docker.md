@@ -14,7 +14,7 @@ solves most of this:
 
 ## Recommended image: `gnzsnz/ib-gateway-docker`
 
-https://github.com/gnzsnz/ib-gateway-docker (image: `ghcr.io/gnzsnz/ib-gateway`)
+<https://github.com/gnzsnz/ib-gateway-docker> (image: `ghcr.io/gnzsnz/ib-gateway`)
 
 - Env-var config: `TWS_USERID`, `TWS_PASSWORD`, `TRADING_MODE` (`paper`/`live`/`both`),
   `READ_ONLY_API`, `AUTO_RESTART_TIME`, `TWOFA_TIMEOUT_ACTION`, `VNC_SERVER_PASSWORD`,
@@ -53,7 +53,7 @@ natively, log in manually (paper), enable API on port 4002, and point the app at
 
 ## Sources
 
-- https://github.com/gnzsnz/ib-gateway-docker
-- https://github.com/IbcAlpha/IBC
-- https://github.com/extrange/ibkr-docker
-- https://github.com/hartza-capital/docker-ib-gateway
+- <https://github.com/gnzsnz/ib-gateway-docker>
+- <https://github.com/IbcAlpha/IBC>
+- <https://github.com/extrange/ibkr-docker>
+- <https://github.com/hartza-capital/docker-ib-gateway>

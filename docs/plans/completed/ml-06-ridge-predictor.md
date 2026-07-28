@@ -4,7 +4,7 @@ Read first: [README.md](../README.md) · [CLAUDE.md](../../../CLAUDE.md) ·
 [signals/train.py](../../../src/ibkr_trader/signals/train.py) (`RidgeModel`, artifact layout) ·
 [signals/predictor.py](../../../src/ibkr_trader/signals/predictor.py)
 (`MlLongTerm` — the pattern to copy) ·
-[ml-04-backtest-integration.md](../ml-04-backtest-integration.md)
+[ml-04-backtest-integration.md](ml-04-backtest-integration.md)
 
 ## Context
 

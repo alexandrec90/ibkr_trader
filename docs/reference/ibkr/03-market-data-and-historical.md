@@ -1,8 +1,8 @@
 # IBKR Market Data & Historical Data
 
 > Researched 2026-07-04. Primary sources:
-> https://interactivebrokers.github.io/tws-api/historical_bars.html and
-> https://interactivebrokers.github.io/tws-api/historical_limitations.html
+> <https://interactivebrokers.github.io/tws-api/historical_bars.html> and
+> <https://interactivebrokers.github.io/tws-api/historical_limitations.html>
 
 ## Historical bars — `reqHistoricalData`
 
@@ -39,7 +39,7 @@ Additional availability constraints:
   "relaxed" but soft-throttled.
 - No historical data for expired options/warrants/structured products or delisted tickers
   (**survivorship bias risk for backtests** — consider a secondary EOD source such as the
-  fundamental/market-data APIs in `docs/data-sources.md`).
+  fundamental/market-data APIs in `docs/reference/data-sources.md`).
 - Expired futures: only ~2 years past expiry.
 
 Practical budget: ~1 request/10 s sustained keeps you safely under all limits; the skeleton's
@@ -70,7 +70,7 @@ Practical budget: ~1 request/10 s sustained keeps you safely under all limits; t
 
 ## Sources
 
-- https://interactivebrokers.github.io/tws-api/historical_bars.html
-- https://interactivebrokers.github.io/tws-api/historical_limitations.html
-- https://interactivebrokers.github.io/tws-api/market_data.html
-- https://www.interactivebrokers.com/en/trading/papertrader-delayed-data.php
+- <https://interactivebrokers.github.io/tws-api/historical_bars.html>
+- <https://interactivebrokers.github.io/tws-api/historical_limitations.html>
+- <https://interactivebrokers.github.io/tws-api/market_data.html>
+- <https://www.interactivebrokers.com/en/trading/papertrader-delayed-data.php>

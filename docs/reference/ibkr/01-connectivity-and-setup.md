@@ -1,6 +1,6 @@
 # TWS API — Connectivity & Setup
 
-> Researched 2026-07-04. Primary source: https://interactivebrokers.github.io/tws-api/initial_setup.html
+> Researched 2026-07-04. Primary source: <https://interactivebrokers.github.io/tws-api/initial_setup.html>
 
 ## Requirements
 
@@ -56,5 +56,5 @@ your client connects to.**
 
 ## Sources
 
-- https://interactivebrokers.github.io/tws-api/initial_setup.html
-- https://interactivebrokers.github.io/tws-api/introduction.html
+- <https://interactivebrokers.github.io/tws-api/initial_setup.html>
+- <https://interactivebrokers.github.io/tws-api/introduction.html>

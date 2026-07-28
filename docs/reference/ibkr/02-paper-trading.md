@@ -78,10 +78,10 @@ Documented/commonly-reported limitations **[verify each before relying on it]**:
 
 ## Sources
 
-- https://www.interactivebrokers.com/campus/glossary-terms/paper-trading-account/
-- https://www.interactivebrokers.com/campus/trading-lessons/how-to-open-an-ibkr-paper-trading-account/
-- https://www.interactivebrokers.com/campus/ibkr-api-page/market-data-subscriptions/
-- https://www.ibkrguides.com/clientportal/papertradingaccount.htm
-- https://www.ibkrguides.com/clientportal/aboutpapertradingaccounts.htm
-- https://www.interactivebrokers.com/en/trading/papertrader-delayed-data.php
-- https://interactivebrokers.github.io/tws-api/introduction.html
+- <https://www.interactivebrokers.com/campus/glossary-terms/paper-trading-account/>
+- <https://www.interactivebrokers.com/campus/trading-lessons/how-to-open-an-ibkr-paper-trading-account/>
+- <https://www.interactivebrokers.com/campus/ibkr-api-page/market-data-subscriptions/>
+- <https://www.ibkrguides.com/clientportal/papertradingaccount.htm>
+- <https://www.ibkrguides.com/clientportal/aboutpapertradingaccounts.htm>
+- <https://www.interactivebrokers.com/en/trading/papertrader-delayed-data.php>
+- <https://interactivebrokers.github.io/tws-api/introduction.html>

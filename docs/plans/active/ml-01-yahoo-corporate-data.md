@@ -55,7 +55,7 @@ our DB, so future feature builds can honestly answer "what did we know at time t
    `test_yahoo_connector.py` does — no network in tests): upsert idempotency (re-fetch
    doesn't duplicate, `first_seen` survives refresh), ETF graceful skip, report-date
    matching, sector metadata written.
-5. Update [docs/data-sources.md](../../data-sources.md) row for Yahoo with the fundamentals
+5. Update [docs/reference/data-sources.md](../../reference/data-sources.md) row for Yahoo with the fundamentals
    depths above, and tick this plan off in TODO.md §1.
 
 ## Out of scope

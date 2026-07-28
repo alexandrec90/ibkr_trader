@@ -1,30 +1,30 @@
 # Implementation plans
 
-Session-sized plans for coding agents. Open or partially completed work lives in
-[`active/`](active/); useful implementation and decision records live in
-[`completed/`](completed/).
+Session-sized plans for coding agents. Each plan is self-contained: a fresh session should read
+[CLAUDE.md](../../CLAUDE.md) (hard rules), the plan, and the files it links — nothing else is
+assumed.
 
-ML-04, ML-05, and ML-09 remain at their stable paths in this directory because the project
-backlog links to them directly. They are completed plans.
+- [`active/`](active/) — open or partially completed work
+- [`completed/`](completed/) — landed work kept for its implementation or decision record
+
+Every plan lives in one of those two directories; nothing stays loose in this one. When a plan
+lands, move it to `completed/`, bump its relative links a level, and update the tables below.
 
 ## ML long-term stock picker
 
-Sequential, session-sized plans for coding agents. Each plan is self-contained: a fresh
-session should read [CLAUDE.md](../../CLAUDE.md) (hard rules), the plan, and the files it
-links — nothing else is assumed. Do them in order; each builds on the previous one's
-deliverables.
+Do them in order; each builds on the previous one's deliverables.
 
 | # | Plan | Delivers | Depends on |
 |---|---|---|---|
 | 1 | [ml-01-yahoo-corporate-data.md](active/ml-01-yahoo-corporate-data.md) | Dividends, share counts, sector metadata, statement snapshots in Postgres | prices ingested |
 | 2 | [ml-02-feature-pipeline.md](active/ml-02-feature-pipeline.md) | Shared versioned feature builder + `features` table; engine uses it | 1 |
 | 3 | [ml-03-training-harness.md](active/ml-03-training-harness.md) | Dataset builder, LightGBM training, walk-forward validation, artifacts | 2 |
-| 4 | [ml-04-backtest-integration.md](ml-04-backtest-integration.md) | `ml_lt` predictor/allocator on the backtest leaderboard | 3 |
-| 5 | [ml-05-oos-backtest.md](ml-05-oos-backtest.md) | Per-fold OOS backtest — the honest after-cost number the promotion rule needs | 4 |
+| 4 | [ml-04-backtest-integration.md](completed/ml-04-backtest-integration.md) | `ml_lt` predictor/allocator on the backtest leaderboard | 3 |
+| 5 | [ml-05-oos-backtest.md](completed/ml-05-oos-backtest.md) | Per-fold OOS backtest — the honest after-cost number the promotion rule needs | 4 |
 | 6 | [ml-06-ridge-predictor.md](completed/ml-06-ridge-predictor.md) | `ml_lt_ridge` deployable (it beat LightGBM OOS) + LightGBM capacity cut | 4 (5 preferred) |
 | 7 | [ml-07-forward-shadow.md](completed/ml-07-forward-shadow.md) | Monthly forward weight snapshots + realized-return report (paper-less forward test) | 4 — **land early, evidence accrues with time** |
 | 8 | [ml-08-survivorship.md](completed/ml-08-survivorship.md) | Survivorship label on every run + delisted-data source decision prep | none |
-| 9 | [ml-09-young-listings.md](ml-09-young-listings.md) | **Optional** experiment: relax the 252-day listing floor, feature-set v2 | 5 (+6) — gated on the core surviving OOS |
+| 9 | [ml-09-young-listings.md](completed/ml-09-young-listings.md) | **Optional** experiment: relax the 252-day listing floor, feature-set v2 | 5 (+6) — gated on the core surviving OOS |
 
 ML-04's verdict was **not promoted** (its leaderboard win is in-sample for the deployed
 artifact — see its completion notes). 5, 6 and 7 exist to produce honest evidence; do 5 first,
@@ -72,3 +72,9 @@ lenses only; anything feeding the real pipeline goes through `restore-*` into Po
 | 6 | [tools-06-timescaledb.md](completed/tools-06-timescaledb.md) | price_bars hypertable + compression — **measurement gate first, expected to abort if unjustified** | Only if HOT-window disk pressure is real |
 | 7 | [tools-07-deferred-bench.md](completed/tools-07-deferred-bench.md) | Decision record: MLflow / vectorbt / skfolio adoption triggers | Read before proposing any of those |
 | 8 | [tools-08-mlflow-tracking.md](completed/tools-08-mlflow-tracking.md) | Optional local MLflow projection of authoritative training metadata | Triggered by Ridge joining as a second model family |
+
+## Cross-project
+
+| Plan | Delivers | Notes |
+|---|---|---|
+| [data-lake.md](active/data-lake.md) | This repo's `archive/` Parquet-on-R2 layer widened into a catalogued data layer other projects can read | Standalone. Paired with Carameli's `docs/plans/active/shared-devkit/plan-5-data-lake-otel.md` — that plan owns the shared client and OTel conventions, this one owns the schema, partitioning, and catalog |
