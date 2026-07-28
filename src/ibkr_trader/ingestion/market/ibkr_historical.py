@@ -4,7 +4,6 @@ Highest-fidelity source (matches the broker we trade with) but strict pacing rul
 budget ~1 request / 10 s sustained unless current official IBKR rules say otherwise.
 """
 
-from ibkr_trader.config import get_settings
 from ibkr_trader.ingestion.base import Connector
 
 
@@ -19,7 +18,7 @@ class IbkrHistoricalConnector(Connector):
         what_to_show: str = "ADJUSTED_LAST",
         **kwargs,
     ) -> int:
-        settings = get_settings()
+        settings = self.settings
         _ = settings  # host/port/client_id come from settings when wired
 
         # TODO(skeleton):

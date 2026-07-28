@@ -25,7 +25,8 @@ snapshot_app = typer.Typer(help="Record and score broker-free forward strategy s
 app.add_typer(snapshot_app, name="snapshot")
 archive_app = typer.Typer(
     help="Offload cold data (intraday bars, scored raw payloads) to object storage as Parquet, "
-    "and restore it (docs/remote-archive.md; needs the [archive] extra + ARCHIVE_* in .env)."
+    "and restore it (docs/operations/remote-archive.md; needs the [archive] extra + "
+    "ARCHIVE_* in .env)."
 )
 app.add_typer(archive_app, name="archive")
 sentiment_app = typer.Typer(help="Manage local sentiment models and re-score stored text.")

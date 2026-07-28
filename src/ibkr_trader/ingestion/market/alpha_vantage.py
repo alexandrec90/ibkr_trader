@@ -25,7 +25,6 @@ import httpx
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ibkr_trader.config import get_settings
 from ibkr_trader.db.models import Instrument, PriceBar
 from ibkr_trader.db.session import get_session
 from ibkr_trader.ingestion.base import Connector
@@ -140,7 +139,7 @@ class AlphaVantageConnector(Connector):
 
     def fetch(self, symbol: str = "", outputsize: str = "compact", **kwargs) -> int:
         global _adjusted_supported
-        settings = get_settings()
+        settings = self.settings
         if not settings.alpha_vantage_key:
             raise RuntimeError("ALPHA_VANTAGE_KEY is not set (see .env.example)")
         av_symbol = symbol.strip().upper()

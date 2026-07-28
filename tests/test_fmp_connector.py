@@ -6,6 +6,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from ibkr_trader.config import get_settings
 from ibkr_trader.db.models import Base, Instrument, PriceBar
 from ibkr_trader.ingestion.market import fmp
 
@@ -33,9 +34,9 @@ class FakeHttpErrorResponse(FakeResponse):
 
 @pytest.fixture(autouse=True)
 def clear_settings_cache():
-    fmp.get_settings.cache_clear()
+    get_settings.cache_clear()
     yield
-    fmp.get_settings.cache_clear()
+    get_settings.cache_clear()
 
 
 def _make_session_scope():

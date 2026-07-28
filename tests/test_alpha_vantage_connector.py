@@ -8,6 +8,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from ibkr_trader.config import get_settings
 from ibkr_trader.db.models import Base, Instrument, PriceBar
 from ibkr_trader.ingestion.market import alpha_vantage as av
 
@@ -33,12 +34,12 @@ class FakeHttpErrorResponse(FakeResponse):
 
 @pytest.fixture(autouse=True)
 def clear_settings_cache():
-    av.get_settings.cache_clear()
+    get_settings.cache_clear()
     # the premium-refusal memo is process-wide on purpose; isolate it per test
     av._adjusted_supported = None
     yield
     av._adjusted_supported = None
-    av.get_settings.cache_clear()
+    get_settings.cache_clear()
 
 
 def _make_session_scope():
@@ -291,10 +292,10 @@ def test_alpha_vantage_error_message_raises(monkeypatch):
         av.AlphaVantageConnector().fetch(symbol="WAT")
 
 
-def test_alpha_vantage_missing_key_raises(monkeypatch):
-    monkeypatch.setattr(av, "get_settings", lambda: SimpleNamespace(alpha_vantage_key=""))
+def test_alpha_vantage_missing_key_raises():
+    connector = av.AlphaVantageConnector(SimpleNamespace(alpha_vantage_key=""))
     with pytest.raises(RuntimeError, match="ALPHA_VANTAGE_KEY"):
-        av.AlphaVantageConnector().fetch(symbol="NVDA")
+        connector.fetch(symbol="NVDA")
 
 
 def test_alpha_vantage_missing_symbol_raises(monkeypatch):

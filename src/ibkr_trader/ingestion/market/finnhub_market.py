@@ -1,6 +1,5 @@
 """Finnhub market-data connector — quotes and candles (separate from finnhub_news)."""
 
-from ibkr_trader.config import get_settings
 from ibkr_trader.ingestion.base import Connector
 
 
@@ -8,7 +7,7 @@ class FinnhubMarketConnector(Connector):
     name = "finnhub"
 
     def fetch(self, symbol: str = "", resolution: str = "D", **kwargs) -> int:
-        settings = get_settings()
+        settings = self.settings
         if not settings.finnhub_key:
             raise RuntimeError("FINNHUB_KEY is not set (see .env.example)")
 
