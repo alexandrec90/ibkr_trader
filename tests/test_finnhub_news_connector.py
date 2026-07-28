@@ -8,6 +8,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from ibkr_trader.config import get_settings
 from ibkr_trader.db.models import Base, NewsArticle
 from ibkr_trader.ingestion.news import finnhub_news as fh
 
@@ -33,9 +34,9 @@ class FakeHttpErrorResponse(FakeResponse):
 
 @pytest.fixture(autouse=True)
 def clear_settings_cache():
-    fh.get_settings.cache_clear()
+    get_settings.cache_clear()
     yield
-    fh.get_settings.cache_clear()
+    get_settings.cache_clear()
 
 
 def _make_session_scope():
@@ -179,10 +180,10 @@ def test_finnhub_bad_date_raises(monkeypatch):
         fh.FinnhubNewsConnector().fetch(symbol="AAPL", date_from="not-a-date")
 
 
-def test_finnhub_missing_key_raises(monkeypatch):
-    monkeypatch.setattr(fh, "get_settings", lambda: SimpleNamespace(finnhub_key=""))
+def test_finnhub_missing_key_raises():
+    connector = fh.FinnhubNewsConnector(SimpleNamespace(finnhub_key=""))
     with pytest.raises(RuntimeError, match="FINNHUB_KEY"):
-        fh.FinnhubNewsConnector().fetch(symbol="AAPL")
+        connector.fetch(symbol="AAPL")
 
 
 def test_finnhub_sanitizes_http_errors(monkeypatch):

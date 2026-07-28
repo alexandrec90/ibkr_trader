@@ -15,7 +15,6 @@ from typing import Any
 
 from sqlalchemy import select
 
-from ibkr_trader.config import get_settings
 from ibkr_trader.db.models import SocialPost
 from ibkr_trader.db.session import get_session
 from ibkr_trader.ingestion.base import Connector, stable_hash
@@ -56,7 +55,7 @@ class RedditConnector(Connector):
     name = "reddit"
 
     def fetch(self, subreddits: list[str] | None = None, limit: int = 100, **kwargs) -> int:
-        settings = get_settings()
+        settings = self.settings
         if not (settings.reddit_client_id and settings.reddit_client_secret):
             raise RuntimeError("REDDIT_CLIENT_ID/SECRET not set (see .env.example)")
         subreddits = subreddits or settings.subreddits

@@ -11,7 +11,6 @@ import httpx
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ibkr_trader.config import get_settings
 from ibkr_trader.db.models import Instrument, PriceBar
 from ibkr_trader.db.session import get_session
 from ibkr_trader.ingestion.base import Connector
@@ -136,7 +135,7 @@ class FmpConnector(Connector):
         what_to_show: str = "TRADES",
         **kwargs,
     ) -> int:
-        settings = get_settings()
+        settings = self.settings
         if not settings.fmp_key:
             raise RuntimeError("FMP_KEY is not set (see .env.example)")
         fmp_symbol = symbol.strip().upper()

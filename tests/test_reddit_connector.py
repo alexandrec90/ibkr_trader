@@ -7,6 +7,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from ibkr_trader.config import get_settings
 from ibkr_trader.db.models import Base, SocialPost
 from ibkr_trader.ingestion.base import stable_hash
 from ibkr_trader.ingestion.social import reddit
@@ -60,9 +61,9 @@ class FakeReddit:
 
 @pytest.fixture(autouse=True)
 def clear_settings_cache():
-    reddit.get_settings.cache_clear()
+    get_settings.cache_clear()
     yield
-    reddit.get_settings.cache_clear()
+    get_settings.cache_clear()
 
 
 def _make_session_scope():
@@ -195,11 +196,9 @@ def test_reddit_deleted_author_stores_null_hash(monkeypatch):
         assert post.body is None  # empty selftext -> NULL, not ""
 
 
-def test_reddit_missing_credentials_raises(monkeypatch):
-    monkeypatch.setattr(
-        reddit,
-        "get_settings",
-        lambda: SimpleNamespace(reddit_client_id="", reddit_client_secret=""),
+def test_reddit_missing_credentials_raises():
+    connector = reddit.RedditConnector(
+        SimpleNamespace(reddit_client_id="", reddit_client_secret="")
     )
     with pytest.raises(RuntimeError, match="REDDIT_CLIENT_ID"):
-        reddit.RedditConnector().fetch(subreddits=["stocks"])
+        connector.fetch(subreddits=["stocks"])

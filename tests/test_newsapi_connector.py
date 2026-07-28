@@ -8,6 +8,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from ibkr_trader.config import get_settings
 from ibkr_trader.db.models import Base, NewsArticle
 from ibkr_trader.ingestion.base import stable_hash
 from ibkr_trader.ingestion.news import newsapi as na
@@ -34,9 +35,9 @@ class FakeHttpErrorResponse(FakeResponse):
 
 @pytest.fixture(autouse=True)
 def clear_settings_cache():
-    na.get_settings.cache_clear()
+    get_settings.cache_clear()
     yield
-    na.get_settings.cache_clear()
+    get_settings.cache_clear()
 
 
 def _make_session_scope():
@@ -208,10 +209,10 @@ def test_newsapi_empty_query_raises(monkeypatch):
         na.NewsApiConnector().fetch(query="   ")
 
 
-def test_newsapi_missing_key_raises(monkeypatch):
-    monkeypatch.setattr(na, "get_settings", lambda: SimpleNamespace(newsapi_key=""))
+def test_newsapi_missing_key_raises():
+    connector = na.NewsApiConnector(SimpleNamespace(newsapi_key=""))
     with pytest.raises(RuntimeError, match="NEWSAPI_KEY"):
-        na.NewsApiConnector().fetch(query="Nvidia")
+        connector.fetch(query="Nvidia")
 
 
 def test_newsapi_sanitizes_http_errors(monkeypatch):

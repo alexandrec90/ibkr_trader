@@ -15,7 +15,6 @@ from typing import Any
 import httpx
 from sqlalchemy import select
 
-from ibkr_trader.config import get_settings
 from ibkr_trader.db.models import NewsArticle
 from ibkr_trader.db.session import get_session
 from ibkr_trader.ingestion.base import Connector, stable_hash
@@ -74,7 +73,7 @@ class NewsApiConnector(Connector):
         date_to: str = "",
         **kwargs,
     ) -> int:
-        settings = get_settings()
+        settings = self.settings
         if not settings.newsapi_key:
             raise RuntimeError("NEWSAPI_KEY is not set (see .env.example)")
         if not query.strip():

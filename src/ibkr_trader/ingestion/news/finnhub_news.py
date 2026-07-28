@@ -15,7 +15,6 @@ from typing import Any
 import httpx
 from sqlalchemy import select
 
-from ibkr_trader.config import get_settings
 from ibkr_trader.db.models import NewsArticle
 from ibkr_trader.db.session import get_session
 from ibkr_trader.ingestion.base import Connector
@@ -53,7 +52,7 @@ class FinnhubNewsConnector(Connector):
     name = "finnhub"
 
     def fetch(self, symbol: str = "", date_from: str = "", date_to: str = "", **kwargs) -> int:
-        settings = get_settings()
+        settings = self.settings
         if not settings.finnhub_key:
             raise RuntimeError("FINNHUB_KEY is not set (see .env.example)")
         finnhub_symbol = symbol.strip().upper()
