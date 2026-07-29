@@ -90,10 +90,9 @@ def _make_session_scope():
     return scope
 
 
-def _wire(monkeypatch, session_cm, reddit_client):
+def _wire(monkeypatch, reddit_client):
     monkeypatch.setenv("REDDIT_CLIENT_ID", "id")
     monkeypatch.setenv("REDDIT_CLIENT_SECRET", "secret")
-    monkeypatch.setattr(reddit, "get_session", session_cm)
     monkeypatch.setattr(reddit, "_reddit_client", lambda settings: reddit_client)
 
 
@@ -114,9 +113,11 @@ def test_reddit_fetch_upserts_posts_and_hashes_author(monkeypatch):
             ]
         }
     )
-    _wire(monkeypatch, session_cm, client)
+    _wire(monkeypatch, client)
 
-    count = reddit.RedditConnector().fetch(subreddits=["stocks"], limit=50)
+    count = reddit.RedditConnector(session_factory=session_cm).fetch(
+        subreddits=["stocks"], limit=50
+    )
 
     assert count == 1
     with session_cm() as session:
@@ -156,12 +157,12 @@ def test_reddit_repoll_updates_score_and_is_idempotent(monkeypatch):
             author=FakeAuthor("alice"),
         )
 
-    _wire(monkeypatch, session_cm, FakeReddit({"stocks": [sub(10, 3)]}))
-    assert reddit.RedditConnector().fetch(subreddits=["stocks"]) == 1
+    _wire(monkeypatch, FakeReddit({"stocks": [sub(10, 3)]}))
+    assert reddit.RedditConnector(session_factory=session_cm).fetch(subreddits=["stocks"]) == 1
 
     # second poll: same id, higher score/comments
-    _wire(monkeypatch, session_cm, FakeReddit({"stocks": [sub(25, 8)]}))
-    assert reddit.RedditConnector().fetch(subreddits=["stocks"]) == 1
+    _wire(monkeypatch, FakeReddit({"stocks": [sub(25, 8)]}))
+    assert reddit.RedditConnector(session_factory=session_cm).fetch(subreddits=["stocks"]) == 1
 
     with session_cm() as session:
         posts = session.scalars(select(SocialPost)).all()
@@ -187,9 +188,9 @@ def test_reddit_deleted_author_stores_null_hash(monkeypatch):
             ]
         }
     )
-    _wire(monkeypatch, session_cm, client)
+    _wire(monkeypatch, client)
 
-    assert reddit.RedditConnector().fetch(subreddits=["stocks"]) == 1
+    assert reddit.RedditConnector(session_factory=session_cm).fetch(subreddits=["stocks"]) == 1
     with session_cm() as session:
         post = session.scalar(select(SocialPost))
         assert post.author_hash is None

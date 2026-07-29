@@ -26,8 +26,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ibkr_trader.db.models import Instrument, PriceBar
-from ibkr_trader.db.session import get_session
-from ibkr_trader.ingestion.base import Connector
+from ibkr_trader.ingestion.base import Connector, SessionFactory, resolve_session_factory
 
 logger = logging.getLogger(__name__)
 
@@ -175,7 +174,7 @@ class AlphaVantageConnector(Connector):
             raise AlphaVantageProviderError("unexpected Alpha Vantage daily response shape")
 
         what_to_show = "ADJUSTED_LAST" if adjusted else "TRADES"
-        with get_session() as session:
+        with self.session() as session:
             instrument = _get_or_create_instrument(session, av_symbol)
             count = 0
             for day in sorted(series):
@@ -261,6 +260,7 @@ def fetch_universe(
     max_requests: int = 20,
     spacing_seconds: float = 1.0,
     sleep: Callable[[float], None] = time_mod.sleep,
+    session_factory: SessionFactory | None = None,
 ) -> int:
     """Fetch daily bars for a symbol list under the free-tier budget.
 
@@ -275,7 +275,8 @@ def fetch_universe(
       every remaining call fails identically. Other per-symbol failures (bad ticker) are
       logged and skipped, and stay stale for the next run.
     """
-    with get_session() as session:
+    open_session = resolve_session_factory(session_factory)
+    with open_session() as session:
         stale = [
             s
             for s in symbols
@@ -283,7 +284,7 @@ def fetch_universe(
         ]
     skipped_fresh = len(symbols) - len(stale)
 
-    connector = AlphaVantageConnector()
+    connector = AlphaVantageConnector(session_factory=session_factory)
     total = 0
     requests_used = 0
     for index, av_symbol in enumerate(stale):

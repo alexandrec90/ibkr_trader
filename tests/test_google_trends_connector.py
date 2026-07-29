@@ -70,10 +70,9 @@ def test_trends_fetch_upserts_points_and_skips_partial(monkeypatch):
         dates=["2024-01-01", "2024-01-02", "2024-01-03"],
     )
     client = FakeTrendReq(frame)
-    monkeypatch.setattr(gt, "get_session", session_cm)
     monkeypatch.setattr(gt, "_trends_client", lambda: client)
 
-    count = gt.GoogleTrendsConnector().fetch(keywords=["AAPL"], geo="CA")
+    count = gt.GoogleTrendsConnector(session_factory=session_cm).fetch(keywords=["AAPL"], geo="CA")
 
     assert count == 2  # partial row skipped
     assert client.payloads[0]["timeframe"] == gt.DEFAULT_TIMEFRAME
@@ -93,9 +92,10 @@ def test_trends_fetch_is_idempotent(monkeypatch):
     def run(value):
         frame = _frame("AAPL", [value], [False], ["2024-01-01"])
         monkeypatch.setattr(gt, "_trends_client", lambda: FakeTrendReq(frame))
-        return gt.GoogleTrendsConnector().fetch(keywords=["AAPL"], geo="CA")
+        return gt.GoogleTrendsConnector(session_factory=session_cm).fetch(
+            keywords=["AAPL"], geo="CA"
+        )
 
-    monkeypatch.setattr(gt, "get_session", session_cm)
     assert run(40.0) == 1
     assert run(70.0) == 1  # same (keyword, geo, ts) -> update
 
@@ -107,10 +107,9 @@ def test_trends_fetch_is_idempotent(monkeypatch):
 
 def test_trends_empty_frame_returns_zero(monkeypatch):
     session_cm = _make_session_scope()
-    monkeypatch.setattr(gt, "get_session", session_cm)
     monkeypatch.setattr(gt, "_trends_client", lambda: FakeTrendReq(pd.DataFrame()))
 
-    assert gt.GoogleTrendsConnector().fetch(keywords=["AAPL"]) == 0
+    assert gt.GoogleTrendsConnector(session_factory=session_cm).fetch(keywords=["AAPL"]) == 0
 
 
 def test_trends_requires_keyword():
@@ -129,14 +128,13 @@ def test_trends_skips_network_when_series_is_fresh(monkeypatch):
                 interest=50.0,
             )
         )
-    monkeypatch.setattr(gt, "get_session", session_cm)
 
     def no_client():
         raise AssertionError("fresh series must not hit the network")
 
     monkeypatch.setattr(gt, "_trends_client", no_client)
 
-    count = gt.GoogleTrendsConnector().fetch(
+    count = gt.GoogleTrendsConnector(session_factory=session_cm).fetch(
         keywords=["AAPL stock"], geo="CA", skip_if_newer_than_days=14
     )
     assert count == 0
@@ -155,10 +153,9 @@ def test_trends_fetches_when_series_is_stale(monkeypatch):
         )
     frame = _frame("AAPL stock", [60.0], [False], ["2024-01-01"])
     client = FakeTrendReq(frame)
-    monkeypatch.setattr(gt, "get_session", session_cm)
     monkeypatch.setattr(gt, "_trends_client", lambda: client)
 
-    count = gt.GoogleTrendsConnector().fetch(
+    count = gt.GoogleTrendsConnector(session_factory=session_cm).fetch(
         keywords=["AAPL stock"], geo="CA", skip_if_newer_than_days=14
     )
     assert count == 1
@@ -176,10 +173,9 @@ def test_trends_freshness_filter_drops_only_fresh_keywords(monkeypatch):
         )
     frame = _frame("stale", [30.0], [False], ["2024-01-01"])
     client = FakeTrendReq(frame)
-    monkeypatch.setattr(gt, "get_session", session_cm)
     monkeypatch.setattr(gt, "_trends_client", lambda: client)
 
-    gt.GoogleTrendsConnector().fetch(
+    gt.GoogleTrendsConnector(session_factory=session_cm).fetch(
         keywords=["fresh", "stale"], geo="CA", skip_if_newer_than_days=14
     )
     assert client.payloads[0]["kw_list"] == ["stale"]
@@ -230,10 +226,9 @@ def test_trends_caps_at_five_keywords(monkeypatch):
         index=pd.DatetimeIndex(["2024-01-01"]),
     )
     client = FakeTrendReq(frame)
-    monkeypatch.setattr(gt, "get_session", session_cm)
     monkeypatch.setattr(gt, "_trends_client", lambda: client)
 
-    count = gt.GoogleTrendsConnector().fetch(keywords=six)
+    count = gt.GoogleTrendsConnector(session_factory=session_cm).fetch(keywords=six)
 
     assert client.payloads[0]["kw_list"] == ["A", "B", "C", "D", "E"]
     assert count == 5

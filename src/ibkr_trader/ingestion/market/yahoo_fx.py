@@ -20,8 +20,7 @@ from datetime import UTC, date, datetime, timedelta
 from sqlalchemy import func, select
 
 from ibkr_trader.db.models import Instrument, PriceBar
-from ibkr_trader.db.session import get_session
-from ibkr_trader.ingestion.base import Connector
+from ibkr_trader.ingestion.base import Connector, SessionFactory, resolve_session_factory
 from ibkr_trader.ingestion.market.fmp_fx import DEFAULT_PAIR, get_or_create_fx_instrument
 from ibkr_trader.ingestion.market.yahoo import (
     _bar_values,
@@ -35,9 +34,9 @@ BAR_SIZE = "1 day"
 WHAT_TO_SHOW = "TRADES"
 
 
-def _next_missing_date(pair: str) -> date | None:
+def _next_missing_date(pair: str, session_factory: SessionFactory | None = None) -> date | None:
     """Day after the newest yahoo-source bar of the pair's CASH instrument (None = no bars)."""
-    with get_session() as session:
+    with resolve_session_factory(session_factory)() as session:
         latest_ts = session.scalar(
             select(func.max(PriceBar.ts))
             .join(Instrument, Instrument.id == PriceBar.instrument_id)
@@ -75,7 +74,9 @@ class YahooFxConnector(Connector):
             raise ValueError("pair is required (e.g. USDCAD)")
 
         start: date | None = (
-            _date_from_ymd(date_from) if date_from else _next_missing_date(fx_symbol)
+            _date_from_ymd(date_from)
+            if date_from
+            else _next_missing_date(fx_symbol, self.session_factory)
         )
         if start and start > datetime.now(tz=UTC).date():
             return 0  # already current — Yahoo rejects a start date in the future
@@ -96,7 +97,7 @@ class YahooFxConnector(Connector):
             timeout=DOWNLOAD_TIMEOUT_SECONDS,
         )
 
-        with get_session() as session:
+        with self.session() as session:
             instrument = get_or_create_fx_instrument(session, fx_symbol)
             count = 0
             for values in _bar_values(frame):

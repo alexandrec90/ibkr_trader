@@ -14,7 +14,6 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ibkr_trader.db.models import Instrument, PriceBar
-from ibkr_trader.db.session import get_session
 from ibkr_trader.ingestion.base import Connector
 from ibkr_trader.ingestion.market.yahoo_common import (
     DOWNLOAD_TIMEOUT_SECONDS,
@@ -144,7 +143,7 @@ class YahooConnector(Connector):
 
         start: date | None = _date_from_ymd(date_from) if date_from else None
         if start is None:
-            with get_session() as session:
+            with self.session() as session:
                 instrument = _get_instrument(session, yahoo_symbol)
                 if instrument:
                     start = _next_missing_date(
@@ -174,7 +173,7 @@ class YahooConnector(Connector):
             timeout=DOWNLOAD_TIMEOUT_SECONDS,
         )
 
-        with get_session() as session:
+        with self.session() as session:
             instrument = _get_or_create_instrument(session, yahoo_symbol)
             count = 0
             for values in _bar_values(frame):

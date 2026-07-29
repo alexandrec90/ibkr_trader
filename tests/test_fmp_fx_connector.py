@@ -66,9 +66,8 @@ def test_fx_fetch_creates_cash_instrument_and_bars(monkeypatch):
 
     monkeypatch.setenv("FMP_KEY", "test-fmp-key")
     monkeypatch.setattr(fmp.httpx, "get", fake_get)
-    monkeypatch.setattr(fmp_fx, "get_session", session_cm)
 
-    count = fmp_fx.FmpFxConnector().fetch(pair="usdcad")
+    count = fmp_fx.FmpFxConnector(session_factory=session_cm).fetch(pair="usdcad")
 
     assert count == 2
     with session_cm() as session:
@@ -95,10 +94,9 @@ def test_fx_fetch_upserts_on_repeat(monkeypatch):
 
     monkeypatch.setenv("FMP_KEY", "test-fmp-key")
     monkeypatch.setattr(fmp.httpx, "get", fake_get)
-    monkeypatch.setattr(fmp_fx, "get_session", session_cm)
 
-    assert fmp_fx.FmpFxConnector().fetch(pair="USDCAD") == 1
-    assert fmp_fx.FmpFxConnector().fetch(pair="USDCAD") == 1
+    assert fmp_fx.FmpFxConnector(session_factory=session_cm).fetch(pair="USDCAD") == 1
+    assert fmp_fx.FmpFxConnector(session_factory=session_cm).fetch(pair="USDCAD") == 1
 
     with session_cm() as session:
         bars = session.scalars(select(PriceBar)).all()

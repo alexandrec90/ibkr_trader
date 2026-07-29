@@ -47,6 +47,9 @@ and review it before upgrading.
 
 - `src/ibkr_trader/ingestion/` — one connector per source (news/, social/, market/), all
   implement `base.Connector`, all upsert into Postgres keyed on (source, external_id).
+  Connectors own no ambient state: `Settings` and the session factory are **injected**
+  (`Connector(settings=..., session_factory=...)`, `self.settings` / `self.session()`), which is
+  what keeps the tree extractable — see [docs/plans/active/data-lake.md](docs/plans/active/data-lake.md).
 - `src/ibkr_trader/signals/` — features + `Predictor` ABC. Reads/writes DB only.
 - `src/ibkr_trader/backtest/` — engine (costs are first-class, no look-ahead) + metrics.
   DB only, no network.

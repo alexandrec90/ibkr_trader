@@ -95,9 +95,8 @@ def test_newsapi_fetch_upserts_articles(monkeypatch):
 
     monkeypatch.setenv("NEWSAPI_KEY", "test-key")
     monkeypatch.setattr(na.httpx, "get", fake_get)
-    monkeypatch.setattr(na, "get_session", session_cm)
 
-    count = na.NewsApiConnector().fetch(query="Nvidia", symbol="nvda")
+    count = na.NewsApiConnector(session_factory=session_cm).fetch(query="Nvidia", symbol="nvda")
 
     assert count == 2
     with session_cm() as session:
@@ -127,10 +126,9 @@ def test_newsapi_fetch_is_idempotent_on_reingest(monkeypatch):
 
     monkeypatch.setenv("NEWSAPI_KEY", "test-key")
     monkeypatch.setattr(na.httpx, "get", fake_get)
-    monkeypatch.setattr(na, "get_session", session_cm)
 
-    assert na.NewsApiConnector().fetch(query="Nvidia") == 1
-    assert na.NewsApiConnector().fetch(query="Nvidia") == 1
+    assert na.NewsApiConnector(session_factory=session_cm).fetch(query="Nvidia") == 1
+    assert na.NewsApiConnector(session_factory=session_cm).fetch(query="Nvidia") == 1
 
     with session_cm() as session:
         articles = session.scalars(select(NewsArticle)).all()
@@ -151,10 +149,9 @@ def test_newsapi_merges_symbol_tags(monkeypatch):
 
     monkeypatch.setenv("NEWSAPI_KEY", "test-key")
     monkeypatch.setattr(na.httpx, "get", fake_get)
-    monkeypatch.setattr(na, "get_session", session_cm)
 
-    na.NewsApiConnector().fetch(query="Nvidia", symbol="NVDA")
-    na.NewsApiConnector().fetch(query="AMD", symbol="AMD")
+    na.NewsApiConnector(session_factory=session_cm).fetch(query="Nvidia", symbol="NVDA")
+    na.NewsApiConnector(session_factory=session_cm).fetch(query="AMD", symbol="AMD")
 
     with session_cm() as session:
         article = session.scalar(select(NewsArticle))
@@ -172,9 +169,8 @@ def test_newsapi_skips_items_without_url(monkeypatch):
 
     monkeypatch.setenv("NEWSAPI_KEY", "test-key")
     monkeypatch.setattr(na.httpx, "get", fake_get)
-    monkeypatch.setattr(na, "get_session", session_cm)
 
-    assert na.NewsApiConnector().fetch(query="Nvidia") == 1
+    assert na.NewsApiConnector(session_factory=session_cm).fetch(query="Nvidia") == 1
 
 
 def test_newsapi_passes_explicit_window(monkeypatch):
@@ -187,10 +183,11 @@ def test_newsapi_passes_explicit_window(monkeypatch):
 
     monkeypatch.setenv("NEWSAPI_KEY", "test-key")
     monkeypatch.setattr(na.httpx, "get", fake_get)
-    monkeypatch.setattr(na, "get_session", session_cm)
 
     assert (
-        na.NewsApiConnector().fetch(query="Nvidia", date_from="2026-06-20", date_to="2026-07-15")
+        na.NewsApiConnector(session_factory=session_cm).fetch(
+            query="Nvidia", date_from="2026-06-20", date_to="2026-07-15"
+        )
         == 0
     )
     assert seen["from"] == "2026-06-20"
@@ -255,8 +252,7 @@ def test_fresh_tagged_symbols_only_returns_recently_fetched(monkeypatch):
         session.add(_row("3", ["MSFT"], now, source="finnhub"))  # other source — ignored
         session.add(_row("4", None, now))  # untagged — ignored
 
-    monkeypatch.setattr(na, "get_session", session_cm)
-    assert na.fresh_tagged_symbols(now - timedelta(hours=12)) == {"NVDA"}
+    assert na.fresh_tagged_symbols(now - timedelta(hours=12), session_cm) == {"NVDA"}
 
 
 def test_newsapi_unexpected_shape_raises(monkeypatch):
