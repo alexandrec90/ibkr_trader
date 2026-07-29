@@ -33,6 +33,9 @@
 - `config.py` — pydantic-settings; everything from env/.env. Paper-by-default safety gate.
 - `db/` — SQLAlchemy 2.0 models + session factory. Alembic migrations in `migrations/`.
 - `ingestion/` — one connector per source (`base.Connector` interface). Pure "fetch → upsert".
+  Both ambient dependencies are injectable: `Connector(settings=..., session_factory=...)`, each
+  falling back lazily to the process-wide one, so the tree owns neither config nor the engine
+  (the seam for [the data-lake plan](plans/active/data-lake.md)).
 - `signals/` — feature building (sentiment, mention counts, returns) and model interface
   (`Predictor` ABC). Models read features from Postgres, write `predictions` rows.
 - `backtest/` — replays stored bars against a strategy; costs/slippage models; metrics

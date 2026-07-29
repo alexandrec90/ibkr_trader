@@ -235,7 +235,6 @@ def test_run_backfill_wires_connector_and_cursors(monkeypatch):
 
     from ibkr_trader.ingestion.news.finnhub_news import FinnhubNewsConnector
 
-    monkeypatch.setattr(finnhub_backfill, "get_session", fake_get_session)
     monkeypatch.setattr(FinnhubNewsConnector, "fetch", fake_fetch)
 
     class FixedDatetime(datetime):
@@ -245,7 +244,13 @@ def test_run_backfill_wires_connector_and_cursors(monkeypatch):
 
     monkeypatch.setattr(finnhub_backfill, "datetime", FixedDatetime)
 
-    total = run_backfill(["AAPL"], backfill_days=60, chunk_days=30, sleep=lambda s: None)
+    total = run_backfill(
+        ["AAPL"],
+        backfill_days=60,
+        chunk_days=30,
+        sleep=lambda s: None,
+        session_factory=fake_get_session,
+    )
 
     # cursor came from the stored article (2026-07-08), dates passed as ISO strings
     assert windows == [

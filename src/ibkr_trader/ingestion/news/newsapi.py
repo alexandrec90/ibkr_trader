@@ -16,8 +16,12 @@ import httpx
 from sqlalchemy import select
 
 from ibkr_trader.db.models import NewsArticle
-from ibkr_trader.db.session import get_session
-from ibkr_trader.ingestion.base import Connector, stable_hash
+from ibkr_trader.ingestion.base import (
+    Connector,
+    SessionFactory,
+    resolve_session_factory,
+    stable_hash,
+)
 
 BASE_URL = "https://newsapi.org/v2"
 
@@ -112,7 +116,7 @@ class NewsApiConnector(Connector):
 
         fetched_at = datetime.now(UTC)
         count = 0
-        with get_session() as session:
+        with self.session() as session:
             for item in articles:
                 if not isinstance(item, dict) or not item.get("url") or not item.get("publishedAt"):
                     continue
@@ -149,7 +153,9 @@ class NewsApiConnector(Connector):
         return count
 
 
-def fresh_tagged_symbols(cutoff: datetime) -> set[str]:
+def fresh_tagged_symbols(
+    cutoff: datetime, session_factory: SessionFactory | None = None
+) -> set[str]:
     """Symbols that already have a newsapi article fetched after ``cutoff``.
 
     One query for a whole batch: batch pollers skip these symbols instead of re-spending a
@@ -159,7 +165,7 @@ def fresh_tagged_symbols(cutoff: datetime) -> set[str]:
     nothing and therefore never looks fresh — the batch request budget bounds the retry cost.
     """
     fresh: set[str] = set()
-    with get_session() as session:
+    with resolve_session_factory(session_factory)() as session:
         rows = session.execute(
             select(NewsArticle.symbols).where(
                 NewsArticle.source == NewsApiConnector.name,

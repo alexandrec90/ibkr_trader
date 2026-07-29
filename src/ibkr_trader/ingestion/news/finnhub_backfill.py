@@ -21,7 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ibkr_trader.db.models import NewsArticle
-from ibkr_trader.db.session import get_session
+from ibkr_trader.ingestion.base import SessionFactory, resolve_session_factory
 
 logger = logging.getLogger(__name__)
 
@@ -159,14 +159,16 @@ def run_backfill(
     max_requests: int = 2000,
     request_spacing_seconds: float = 1.1,
     sleep: Callable[[float], None] = time.sleep,
+    session_factory: SessionFactory | None = None,
 ) -> int:
     """DB/network wrapper: derive per-symbol cursors from Postgres and walk with the real
     connector. Idempotent — safe to run on every ``serve`` start and on a daily interval."""
     from ibkr_trader.ingestion.news.finnhub_news import FinnhubNewsConnector
 
-    with get_session() as session:
+    session_factory = resolve_session_factory(session_factory)
+    with session_factory() as session:
         earliest = earliest_published_by_symbol(session)
-    connector = FinnhubNewsConnector()
+    connector = FinnhubNewsConnector(session_factory=session_factory)
 
     def fetch(symbol: str, date_from: date, date_to: date) -> int:
         return connector.fetch(

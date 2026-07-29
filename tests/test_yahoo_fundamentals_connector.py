@@ -83,8 +83,7 @@ def _stock_raw() -> RawFundamentals:
 
 def _fetch(monkeypatch, session_cm, raw: RawFundamentals, symbol: str = "AAPL") -> int:
     monkeypatch.setattr(yf_fund, "_download_fundamentals", lambda s: raw)
-    monkeypatch.setattr(yf_fund, "get_session", session_cm)
-    return yf_fund.YahooFundamentalsConnector().fetch(symbol=symbol)
+    return yf_fund.YahooFundamentalsConnector(session_factory=session_cm).fetch(symbol=symbol)
 
 
 def test_fetch_upserts_all_kinds_and_metadata(monkeypatch):

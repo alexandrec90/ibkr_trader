@@ -14,7 +14,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ibkr_trader.db.models import Instrument, PriceBar
-from ibkr_trader.db.session import get_session
 from ibkr_trader.ingestion.base import Connector
 from ibkr_trader.ingestion.market import fmp
 
@@ -87,7 +86,7 @@ class FmpFxConnector(Connector):
             fmp._historical_rows(response.json()), key=lambda row: str(row.get("date", ""))
         )
 
-        with get_session() as session:
+        with self.session() as session:
             instrument = get_or_create_fx_instrument(session, fx_symbol)
             count = 0
             for row in rows:

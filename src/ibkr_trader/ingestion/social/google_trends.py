@@ -18,7 +18,6 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ibkr_trader.db.models import TrendPoint
-from ibkr_trader.db.session import get_session
 from ibkr_trader.ingestion.base import Connector
 
 #: Keep points comparable across fetches — do not vary this per call.
@@ -72,7 +71,7 @@ class GoogleTrendsConnector(Connector):
         # a partially-failed batch resume (failed keywords stay stale and get retried).
         if skip_if_newer_than_days > 0:
             cutoff = datetime.now(UTC) - timedelta(days=skip_if_newer_than_days)
-            with get_session() as session:
+            with self.session() as session:
                 batch = [kw for kw in batch if _is_stale(session, kw, geo, cutoff)]
             if not batch:
                 return 0  # everything fresh — no request, no throttle wait
@@ -86,7 +85,7 @@ class GoogleTrendsConnector(Connector):
             return 0
 
         count = 0
-        with get_session() as session:
+        with self.session() as session:
             for index, row in frame.iterrows():
                 if bool(row.get("isPartial", False)):
                     continue  # provisional bucket — skip so we don't store a moving value
