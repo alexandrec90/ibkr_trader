@@ -30,7 +30,6 @@ from ibkr_trader.db.models import (
     Instrument,
     ShareCount,
 )
-from ibkr_trader.db.session import get_session
 from ibkr_trader.ingestion.base import Connector
 from ibkr_trader.ingestion.market.yahoo_common import (
     DOWNLOAD_TIMEOUT_SECONDS,
@@ -303,7 +302,7 @@ class YahooFundamentalsConnector(Connector):
         raw = _download_fundamentals(yahoo_symbol)
         now = datetime.now(tz=UTC)
 
-        with get_session() as session:
+        with self.session() as session:
             instrument = get_or_create_instrument(session, yahoo_symbol)
             _update_instrument_metadata(instrument, raw.info)
 

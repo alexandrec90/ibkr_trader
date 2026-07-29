@@ -67,9 +67,8 @@ def test_fetch_backfills_full_history_into_shared_cash_instrument(monkeypatch):
         return frame
 
     monkeypatch.setattr(yahoo_fx, "_download_within_timeout", fake_download)
-    monkeypatch.setattr(yahoo_fx, "get_session", session_cm)
 
-    count = yahoo_fx.YahooFxConnector().fetch(pair="usdcad")
+    count = yahoo_fx.YahooFxConnector(session_factory=session_cm).fetch(pair="usdcad")
 
     assert count == 2
     # no stored yahoo bars -> full history (start=None => period="max"), never adjusted
@@ -124,9 +123,8 @@ def test_fetch_reuses_existing_fmp_cash_instrument_and_resumes_from_yahoo_bars(m
         )
 
     monkeypatch.setattr(yahoo_fx, "_download_within_timeout", fake_download)
-    monkeypatch.setattr(yahoo_fx, "get_session", session_cm)
 
-    assert yahoo_fx.YahooFxConnector().fetch(pair="USDCAD") == 1
+    assert yahoo_fx.YahooFxConnector(session_factory=session_cm).fetch(pair="USDCAD") == 1
     assert calls[0][1] == datetime(2026, 7, 3, tzinfo=UTC).date()  # yahoo newest (Jul 2) + 1
 
     with session_cm() as session:
@@ -151,9 +149,8 @@ def test_fetch_upserts_on_repeat_and_rejects_blank_pair(monkeypatch):
         return frames.pop(0)
 
     monkeypatch.setattr(yahoo_fx, "_download_within_timeout", fake_download)
-    monkeypatch.setattr(yahoo_fx, "get_session", session_cm)
 
-    connector = yahoo_fx.YahooFxConnector()
+    connector = yahoo_fx.YahooFxConnector(session_factory=session_cm)
     assert connector.fetch(pair="USDCAD", date_from="2026-07-06") == 1
     assert connector.fetch(pair="USDCAD", date_from="2026-07-06") == 1
 
@@ -194,9 +191,8 @@ def test_fetch_skips_when_already_current(monkeypatch):
         raise AssertionError("must not download when already current")
 
     monkeypatch.setattr(yahoo_fx, "_download_within_timeout", fail_download)
-    monkeypatch.setattr(yahoo_fx, "get_session", session_cm)
 
-    assert yahoo_fx.YahooFxConnector().fetch(pair="USDCAD") == 0
+    assert yahoo_fx.YahooFxConnector(session_factory=session_cm).fetch(pair="USDCAD") == 0
 
 
 def test_fetch_clamps_inconsistent_provider_high_low(monkeypatch):
@@ -210,9 +206,13 @@ def test_fetch_clamps_inconsistent_provider_high_low(monkeypatch):
     frame["Volume"] = [0.0]
 
     monkeypatch.setattr(yahoo_fx, "_download_within_timeout", lambda *a, **k: frame)
-    monkeypatch.setattr(yahoo_fx, "get_session", session_cm)
 
-    assert yahoo_fx.YahooFxConnector().fetch(pair="USDCAD", date_from="2004-06-25") == 1
+    assert (
+        yahoo_fx.YahooFxConnector(session_factory=session_cm).fetch(
+            pair="USDCAD", date_from="2004-06-25"
+        )
+        == 1
+    )
     with session_cm() as session:
         bar = session.scalars(select(PriceBar)).one()
         assert bar.high == pytest.approx(1.3721)  # widened to contain close

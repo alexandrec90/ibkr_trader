@@ -33,6 +33,7 @@ a self-describing catalog (Phase 1).
 | 0 | Decisions + infra: lake repo name, create **private** R2 bucket + API token, new GitHub repo | You | ◐ name decided (`data-lake`); bucket + repo still pending |
 | 1 | **Catalog layer** in this repo's `archive/` module (self-describing manifest per dataset) | Claude | ✅ done — see below |
 | 1.5 | **Extraction prep** in this repo: models split + config inversion (no new repo needed) | Claude | ✅ done — see below |
+| 1.6 | **Session inversion**: `ingestion/` accepts a caller-supplied session factory | Claude | ✅ done — see below |
 | 2 | Extract `ingestion/ + archive/ + lens` into a `data-lake` package; `ibkr_trader` depends on it | Claude | ☐ pending — needs Phase 0 infra + its own Plan |
 | 3 | Cloud auto-pull: GitHub Actions (or CF Worker) cron writes Parquet → R2, pacing in the runner | Claude | ☐ pending — needs R2 secrets in CI |
 | 4 | Second consumer (sports-betting) reads the lake via the DuckDB lens + catalog | later | ☐ future |
@@ -87,15 +88,46 @@ import is caught by the AST check.
 `Feature` was placed **lake-side**, matching the plan's "derived features" line above. It has no
 FK to any trading table, so this is reversible if you'd rather features stayed private.
 
+### Phase 1.6 — session inversion — done
+
+The last hard coupling Phase 1.5 left: `ingestion/` called `db.session.get_session()` 11×, so an
+extracted package would have owned this repo's engine. Inverted with the same shape as the config
+fix, so both ambient dependencies now read the same way:
+
+- **`Connector.__init__(settings=None, session_factory=None)`** + a `Connector.session()` helper.
+  A session factory is any zero-arg callable returning a context manager that yields a
+  SQLAlchemy `Session` and commits on clean exit — `db.session.get_session` is merely the default.
+  All 15 in-method call sites became `with self.session() as session:`.
+- **Module-level helpers take the same argument**: `alpha_vantage.fetch_universe`,
+  `finnhub_backfill.run_backfill`, `newsapi.fresh_tagged_symbols`, `yahoo_fx._next_missing_date`
+  resolve theirs through `base.resolve_session_factory(...)`, and the two that build a connector
+  hand the factory down instead of letting it fall back.
+- **`db/__init__.py` re-exports lazily (PEP 562).** It eagerly imported `db.session`, so *any*
+  `import ibkr_trader.db.models` — every connector — pulled in the engine and `config` anyway.
+  The AST guard from Phase 1.5 could not see this; a runtime check now does.
+
+Enforced by `tests/test_connector_session_factory.py`: injection wins, the fallback is lazy and
+cached, helpers that build a connector propagate the factory, no ingestion module imports
+`db.session` (AST), and — the end-to-end one — importing the entire connector tree in a
+subprocess loads neither `ibkr_trader.db.session` nor `ibkr_trader.config`. Mutation-checked:
+re-adding the import to one connector fails 2 tests, and reverting `db/__init__.py` to eager
+imports fails the subprocess check. The existing connector tests now inject a SQLite factory
+instead of monkeypatching a module-level `get_session`, which is what a foreign consumer does.
+
 ### Phase 2 — extraction (next, fresh session)
 
 - New repo **`data-lake`** (name settled in Phase 0). Move `ingestion/`, `archive/`, `db/base.py`,
   `db/lake_models.py`, and the DuckDB `lens` into an installable package with a stable public API
   (connectors, `store_from_settings`, the catalog readers, restore helpers). `db/trading_models.py`
   stays here and keeps importing the package's `Base` + `Instrument`.
-- Still to invert before the move: `ingestion/` calls `db.session.get_session()` 11× (the package
-  must accept a caller-supplied session factory rather than owning the engine). That is the one
-  remaining hard coupling; Phase 1.5 cleared config and the models.
+- Config, models and sessions are all inverted now (Phases 1.5 + 1.6) — no coupling left to
+  break before the move. Two things still to decide *during* it:
+  - `ingestion/` and `archive/` import the `db.models` façade, which registers the trading tables
+    too. Post-move they should import `lake_models` directly; the façade's "import it, not the
+    halves" rule exists so `Base.metadata` stays complete for Alembic, and only this repo needs
+    that.
+  - `archive/store.py` and `archive/lens.py` still import `ibkr_trader.config` eagerly (they take
+    an optional `Settings`, so it is injection-ready — just not lazy like `ingestion/base.py`).
 - `ibkr_trader` depends on it; its `signals/`/`backtest/`/`execution/` keep restoring into local
   Postgres. Update this repo's imports, tests, CI, and CLAUDE.md.
 - Watch: this repo's test suite + coverage floor shift when `ingestion/`/`archive/` leave. Make

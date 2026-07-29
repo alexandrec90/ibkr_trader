@@ -16,7 +16,6 @@ import httpx
 from sqlalchemy import select
 
 from ibkr_trader.db.models import NewsArticle
-from ibkr_trader.db.session import get_session
 from ibkr_trader.ingestion.base import Connector
 
 BASE_URL = "https://finnhub.io/api/v1"
@@ -87,7 +86,7 @@ class FinnhubNewsConnector(Connector):
 
         fetched_at = datetime.now(UTC)
         count = 0
-        with get_session() as session:
+        with self.session() as session:
             for item in items:
                 if not isinstance(item, dict) or "id" not in item:
                     continue

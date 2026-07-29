@@ -75,6 +75,8 @@ a task, you own stopping it before you finish.
 
 - `src/ibkr_trader/ingestion/` — one connector per source (news/, social/, market/), all
   implement `base.Connector`, all upsert into Postgres keyed on (source, external_id).
+  Settings *and* the DB session factory are injected (`Connector(settings, session_factory)`,
+  `self.session()`); never import `config` or `db.session` at module scope here — tests pin it.
 - `src/ibkr_trader/signals/` — features + `Predictor` ABC. Reads/writes DB only.
 - `src/ibkr_trader/backtest/` — engine (costs are first-class, no look-ahead) + metrics.
   DB only, no network.

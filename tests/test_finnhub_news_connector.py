@@ -91,9 +91,8 @@ def test_finnhub_fetch_upserts_articles(monkeypatch):
 
     monkeypatch.setenv("FINNHUB_KEY", "test-key")
     monkeypatch.setattr(fh.httpx, "get", fake_get)
-    monkeypatch.setattr(fh, "get_session", session_cm)
 
-    count = fh.FinnhubNewsConnector().fetch(symbol="aapl")
+    count = fh.FinnhubNewsConnector(session_factory=session_cm).fetch(symbol="aapl")
 
     assert count == 2
     with session_cm() as session:
@@ -123,10 +122,9 @@ def test_finnhub_fetch_is_idempotent_on_reingest(monkeypatch):
 
     monkeypatch.setenv("FINNHUB_KEY", "test-key")
     monkeypatch.setattr(fh.httpx, "get", fake_get)
-    monkeypatch.setattr(fh, "get_session", session_cm)
 
-    assert fh.FinnhubNewsConnector().fetch(symbol="AAPL") == 1
-    assert fh.FinnhubNewsConnector().fetch(symbol="AAPL") == 1
+    assert fh.FinnhubNewsConnector(session_factory=session_cm).fetch(symbol="AAPL") == 1
+    assert fh.FinnhubNewsConnector(session_factory=session_cm).fetch(symbol="AAPL") == 1
 
     with session_cm() as session:
         articles = session.scalars(select(NewsArticle)).all()
@@ -144,10 +142,9 @@ def test_finnhub_fetch_merges_symbol_tags(monkeypatch):
 
     monkeypatch.setenv("FINNHUB_KEY", "test-key")
     monkeypatch.setattr(fh.httpx, "get", fake_get)
-    monkeypatch.setattr(fh, "get_session", session_cm)
 
-    fh.FinnhubNewsConnector().fetch(symbol="AAPL")
-    fh.FinnhubNewsConnector().fetch(symbol="MSFT")
+    fh.FinnhubNewsConnector(session_factory=session_cm).fetch(symbol="AAPL")
+    fh.FinnhubNewsConnector(session_factory=session_cm).fetch(symbol="MSFT")
 
     with session_cm() as session:
         article = session.scalar(select(NewsArticle))
@@ -164,10 +161,11 @@ def test_finnhub_uses_explicit_window(monkeypatch):
 
     monkeypatch.setenv("FINNHUB_KEY", "test-key")
     monkeypatch.setattr(fh.httpx, "get", fake_get)
-    monkeypatch.setattr(fh, "get_session", session_cm)
 
     assert (
-        fh.FinnhubNewsConnector().fetch(symbol="AAPL", date_from="2024-01-01", date_to="2024-01-31")
+        fh.FinnhubNewsConnector(session_factory=session_cm).fetch(
+            symbol="AAPL", date_from="2024-01-01", date_to="2024-01-31"
+        )
         == 0
     )
     assert seen["from"] == "2024-01-01"
@@ -194,10 +192,9 @@ def test_finnhub_sanitizes_http_errors(monkeypatch):
 
     monkeypatch.setenv("FINNHUB_KEY", "test-key")
     monkeypatch.setattr(fh.httpx, "get", fake_get)
-    monkeypatch.setattr(fh, "get_session", session_cm)
 
     with pytest.raises(fh.FinnhubProviderError) as exc_info:
-        fh.FinnhubNewsConnector().fetch(symbol="AAPL")
+        fh.FinnhubNewsConnector(session_factory=session_cm).fetch(symbol="AAPL")
     assert "HTTP 429" in str(exc_info.value)
     assert "API key omitted" in str(exc_info.value)
     assert exc_info.value.__cause__ is None

@@ -88,9 +88,8 @@ def test_fmp_fetch_upserts_price_bars(monkeypatch):
 
     monkeypatch.setenv("FMP_KEY", "test-fmp-key")
     monkeypatch.setattr(fmp.httpx, "get", fake_get)
-    monkeypatch.setattr(fmp, "get_session", session_cm)
 
-    count = fmp.FmpConnector().fetch(symbol="aapl")
+    count = fmp.FmpConnector(session_factory=session_cm).fetch(symbol="aapl")
 
     assert count == 2
     with session_cm() as session:
@@ -122,10 +121,12 @@ def test_fmp_fetch_updates_existing_price_bar(monkeypatch):
 
     monkeypatch.setenv("FMP_KEY", "test-fmp-key")
     monkeypatch.setattr(fmp.httpx, "get", fake_get)
-    monkeypatch.setattr(fmp, "get_session", session_cm)
 
-    assert fmp.FmpConnector().fetch(symbol="AAPL") == 1
-    assert fmp.FmpConnector().fetch(symbol="AAPL", date_from="2024-01-02") == 1
+    assert fmp.FmpConnector(session_factory=session_cm).fetch(symbol="AAPL") == 1
+    assert (
+        fmp.FmpConnector(session_factory=session_cm).fetch(symbol="AAPL", date_from="2024-01-02")
+        == 1
+    )
 
     with session_cm() as session:
         bars = session.scalars(select(PriceBar)).all()
@@ -151,10 +152,9 @@ def test_fmp_fetch_starts_from_next_missing_date(monkeypatch):
 
     monkeypatch.setenv("FMP_KEY", "test-fmp-key")
     monkeypatch.setattr(fmp.httpx, "get", fake_get)
-    monkeypatch.setattr(fmp, "get_session", session_cm)
 
-    assert fmp.FmpConnector().fetch(symbol="AAPL") == 1
-    assert fmp.FmpConnector().fetch(symbol="AAPL") == 1
+    assert fmp.FmpConnector(session_factory=session_cm).fetch(symbol="AAPL") == 1
+    assert fmp.FmpConnector(session_factory=session_cm).fetch(symbol="AAPL") == 1
 
     assert "from" not in params_seen[0]
     assert params_seen[1]["from"] == "2024-01-03"
@@ -170,7 +170,6 @@ def test_fmp_fetch_skips_request_when_incremental_range_is_after_date_to(monkeyp
 
     monkeypatch.setenv("FMP_KEY", "test-fmp-key")
     monkeypatch.setattr(fmp.httpx, "get", fail_get)
-    monkeypatch.setattr(fmp, "get_session", session_cm)
 
     with session_cm() as session:
         instrument = Instrument(symbol="AAPL", exchange="SMART", currency="USD")
@@ -191,7 +190,9 @@ def test_fmp_fetch_skips_request_when_incremental_range_is_after_date_to(monkeyp
             )
         )
 
-    assert fmp.FmpConnector().fetch(symbol="AAPL", date_to="2024-01-02") == 0
+    assert (
+        fmp.FmpConnector(session_factory=session_cm).fetch(symbol="AAPL", date_to="2024-01-02") == 0
+    )
 
 
 def test_fmp_fetch_falls_back_to_light_eod_when_full_is_gated(monkeypatch):
@@ -211,9 +212,8 @@ def test_fmp_fetch_falls_back_to_light_eod_when_full_is_gated(monkeypatch):
 
     monkeypatch.setenv("FMP_KEY", "test-fmp-key")
     monkeypatch.setattr(fmp.httpx, "get", fake_get)
-    monkeypatch.setattr(fmp, "get_session", session_cm)
 
-    assert fmp.FmpConnector().fetch(symbol="GOOG") == 1
+    assert fmp.FmpConnector(session_factory=session_cm).fetch(symbol="GOOG") == 1
     assert urls == [f"{fmp.BASE_URL}{fmp.FULL_EOD_PATH}", f"{fmp.BASE_URL}{fmp.LIGHT_EOD_PATH}"]
 
     with session_cm() as session:
@@ -233,10 +233,9 @@ def test_fmp_fetch_sanitizes_provider_http_errors(monkeypatch):
 
     monkeypatch.setenv("FMP_KEY", "test-fmp-key")
     monkeypatch.setattr(fmp.httpx, "get", fake_get)
-    monkeypatch.setattr(fmp, "get_session", session_cm)
 
     with pytest.raises(fmp.FmpProviderError) as exc_info:
-        fmp.FmpConnector().fetch(symbol="GOOG")
+        fmp.FmpConnector(session_factory=session_cm).fetch(symbol="GOOG")
 
     assert "HTTP 402" in str(exc_info.value)
     assert "API key omitted" in str(exc_info.value)

@@ -65,9 +65,8 @@ def test_yahoo_fetch_upserts_price_bars_and_maps_to_suffix(monkeypatch):
         return frame
 
     monkeypatch.setattr(yahoo, "_download_history", fake_download)
-    monkeypatch.setattr(yahoo, "get_session", session_cm)
 
-    count = yahoo.YahooConnector().fetch(symbol="xeqt.to")
+    count = yahoo.YahooConnector(session_factory=session_cm).fetch(symbol="xeqt.to")
 
     assert count == 2
     assert calls == [("XEQT.TO", None, None, True)]
@@ -108,10 +107,9 @@ def test_yahoo_fetch_starts_from_next_missing_date(monkeypatch):
         return frames.pop(0)
 
     monkeypatch.setattr(yahoo, "_download_history", fake_download)
-    monkeypatch.setattr(yahoo, "get_session", session_cm)
 
-    assert yahoo.YahooConnector().fetch(symbol="XEQT.TO") == 1
-    assert yahoo.YahooConnector().fetch(symbol="XEQT.TO") == 1
+    assert yahoo.YahooConnector(session_factory=session_cm).fetch(symbol="XEQT.TO") == 1
+    assert yahoo.YahooConnector(session_factory=session_cm).fetch(symbol="XEQT.TO") == 1
 
     assert starts == [None, date(2024, 1, 3)]
     with session_cm() as session:
@@ -132,10 +130,14 @@ def test_yahoo_fetch_updates_existing_price_bar(monkeypatch):
     session_cm = _make_session_scope()
 
     monkeypatch.setattr(yahoo, "_download_history", lambda *a, **k: frames.pop(0))
-    monkeypatch.setattr(yahoo, "get_session", session_cm)
 
-    assert yahoo.YahooConnector().fetch(symbol="XEQT.TO") == 1
-    assert yahoo.YahooConnector().fetch(symbol="XEQT.TO", date_from="2024-01-02") == 1
+    assert yahoo.YahooConnector(session_factory=session_cm).fetch(symbol="XEQT.TO") == 1
+    assert (
+        yahoo.YahooConnector(session_factory=session_cm).fetch(
+            symbol="XEQT.TO", date_from="2024-01-02"
+        )
+        == 1
+    )
 
     with session_cm() as session:
         bars = session.scalars(select(PriceBar)).all()
@@ -151,7 +153,6 @@ def test_yahoo_fetch_skips_request_when_local_data_covers_date_to(monkeypatch):
         raise AssertionError("Yahoo should not be called when local data already covers date_to")
 
     monkeypatch.setattr(yahoo, "_download_history", fail_download)
-    monkeypatch.setattr(yahoo, "get_session", session_cm)
 
     with session_cm() as session:
         instrument = Instrument(symbol="XEQT", exchange="TSX", currency="CAD")
@@ -172,7 +173,12 @@ def test_yahoo_fetch_skips_request_when_local_data_covers_date_to(monkeypatch):
             )
         )
 
-    assert yahoo.YahooConnector().fetch(symbol="XEQT.TO", date_to="2024-01-02") == 0
+    assert (
+        yahoo.YahooConnector(session_factory=session_cm).fetch(
+            symbol="XEQT.TO", date_to="2024-01-02"
+        )
+        == 0
+    )
 
 
 def test_yahoo_fetch_trades_disables_auto_adjust_and_passes_exclusive_end(monkeypatch):
@@ -187,9 +193,8 @@ def test_yahoo_fetch_trades_disables_auto_adjust_and_passes_exclusive_end(monkey
         )
 
     monkeypatch.setattr(yahoo, "_download_history", fake_download)
-    monkeypatch.setattr(yahoo, "get_session", session_cm)
 
-    connector = yahoo.YahooConnector()
+    connector = yahoo.YahooConnector(session_factory=session_cm)
     count = connector.fetch(
         symbol="GOOG", date_from="2024-01-02", date_to="2024-01-05", what_to_show="TRADES"
     )
@@ -217,7 +222,6 @@ def test_yahoo_fetch_skips_request_when_already_current(monkeypatch):
         raise AssertionError("Yahoo should not be called when the next missing date is future")
 
     monkeypatch.setattr(yahoo, "_download_history", fail_download)
-    monkeypatch.setattr(yahoo, "get_session", session_cm)
 
     today = datetime.now(tz=UTC).date()
     with session_cm() as session:
@@ -239,7 +243,7 @@ def test_yahoo_fetch_skips_request_when_already_current(monkeypatch):
             )
         )
 
-    assert yahoo.YahooConnector().fetch(symbol="XEQT.TO") == 0
+    assert yahoo.YahooConnector(session_factory=session_cm).fetch(symbol="XEQT.TO") == 0
 
 
 def test_yahoo_fetch_wraps_provider_errors(monkeypatch):
@@ -249,10 +253,9 @@ def test_yahoo_fetch_wraps_provider_errors(monkeypatch):
         raise RuntimeError("possibly rate limited")
 
     monkeypatch.setattr(yahoo, "_download_history", fake_download)
-    monkeypatch.setattr(yahoo, "get_session", session_cm)
 
     with pytest.raises(yahoo.YahooProviderError) as exc_info:
-        yahoo.YahooConnector().fetch(symbol="XEQT.TO")
+        yahoo.YahooConnector(session_factory=session_cm).fetch(symbol="XEQT.TO")
     assert "XEQT.TO" in str(exc_info.value)
 
 

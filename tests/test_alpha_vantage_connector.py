@@ -128,9 +128,8 @@ def test_alpha_vantage_upserts_adjusted_bars(monkeypatch):
 
     monkeypatch.setenv("ALPHA_VANTAGE_KEY", "test-key")
     monkeypatch.setattr(av.httpx, "get", fake_get)
-    monkeypatch.setattr(av, "get_session", session_cm)
 
-    count = av.AlphaVantageConnector().fetch(symbol="nvda")
+    count = av.AlphaVantageConnector(session_factory=session_cm).fetch(symbol="nvda")
 
     assert count == 2
     with session_cm() as session:
@@ -164,10 +163,9 @@ def test_alpha_vantage_upsert_is_idempotent(monkeypatch):
 
     monkeypatch.setenv("ALPHA_VANTAGE_KEY", "test-key")
     monkeypatch.setattr(av.httpx, "get", fake_get)
-    monkeypatch.setattr(av, "get_session", session_cm)
 
-    assert av.AlphaVantageConnector().fetch(symbol="NVDA") == 2
-    assert av.AlphaVantageConnector().fetch(symbol="NVDA") == 2
+    assert av.AlphaVantageConnector(session_factory=session_cm).fetch(symbol="NVDA") == 2
+    assert av.AlphaVantageConnector(session_factory=session_cm).fetch(symbol="NVDA") == 2
 
     with session_cm() as session:
         assert len(session.scalars(select(PriceBar)).all()) == 2  # upsert, not duplicate
@@ -185,9 +183,8 @@ def test_alpha_vantage_falls_back_to_unadjusted_on_premium_refusal(monkeypatch):
 
     monkeypatch.setenv("ALPHA_VANTAGE_KEY", "test-key")
     monkeypatch.setattr(av.httpx, "get", fake_get)
-    monkeypatch.setattr(av, "get_session", session_cm)
 
-    count = av.AlphaVantageConnector().fetch(symbol="NVDA")
+    count = av.AlphaVantageConnector(session_factory=session_cm).fetch(symbol="NVDA")
 
     assert calls == ["TIME_SERIES_DAILY_ADJUSTED", "TIME_SERIES_DAILY"]
     assert count == 1
@@ -207,9 +204,8 @@ def test_alpha_vantage_trt_symbol_maps_to_tsx(monkeypatch):
 
     monkeypatch.setenv("ALPHA_VANTAGE_KEY", "test-key")
     monkeypatch.setattr(av.httpx, "get", fake_get)
-    monkeypatch.setattr(av, "get_session", session_cm)
 
-    av.AlphaVantageConnector().fetch(symbol="shop.trt")
+    av.AlphaVantageConnector(session_factory=session_cm).fetch(symbol="shop.trt")
 
     with session_cm() as session:
         instrument = session.scalar(select(Instrument))
@@ -269,10 +265,9 @@ def test_alpha_vantage_remembers_premium_refusal_across_fetches(monkeypatch):
 
     monkeypatch.setenv("ALPHA_VANTAGE_KEY", "test-key")
     monkeypatch.setattr(av.httpx, "get", fake_get)
-    monkeypatch.setattr(av, "get_session", session_cm)
 
-    av.AlphaVantageConnector().fetch(symbol="NVDA")
-    av.AlphaVantageConnector().fetch(symbol="MSFT")
+    av.AlphaVantageConnector(session_factory=session_cm).fetch(symbol="NVDA")
+    av.AlphaVantageConnector(session_factory=session_cm).fetch(symbol="MSFT")
 
     assert calls == [
         "TIME_SERIES_DAILY_ADJUSTED",  # probe once
@@ -366,12 +361,11 @@ def test_fetch_universe_skips_fresh_symbols(monkeypatch):
     _seed_fresh_bar(session_cm, "NVDA", age_days=0.1)  # fetched moments ago
     fetched: list[str] = []
 
-    monkeypatch.setattr(av, "get_session", session_cm)
     monkeypatch.setattr(
         av.AlphaVantageConnector, "fetch", lambda self, symbol="", **kw: fetched.append(symbol) or 3
     )
 
-    total = av.fetch_universe(["NVDA", "MSFT"], sleep=lambda _s: None)
+    total = av.fetch_universe(["NVDA", "MSFT"], sleep=lambda _s: None, session_factory=session_cm)
 
     assert fetched == ["MSFT"]  # NVDA fresh — no request spent
     assert total == 3
@@ -382,12 +376,11 @@ def test_fetch_universe_stale_symbol_is_refetched(monkeypatch):
     _seed_fresh_bar(session_cm, "NVDA", age_days=5.0)  # older than the 1-day default
     fetched: list[str] = []
 
-    monkeypatch.setattr(av, "get_session", session_cm)
     monkeypatch.setattr(
         av.AlphaVantageConnector, "fetch", lambda self, symbol="", **kw: fetched.append(symbol) or 1
     )
 
-    av.fetch_universe(["NVDA"], sleep=lambda _s: None)
+    av.fetch_universe(["NVDA"], sleep=lambda _s: None, session_factory=session_cm)
     assert fetched == ["NVDA"]
 
 
@@ -395,12 +388,13 @@ def test_fetch_universe_respects_request_budget(monkeypatch):
     session_cm = _make_session_scope()
     fetched: list[str] = []
 
-    monkeypatch.setattr(av, "get_session", session_cm)
     monkeypatch.setattr(
         av.AlphaVantageConnector, "fetch", lambda self, symbol="", **kw: fetched.append(symbol) or 1
     )
 
-    total = av.fetch_universe(["A", "B", "C", "D"], max_requests=2, sleep=lambda _s: None)
+    total = av.fetch_universe(
+        ["A", "B", "C", "D"], max_requests=2, sleep=lambda _s: None, session_factory=session_cm
+    )
 
     assert fetched == ["A", "B"]  # budget stops the run; C/D stay stale for the next run
     assert total == 2
@@ -416,10 +410,9 @@ def test_fetch_universe_aborts_on_quota_error(monkeypatch):
             raise av.AlphaVantageQuotaError("quota exhausted")
         return 1
 
-    monkeypatch.setattr(av, "get_session", session_cm)
     monkeypatch.setattr(av.AlphaVantageConnector, "fetch", fake_fetch)
 
-    total = av.fetch_universe(["A", "B", "C"], sleep=lambda _s: None)
+    total = av.fetch_universe(["A", "B", "C"], sleep=lambda _s: None, session_factory=session_cm)
 
     assert fetched == ["A", "B"]  # C not attempted — it could only fail too
     assert total == 1
@@ -433,18 +426,20 @@ def test_fetch_universe_skips_a_failing_symbol(monkeypatch):
             raise av.AlphaVantageProviderError("Invalid API call")
         return 1
 
-    monkeypatch.setattr(av, "get_session", session_cm)
     monkeypatch.setattr(av.AlphaVantageConnector, "fetch", fake_fetch)
 
-    assert av.fetch_universe(["A", "BAD", "C"], sleep=lambda _s: None) == 2
+    assert (
+        av.fetch_universe(["A", "BAD", "C"], sleep=lambda _s: None, session_factory=session_cm) == 2
+    )
 
 
 def test_fetch_universe_spaces_calls(monkeypatch):
     session_cm = _make_session_scope()
     sleeps: list[float] = []
 
-    monkeypatch.setattr(av, "get_session", session_cm)
     monkeypatch.setattr(av.AlphaVantageConnector, "fetch", lambda self, **kw: 1)
 
-    av.fetch_universe(["A", "B", "C"], spacing_seconds=1.5, sleep=sleeps.append)
+    av.fetch_universe(
+        ["A", "B", "C"], spacing_seconds=1.5, sleep=sleeps.append, session_factory=session_cm
+    )
     assert sleeps == [1.5, 1.5]  # between calls, not before the first

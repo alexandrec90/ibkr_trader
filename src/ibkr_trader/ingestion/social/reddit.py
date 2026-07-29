@@ -16,7 +16,6 @@ from typing import Any
 from sqlalchemy import select
 
 from ibkr_trader.db.models import SocialPost
-from ibkr_trader.db.session import get_session
 from ibkr_trader.ingestion.base import Connector, stable_hash
 
 
@@ -63,7 +62,7 @@ class RedditConnector(Connector):
         reddit = _reddit_client(settings)
         fetched_at = datetime.now(UTC)
         count = 0
-        with get_session() as session:
+        with self.session() as session:
             for sub in subreddits:
                 for submission in reddit.subreddit(sub).new(limit=limit):
                     created_at = datetime.fromtimestamp(float(submission.created_utc), tz=UTC)

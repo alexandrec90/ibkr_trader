@@ -12,7 +12,6 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ibkr_trader.db.models import Instrument, PriceBar
-from ibkr_trader.db.session import get_session
 from ibkr_trader.ingestion.base import Connector
 
 BASE_URL = "https://financialmodelingprep.com/stable"
@@ -145,7 +144,7 @@ class FmpConnector(Connector):
         params = {"symbol": fmp_symbol, "apikey": settings.fmp_key}
         effective_date_from = date_from
         if not effective_date_from:
-            with get_session() as session:
+            with self.session() as session:
                 instrument = _get_instrument(session, fmp_symbol)
                 if instrument:
                     next_missing_date = _next_missing_date(
@@ -182,7 +181,7 @@ class FmpConnector(Connector):
             ) from None
         rows = sorted(_historical_rows(response.json()), key=lambda row: str(row.get("date", "")))
 
-        with get_session() as session:
+        with self.session() as session:
             instrument = _get_or_create_instrument(session, fmp_symbol)
             count = 0
             for row in rows:
