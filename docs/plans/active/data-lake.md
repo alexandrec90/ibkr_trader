@@ -30,11 +30,11 @@ a self-describing catalog (Phase 1).
 
 | Phase | What | Owner | Status |
 |---|---|---|---|
-| 0 | Decisions + infra: lake repo name, create **private** R2 bucket + API token, new GitHub repo | You | ◐ name decided (`data-lake`); bucket + repo still pending |
+| 0 | Decisions + infra: lake repo name, **private** R2 bucket + API token, new GitHub repo | You | ✅ done 2026-07-29 — bucket `data-lake` live + validated, repo [alexandrec90/data-lake](https://github.com/alexandrec90/data-lake) created private — see below |
 | 1 | **Catalog layer** in this repo's `archive/` module (self-describing manifest per dataset) | Claude | ✅ done — see below |
 | 1.5 | **Extraction prep** in this repo: models split + config inversion (no new repo needed) | Claude | ✅ done — see below |
 | 1.6 | **Session inversion**: `ingestion/` accepts a caller-supplied session factory | Claude | ✅ done — see below |
-| 2 | Extract `ingestion/ + archive/ + lens` into a `data-lake` package; `ibkr_trader` depends on it | Claude | ☐ pending — needs Phase 0 infra + its own Plan |
+| 2 | Extract `ingestion/ + archive/ + lens` into a `data-lake` package; `ibkr_trader` depends on it | Claude | ☐ **unblocked — ready for a fresh session** (prep + infra done, write path validated) |
 | 3 | Cloud auto-pull: GitHub Actions (or CF Worker) cron writes Parquet → R2, pacing in the runner | Claude | ☐ pending — needs R2 secrets in CI |
 | 4 | Second consumer (sports-betting) reads the lake via the DuckDB lens + catalog | later | ☐ future |
 
@@ -113,6 +113,73 @@ subprocess loads neither `ibkr_trader.db.session` nor `ibkr_trader.config`. Muta
 re-adding the import to one connector fails 2 tests, and reverting `db/__init__.py` to eager
 imports fails the subprocess check. The existing connector tests now inject a SQLite factory
 instead of monkeypatching a module-level `get_session`, which is what a foreign consumer does.
+
+### Phase 0 — infra — done (2026-07-29)
+
+- **Bucket `data-lake`** created (private) and validated end to end. The owner had already created
+  an `ibkr-trader` bucket on 2026-07-18; it was renamed-by-recreation while still empty (free), and
+  the old empty bucket was deleted. `ARCHIVE_BACKEND=s3`, endpoint, `region=auto`, and an
+  **Object Read & Write** token scoped to the one bucket live in `.env`.
+- **Repo** [alexandrec90/data-lake](https://github.com/alexandrec90/data-lake) — private,
+  README-initialized. Phase 2 clones it and pushes the package there.
+- **Public access verified disabled** on both buckets: `r2.dev` managed domain off, zero custom
+  domains. Law 25 matter (scraped social content, hashed authors), so recheck after any dashboard
+  change. The S3 credentials **cannot** report this — only the REST API or the dashboard can.
+- Both buckets were `location=ENAM`, `storage_class=Standard`. R2 offers no Canada-only
+  jurisdiction, so objects may sit in US-East; if strict Québec residency ever matters that means a
+  different provider, not a different bucket.
+
+Two things that cost time and are easy to repeat:
+
+- **Two credential types, easily confused.** `ARCHIVE_S3_*` are S3-style HMAC creds (access key id =
+  R2 token id, secret = a one-way hash of the token value) and carry only that token's scope. The
+  Cloudflare REST API instead wants a Bearer **user API token** (My Profile → API Tokens → Custom
+  token, permission `Account · Workers R2 Storage · Edit`). The bearer value is **not** recoverable
+  from the S3 secret, and R2 bucket creation needs account-level authority: an object-scoped token
+  returns `AccessDenied` for both `ListBuckets` and `CreateBucket`. **Permission scope, not
+  protocol** — no API route or MCP server works around authority the credential lacks.
+- Bucket creation used a short-TTL user API token → `POST /accounts/{id}/r2/buckets`. Public-access
+  state comes from `GET /buckets/{b}/domains/managed` + `GET /buckets/{b}/custom_domains`.
+
+### What the lake can actually hold today (measured 2026-07-29)
+
+Not what the dataset list implies:
+
+- **`price_bars` stays empty.** Every stored bar is `"1 day"` (1 682 374 yahoo + 5 300 fmp + 6
+  alpha_vantage) and `archive bars` refuses `"1 day"` by design — daily bars are the
+  training/backtest input. There is no intraday data because the IBKR historical connector is still
+  a `TODO(skeleton)`, so **`archive bars` is a no-op** and a foreign consumer querying `price_bars/`
+  finds nothing until intraday ingestion lands. The catalog spec is correct but unpopulated.
+- **`news_articles` is the real payload dataset**: 282 169 of 282 171 articles scored with `raw`
+  intact (182 MB of a 1120 MB database), published 2025-07-22 → 2026-07-21.
+- **`social_posts` is effectively empty**: 1 unscored post.
+- `archive raw`'s only knob is `--min-age-days` on `fetched_at`, and the whole backlog was fetched
+  2026-07-15 → 2026-07-29 (the Finnhub backfill), so it is a cliff not a dial: 0 → 282 169,
+  12 → 135 347, 13 → 1 505.
+
+### First real archive run — validated against live R2 (2026-07-29)
+
+`archive raw --min-age-days 13` then `archive catalog`:
+
+| stage | result |
+|---|---|
+| Postgres | 1 505 offloaded (`raw` NULL), 280 666 still local, **0 rows lost title or sentiment** |
+| R2 | `raw/news_articles/2026-07.parquet` — 0.03 MiB |
+| Catalog | `news_articles: 1505 rows in 1 partition, 2026-07-09 → 2026-07-15, key=source+external_id` |
+| DuckDB lens | `archive query` reads it back from R2: 1 505 finnhub payloads, `raw_json` intact |
+
+That last row is **the Phase 4 reuse contract working for real** — catalog → partition → query, no
+shared database and no shared code. Phase 2 now moves known-working code.
+
+Lens column names are not the Postgres ones: `raw_payloads` exposes `source`, `external_id`,
+`fetched_at`, `raw_json` (no `ts`, no `payload`), and `rows` is a DuckDB reserved word.
+
+**The follow-up full run was interrupted, which is instructive.** `archive raw --min-age-days 0` was
+stopped part-way. R2 kept 5 partitions (catalog: 64 777 rows) while Postgres rolled back to 1 505
+offloaded — because the local NULLing commits in **one transaction at the end of the run**. That is
+the safe direction: those payloads exist in *both* places, never neither, and a rerun merges
+idempotently. Phase 3 note: a cloud runner hitting a job timeout takes exactly this path, so a long
+archive job either completes or accomplishes nothing locally — commit per partition if that bites.
 
 ### Phase 2 — extraction (next, fresh session)
 
