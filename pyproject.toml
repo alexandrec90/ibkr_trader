@@ -126,6 +126,7 @@ testpaths = ["tests"]
 # --extra report`); without [ml] the training modules silently drop ~10pp.
 [tool.coverage.report]
 fail_under = 90.1
+precision = 1
 show_missing = true
 skip_covered = true
 
