@@ -32,7 +32,7 @@ def _read_universe_file(path: str) -> list[str]:
 
 
 def poll_reddit() -> int:
-    from ibkr_trader.ingestion.social.reddit import RedditConnector
+    from data_lake.ingestion.social.reddit import RedditConnector
 
     count = RedditConnector().fetch()
     logger.info("reddit poll upserted %d posts", count)
@@ -43,7 +43,7 @@ def poll_trends(keywords: list[str]) -> int:
     if not keywords:
         logger.info("trends poll skipped: no trends_keywords configured")
         return 0
-    from ibkr_trader.ingestion.social.google_trends import GoogleTrendsConnector
+    from data_lake.ingestion.social.google_trends import GoogleTrendsConnector
 
     count = GoogleTrendsConnector().fetch(keywords=keywords)
     logger.info("trends poll upserted %d points", count)
@@ -69,7 +69,7 @@ def poll_trends_pairs(
     week is always 7-13 days old), so reruns cost seconds and a partially-failed batch
     resumes from the failed keywords. Pass 0 to force a full re-fetch.
     """
-    from ibkr_trader.ingestion.social.google_trends import GoogleTrendsConnector
+    from data_lake.ingestion.social.google_trends import GoogleTrendsConnector
 
     connector = GoogleTrendsConnector()
     total = 0
@@ -98,7 +98,7 @@ def poll_trends_pairs(
 
 def poll_trends_mapping(mapping_file: str, geo: str = "", timeframe: str = "today 5-y") -> int:
     """Batch-poll Trends from a ``TICKER,search term`` mapping file (soft no-op if missing)."""
-    from ibkr_trader.ingestion.social.google_trends import read_mapping_file
+    from data_lake.ingestion.social.google_trends import read_mapping_file
 
     try:
         pairs = read_mapping_file(mapping_file)
@@ -134,7 +134,7 @@ def poll_newsapi_pairs(
     """
     from datetime import UTC, datetime, timedelta
 
-    from ibkr_trader.ingestion.news.newsapi import (
+    from data_lake.ingestion.news.newsapi import (
         FATAL_STATUSES,
         NewsApiConnector,
         NewsApiProviderError,
@@ -201,7 +201,7 @@ def poll_finnhub_news(
     overlapping articles are idempotent upserts. ``date_from``/``date_to`` widen the window
     (default: connector's last-7-days) — pass ~1 year for the initial backfill.
     """
-    from ibkr_trader.ingestion.news.finnhub_news import FinnhubNewsConnector
+    from data_lake.ingestion.news.finnhub_news import FinnhubNewsConnector
 
     symbols = _read_universe_file(universe_file)
     connector = FinnhubNewsConnector()
@@ -231,7 +231,7 @@ def backfill_finnhub_news(
     Thin wrapper over ``finnhub_backfill.run_backfill`` (which owns the cursor/split/budget
     logic); missing universe file is a soft no-op like the regular poll.
     """
-    from ibkr_trader.ingestion.news.finnhub_backfill import run_backfill
+    from data_lake.ingestion.news.finnhub_backfill import run_backfill
 
     symbols = _read_universe_file(universe_file)
     if not symbols:
@@ -256,8 +256,8 @@ def poll_yahoo_prices() -> int:
     simply catches up on the next run and a same-day rerun is nearly free. A failing symbol
     is logged and skipped.
     """
-    from ibkr_trader.ingestion.market.yahoo import YahooConnector
-    from ibkr_trader.ingestion.market.yahoo_common import tracked_yahoo_symbols
+    from data_lake.ingestion.market.yahoo import YahooConnector
+    from data_lake.ingestion.market.yahoo_common import tracked_yahoo_symbols
 
     with get_session() as session:
         symbols = tracked_yahoo_symbols(session)
@@ -294,8 +294,8 @@ def poll_fx(pairs: list[str]) -> int:
     """
     from datetime import timedelta
 
-    from ibkr_trader.ingestion.market.fmp_fx import FmpFxConnector
-    from ibkr_trader.ingestion.market.yahoo_fx import YahooFxConnector
+    from data_lake.ingestion.market.fmp_fx import FmpFxConnector
+    from data_lake.ingestion.market.yahoo_fx import YahooFxConnector
 
     fmp_connector = FmpFxConnector()
     yahoo_connector = YahooFxConnector()
@@ -362,6 +362,12 @@ def build_scheduler(
     scheduler: BlockingScheduler | None = None,
 ) -> BlockingScheduler:
     """Register the periodic jobs on a scheduler and return it (unstarted, so it's testable)."""
+    from ibkr_trader.lake import configure_lake
+
+    # The jobs below drive connectors from the shared data_lake package, which owns no config
+    # and no engine. Wire it here too, not only in the CLI callback, so a caller that builds
+    # the scheduler directly gets a working one.
+    configure_lake()
     settings = settings or get_settings()
     scheduler = scheduler or BlockingScheduler(timezone="UTC")
 

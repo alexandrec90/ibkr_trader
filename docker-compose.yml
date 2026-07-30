@@ -66,7 +66,12 @@ services:
       - "127.0.0.1:5900:5900" # VNC (debugging the gateway UI)
 
   app:
-    build: .
+    # Context is the PARENT directory, not this one: `data-lake` is a sibling checkout and a
+    # path dependency, and Docker cannot COPY from outside the build context. That is the whole
+    # reason for the `..` here — a plain `build: .` fails to install the package.
+    build:
+      context: ..
+      dockerfile: ibkr_trader/Dockerfile
     restart: unless-stopped
     # The scheduler service: `docker compose --profile app up -d --build app` runs
     # `ibkr-trader serve` (ingestion polls, Finnhub history backfill, sentiment scoring, raw

@@ -24,6 +24,10 @@ Naming: the repo folder is `ibkr_trader`; the Python package is `ibkr_trader`.
 
 Dependencies are managed with **uv** (lockfile: `uv.lock`, Python pinned in `.python-version`).
 
+The `data-lake` package must be checked out **beside** this repo (`../data-lake`) — it is an
+editable path dependency, so `uv sync` fails without it:
+`git clone https://github.com/alexandrec90/data-lake.git ../data-lake`.
+
 ```bash
 uv sync                        # setup: create .venv, install locked deps + dev group
 uv sync --extra ml             # + ML training extras (lightgbm/scikit-learn)
@@ -73,19 +77,29 @@ a task, you own stopping it before you finish.
 
 ## Architecture
 
-- `src/ibkr_trader/ingestion/` — one connector per source (news/, social/, market/), all
-  implement `base.Connector`, all upsert into Postgres keyed on (source, external_id).
-  Settings *and* the DB session factory are injected (`Connector(settings, session_factory)`,
-  `self.session()`); never import `config` or `db.session` at module scope here — tests pin it.
+- **Ingestion and the archive are no longer in this repo.** They live in the private
+  [`data-lake`](https://github.com/alexandrec90/data-lake) package (checked out as a sibling
+  directory, wired in as an editable path dependency), so a second project can reuse them:
+  - `data_lake.ingestion` — one connector per source (news/, social/, market/), all implement
+    `base.Connector`, all upsert into Postgres keyed on (source, external_id).
+  - `data_lake.archive` — cold-data offload to object storage as Parquet (intraday bars,
+    scored raw payloads) with verify-before-delete, plus the catalog and the DuckDB lens.
+    Needs the `[archive]` extra. See [docs/operations/remote-archive.md](docs/operations/remote-archive.md).
+
+  The package owns no config and no engine: `src/ibkr_trader/lake.py` hands it ours via
+  `data_lake.configure(...)`, called from the CLI's root callback and `build_scheduler()`.
+  Changing a connector means editing `../data-lake` and committing **there** — the editable
+  install means the change is live here immediately, with no reinstall and no lockfile bump.
 - `src/ibkr_trader/signals/` — features + `Predictor` ABC. Reads/writes DB only.
 - `src/ibkr_trader/backtest/` — engine (costs are first-class, no look-ahead) + metrics.
   DB only, no network.
 - `src/ibkr_trader/execution/` — `Broker` ABC → `IbkrBroker` (ib_async), `risk.py` pre-trade
   checks.
-- `src/ibkr_trader/db/` — SQLAlchemy 2.0 models; migrations via Alembic (`migrations/`).
-- `src/ibkr_trader/archive/` — cold-data offload to object storage as Parquet (intraday
-  bars, scored raw payloads) with verify-before-delete; daily bars and orders/executions
-  never leave Postgres. Needs the `[archive]` extra. See [docs/operations/remote-archive.md](docs/operations/remote-archive.md).
+- `src/ibkr_trader/db/` — `trading_models.py` (orders, executions, predictions, backtests,
+  strategy state — **never** leave this repo) declared against the *package's* `Base`, so one
+  `Base.metadata` still covers the whole database. `models.py` re-exports both halves; import
+  it, never `data_lake.db.models` directly, or Alembic autogenerate stops seeing the trading
+  tables and proposes dropping them. Migrations stay here (`migrations/`).
 - Postgres is the single source of truth; models/backtests never call external APIs.
 
 ## Conventions
@@ -98,6 +112,7 @@ a task, you own stopping it before you finish.
   intended implementation — replace stub-by-stub, keep the comments' intent.
 - Use `ib_async` (maintained fork), never `ib_insync`/raw `ibapi` directly.
 - The DuckDB archive lens is research-only; `signals/`, `backtest/`, and `execution/` never
-  import it. Restore archived data to Postgres before it feeds the real pipeline.
+  import it (enforced in `tests/test_db_models_split.py`). Restore archived data to Postgres
+  before it feeds the real pipeline.
 - New heavy dataframe work may use Polars; never rewrite working pandas code merely to adopt it.
 - Line length 100 (ruff). Python ≥ 3.11.

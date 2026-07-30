@@ -11,7 +11,8 @@ instead.
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ibkr_trader.db.base import Base
+    from data_lake.db.base import Base
+
     from ibkr_trader.db.session import get_engine, get_session
 
 __all__ = ["Base", "get_engine", "get_session"]

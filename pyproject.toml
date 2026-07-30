@@ -5,21 +5,20 @@ description = "Cloud-hosted service for programmatic trading via Interactive Bro
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    # Shared ingestion + archive layer (docs/plans/active/data-lake.md, Phase 2). Brings the
+    # provider clients with it — httpx/praw/pytrends/yfinance are its dependencies now, not ours.
+    "data-lake",
     "ib_async>=1.0",
     "SQLAlchemy>=2.0",
     "alembic>=1.13",
     "psycopg[binary]>=3.1",
     "pydantic>=2.7",
     "pydantic-settings>=2.2",
-    "httpx>=0.27",
     "pandas>=2.2",
     "numpy>=1.26",
-    "praw>=7.7",
-    "pytrends>=4.9",
     "APScheduler>=3.10",
     "typer>=0.12",
     "tenacity>=8.2",
-    "yfinance>=0.2.50",
     "vaderSentiment>=3.3",
     "pandera>=0.32.1",
 ]
@@ -36,15 +35,16 @@ ml = [
 tracking = [
     "mlflow>=3.1",
 ]
-# Cold-data archive extra (docs/operations/remote-archive.md): same guarded-import pattern as [ml].
+# Cold-data archive extra (docs/operations/remote-archive.md). The archive code lives in the
+# data-lake package now, so this just forwards to its extra (pyarrow + boto3).
 archive = [
-    "pyarrow>=17",
-    "boto3>=1.34",
+    "data-lake[archive]",
 ]
-# Read-only research lens over archived Parquet. Imports are guarded like [ml]/[archive].
+# Read-only research lens over archived Parquet (duckdb, via the package) plus this repo's own
+# research tooling. Imports are guarded like [ml]/[archive].
 research = [
+    "data-lake[research]",
     "alphalens-reloaded>=0.4.6",
-    "duckdb>=1.0",
     "polars>=1.0",
 ]
 # Finance-tuned headline sentiment. Runtime loading is local-cache-only; downloading the
@@ -61,6 +61,10 @@ report = [
 
 [tool.uv.sources]
 torch = [{ index = "pytorch-cpu" }]
+# Sibling checkout, editable so package edits land here without a reinstall. It is a private
+# repo, so a path keeps `uv sync` working offline and without credentials; the Docker `app`
+# image gets it by building from the parent directory (see docker-compose.yml).
+data-lake = { path = "../data-lake", editable = true }
 
 [[tool.uv.index]]
 name = "pytorch-cpu"
@@ -112,8 +116,16 @@ testpaths = ["tests"]
 
 # Coverage is enforced in CI via `pytest --cov=ibkr_trader` (plain `pytest` stays fast locally).
 # The floor is a ratchet: raise it as coverage grows, never lower it to make a change pass.
+#
+# Lowered 90.8 -> 90.1 on 2026-07-30, the one legitimate reason to move a ratchet down: the
+# denominator changed. Phase 2 moved ingestion/ and archive/ (and their tests) into the
+# data-lake package, and that code was slightly better covered than what remains here, so the
+# same tests over a smaller repo measure 90.15%. No code lost coverage in the move — total
+# coverage across the two repos went up, since the package sits at 92% behind its own floor.
+# Measure with all extras installed (`uv sync --extra ml --extra archive --extra research
+# --extra report`); without [ml] the training modules silently drop ~10pp.
 [tool.coverage.report]
-fail_under = 90.8
+fail_under = 90.1
 show_missing = true
 skip_covered = true
 

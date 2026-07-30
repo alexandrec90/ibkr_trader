@@ -27,10 +27,14 @@ regressions. Be aggressive: if code is testable, it gets a test.
 
 ## How to test each layer
 
-- **Connectors (`ingestion/`)**: never hit the network in tests. Mock the HTTP/provider client
-  and assert (a) correct parsing into rows, (b) idempotent upsert on (source, external_id),
-  (c) pacing/throttle behavior where it exists (see `tests/test_yahoo_connector.py` for the
-  monkeypatched-clock pattern).
+- **Connectors and the archive**: these live in the `data-lake` package now, so their tests do
+  too — run `uv run pytest` in `../data-lake`, and ship connector changes with tests **there**.
+  Same rules as ever: never hit the network, mock the HTTP/provider client, and assert (a)
+  correct parsing into rows, (b) idempotent upsert on (source, external_id), (c) pacing/throttle
+  behavior where it exists (see that repo's `tests/test_yahoo_connector.py` for the
+  monkeypatched-clock pattern). Credentials inject through the settings object
+  (`monkeypatch.setattr(SETTINGS, "finnhub_key", ...)`), never an environment variable.
+  A change touching both repos is not done until **both** gates are green.
 - **Signals / backtest**: pure DB-in, DB-out — test with in-memory SQLite and synthetic frames.
   Backtest tests must include at least one no-look-ahead assertion when touching the engine.
 - **Execution**: `IbkrBroker` against a fake `ib_async` object, never a live gateway. Every

@@ -10,14 +10,20 @@ ENV UV_COMPILE_BYTECODE=1 \
     UV_PROJECT_ENVIRONMENT=/app/.venv \
     PATH="/app/.venv/bin:$PATH"
 
+# Build context is the PARENT directory (see docker-compose.yml): `data-lake` is a sibling
+# checkout and an editable path dependency, so it has to be inside the context to be copied.
+# Its source is copied before `uv sync` because an editable install resolves the path at
+# install time and imports it from that location at runtime.
+COPY data-lake /data-lake
+
 # Layer-friendly install: resolve deps from the lockfile first (no project code yet), so
 # dependency layers stay cached across source-only changes.
-COPY pyproject.toml uv.lock README.md ./
-COPY src ./src
+COPY ibkr_trader/pyproject.toml ibkr_trader/uv.lock ibkr_trader/README.md ./
+COPY ibkr_trader/src ./src
 RUN uv sync --frozen --no-dev
 
-COPY alembic.ini ./
-COPY migrations ./migrations
+COPY ibkr_trader/alembic.ini ./
+COPY ibkr_trader/migrations ./migrations
 
 # Non-root user
 RUN useradd --create-home appuser

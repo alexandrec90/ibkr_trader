@@ -1,5 +1,12 @@
 # Remote cold-data archive
 
+> **Where the code lives:** since Phase 2 of the [data-lake plan](../plans/active/data-lake.md)
+> the archive is `data_lake.archive`, in the sibling
+> [`data-lake`](https://github.com/alexandrec90/data-lake) checkout — not this repo. The
+> `ibkr-trader archive …` commands below are unchanged; they are this repo's CLI over that
+> package. Fix archive behaviour in `../data-lake`, and configure it through the same `.env`
+> keys (`Settings` is handed to the package by `src/ibkr_trader/lake.py`).
+
 The local box has little disk, so cold data is offloaded to object storage as Parquet and
 pulled back on demand. Postgres remains the single source of truth for everything the hot
 path reads — the trainer (`signals/`), the backtester, and the audit trail never leave the

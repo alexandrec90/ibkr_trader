@@ -13,16 +13,20 @@ from ibkr_trader.db.models import Base
 
 
 def test_package_imports():
+    """Both halves import cleanly — this repo's, and the data-lake package it now depends on."""
+    import data_lake
+    import data_lake.ingestion.market.ibkr_historical
+    import data_lake.ingestion.news.newsapi
+    import data_lake.ingestion.social.reddit
+
     import ibkr_trader
     import ibkr_trader.backtest.engine
     import ibkr_trader.cli
     import ibkr_trader.execution.ibkr_broker
-    import ibkr_trader.ingestion.market.ibkr_historical
-    import ibkr_trader.ingestion.news.newsapi
-    import ibkr_trader.ingestion.social.reddit
     import ibkr_trader.signals.features
 
     assert ibkr_trader.__version__
+    assert data_lake.configure  # the package is wired in, not just installed
 
 
 def test_all_tables_registered():
