@@ -38,7 +38,7 @@ jobs:
           working-directory: ibkr_trader
           # Cache the uv download + resolver cache, keyed on the committed lockfile.
           enable-cache: true
-          cache-dependency-glob: "ibkr_trader/uv.lock"
+          cache-dependency-glob: "uv.lock"
 
       - name: Sync environment (locked, dev group + optional extras)
         # --frozen fails the build if uv.lock is out of date with pyproject.toml, so the
