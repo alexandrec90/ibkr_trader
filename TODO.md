@@ -163,8 +163,11 @@ are done — **prep and infrastructure are both complete, Phase 2 is unblocked**
       ID** (not the secret) was printed to a session transcript on 2026-07-29.
 - [ ] Delete the now-unused empty `ibkr-trader` bucket (needs an account-scoped token; the current
       object token is `data-lake`-only).
-- [ ] Archive the remaining ~280 666 scored payloads (`archive raw --min-age-days 0`) whenever
-      reclaiming the 182 MB news table is worth it — nothing depends on it.
+- [ ] Finish archiving the remaining ~280 666 scored payloads: rerun
+      `archive raw --min-age-days 0` (idempotent — merges what's already there). A first attempt on
+      2026-07-29 was interrupted part-way: R2 kept 5 partitions (64 777 catalogued rows) but the
+      local NULLs rolled back, since the whole run commits in one transaction. Data exists in both
+      places, so nothing is at risk — only ~0.9 MiB of re-upload. Needs the `db` container up.
 - [ ] Phase 2 (Claude, fresh session): move `ingestion/`, `archive/`, `db/base.py`,
       `db/lake_models.py`, `lens` into the `data-lake` package; swap `archive/`'s `Settings`
       annotations for a Protocol the package owns; `ibkr_trader` becomes a consumer.

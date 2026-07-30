@@ -215,8 +215,23 @@ for: the extraction now moves known-working code.
 Lens column names are not the Postgres ones — `raw_payloads` exposes `source`, `external_id`,
 `fetched_at`, `raw_json` (no `ts`, no `payload`), and `rows` is a DuckDB reserved word.
 
-Remaining: the other ~280 666 scored payloads (`--min-age-days 0`) whenever reclaiming the 182 MB
-news table is worth it; nothing depends on it.
+**Full-backlog run started then interrupted (also 2026-07-29) — and the interruption is instructive.**
+`archive raw --min-age-days 0` was stopped part-way (owner shutting the machine down). Final state:
+
+| side | state |
+|---|---|
+| R2 | 5 partitions, 0.92 MiB — catalog reports 64 777 rows, 2025-07-22 → 2026-07-15 |
+| Postgres | **unchanged**: 1 505 offloaded, 280 666 still local, 0 damaged |
+
+The local NULLing runs inside **one transaction that commits at the very end**, so an interrupted run
+rolls back every local change while the uploaded partitions stay in R2. That is the safe direction —
+those payloads now exist in *both* places, never neither. Rerunning `archive raw --min-age-days 0` is
+idempotent: it merges the existing partitions and NULLs locally once verified. Nothing depends on
+finishing it; the only cost of the interruption is re-uploading ~0.9 MiB.
+
+Worth knowing for Phase 3: a cloud runner on a job timeout hits exactly this path, so the
+all-or-nothing transaction means a long archive job either completes or accomplishes nothing locally.
+If that becomes a problem, commit per partition rather than per run.
 
 ### Phase 3 — cloud auto-pull
 
