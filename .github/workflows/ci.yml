@@ -14,12 +14,28 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ibkr_trader
     steps:
-      - uses: actions/checkout@v7
+      # Keep both private repositories side by side so the editable ../data-lake source in
+      # pyproject.toml resolves exactly as it does in the documented local checkout.
+      - name: Checkout ibkr_trader
+        uses: actions/checkout@v7
+        with:
+          path: ibkr_trader
+
+      - name: Checkout data-lake
+        uses: actions/checkout@v7
+        with:
+          repository: alexandrec90/data-lake
+          ssh-key: ${{ secrets.DATA_LAKE_DEPLOY_KEY }}
+          path: data-lake
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
         with:
+          working-directory: ibkr_trader
           # Cache the uv download + resolver cache, keyed on the committed lockfile.
           enable-cache: true
           cache-dependency-glob: "uv.lock"

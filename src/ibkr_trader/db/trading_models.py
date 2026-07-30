@@ -4,13 +4,18 @@
 and executions are the tax/audit trail, and strategy snapshots are live risk state. When Phase 2
 extracts the lake package, this module stays behind in ``ibkr_trader``.
 
-Depends on :mod:`ibkr_trader.db.lake_models` for ``instruments`` (trading → lake is the only
+Depends on :mod:`data_lake.db.models` for ``instruments`` (trading → lake is the only
 allowed direction).
 """
 
 import enum
 from datetime import datetime
 
+from data_lake.db.base import Base, JsonVariant, SqliteFriendlyBigInt
+
+# Imported for its side effect: ``instruments``/``backtest_runs`` foreign keys below resolve
+# against Base.metadata, so the lake tables must be registered before this module maps.
+from data_lake.db.models import Instrument as Instrument  # noqa: F401
 from sqlalchemy import (
     JSON,
     BigInteger,
@@ -23,12 +28,6 @@ from sqlalchemy import (
     UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column
-
-from ibkr_trader.db.base import Base, JsonVariant, SqliteFriendlyBigInt
-
-# Imported for its side effect: ``instruments``/``backtest_runs`` foreign keys below resolve
-# against Base.metadata, so the lake tables must be registered before this module maps.
-from ibkr_trader.db.lake_models import Instrument as Instrument  # noqa: F401
 
 
 class Prediction(Base):

@@ -25,6 +25,7 @@ Naming: the repo folder is `ibkr_trader`; the Python package is `ibkr_trader`.
 Dependencies are managed with **uv** (lockfile: `uv.lock`, Python pinned in `.python-version`).
 
 ```bash
+git clone https://github.com/alexandrec90/data-lake.git ../data-lake  # required sibling checkout
 uv sync                        # setup: create .venv, install locked deps + dev group
 uv sync --extra ml             # + ML training extras (lightgbm/scikit-learn)
 uv add <pkg>                   # add a runtime dep (updates pyproject.toml + uv.lock)
@@ -45,16 +46,24 @@ and review it before upgrading.
 
 ## Architecture
 
-- `src/ibkr_trader/ingestion/` — one connector per source (news/, social/, market/), all
-  implement `base.Connector`, all upsert into Postgres keyed on (source, external_id).
-  Settings *and* the DB session factory are injected (`Connector(settings, session_factory)`,
-  `self.session()`); never import `config` or `db.session` at module scope here — tests pin it.
+- **Ingestion and the archive live in the private
+  [`data-lake`](https://github.com/alexandrec90/data-lake) package**, not here — checked out as a
+  sibling directory (`../data-lake`) and wired in as an editable path dependency so a second
+  project can reuse them. `data_lake.ingestion` is one connector per source (news/, social/,
+  market/), all implementing `base.Connector` and upserting keyed on (source, external_id);
+  `data_lake.archive` is the Parquet/R2 offload, catalog and DuckDB lens (`[archive]` extra).
+  The package owns no config and no engine — `src/ibkr_trader/lake.py` hands it ours via
+  `data_lake.configure(...)`. Connector changes are committed in `../data-lake`.
 - `src/ibkr_trader/signals/` — features + `Predictor` ABC. Reads/writes DB only.
 - `src/ibkr_trader/backtest/` — engine (costs are first-class, no look-ahead) + metrics.
   DB only, no network.
 - `src/ibkr_trader/execution/` — `Broker` ABC → `IbkrBroker` (ib_async), `risk.py` pre-trade
   checks.
-- `src/ibkr_trader/db/` — SQLAlchemy 2.0 models; migrations via Alembic (`migrations/`).
+- `src/ibkr_trader/db/` — `trading_models.py` (orders, executions, predictions, backtests,
+  strategy state — never leave this repo) declared against the *package's* `Base`, so one
+  `Base.metadata` still covers the whole database. Import the `models.py` façade, never
+  `data_lake.db.models` directly, or Alembic stops seeing the trading tables. Migrations via
+  Alembic (`migrations/`).
 - Postgres is the single source of truth; models/backtests never call external APIs.
 
 ## Conventions

@@ -140,10 +140,11 @@ those horizons mature). Automating this cadence in `serve` is a follow-up, not p
 
 ## Shared data lake ([plan](docs/plans/active/data-lake.md))
 
-Phases 0 (infra), 1 (catalog), 1.5 (models split + config inversion) and 1.6 (session inversion)
-are done — **prep and infrastructure are both complete, Phase 2 is unblocked**. R2 bucket
-`ibkr-trader` is wired in `.env` and verified reachable (empty); repo
-[alexandrec90/data-lake](https://github.com/alexandrec90/data-lake) created private 2026-07-29.
+Phases 0 (infra), 1 (catalog), 1.5 (models split + config inversion), 1.6 (session inversion) and
+**2 (extraction)** are done. Ingestion and the archive now live in the private
+[alexandrec90/data-lake](https://github.com/alexandrec90/data-lake) package; this repo consumes it
+as an **editable path dependency at `../data-lake`**, so that sibling checkout is required for
+`uv sync` to work. Next up is Phase 3 (cloud auto-pull).
 
 - [x] ~~*R2 bucket renamed to `data-lake`*~~ [2026-07-29] — created via the Cloudflare REST API with
       a short-TTL user API token while the bucket was still empty (free). Public access verified
@@ -154,23 +155,33 @@ are done — **prep and infrastructure are both complete, Phase 2 is unblocked**
       DuckDB lens reads it back from R2 (the Phase 4 reuse contract, proven). 0 rows lost title or
       sentiment. **Not `archive bars`:** every stored bar is `1 day`, which it refuses by design, so
       it writes nothing until the IBKR intraday connector exists.
-- [ ] **Owner:** fix the stale `ARCHIVE_S3_BUCKET=ibkr-trader` exported in your terminal session —
-      it outranks `.env`, so `.env` edits are silently ignored (restarting the shell/editor clears
-      it). Check with `env | grep ARCHIVE_`. Cost real debugging time; see
-      [remote-archive.md](docs/operations/remote-archive.md) "Gotcha".
-- [ ] **Owner:** delete the bootstrap `CLOUDFLARE_API_TOKEN` from `.env` + Cloudflare (account-level
-      R2 Edit; self-expires 2026-08-05). Consider rotating the R2 object token — its **access key
-      ID** (not the secret) was printed to a session transcript on 2026-07-29.
-- [ ] Delete the now-unused empty `ibkr-trader` bucket (needs an account-scoped token; the current
-      object token is `data-lake`-only).
-- [ ] Finish archiving the remaining ~280 666 scored payloads: rerun
-      `archive raw --min-age-days 0` (idempotent — merges what's already there). A first attempt on
-      2026-07-29 was interrupted part-way: R2 kept 5 partitions (64 777 catalogued rows) but the
-      local NULLs rolled back, since the whole run commits in one transaction. Data exists in both
-      places, so nothing is at risk — only ~0.9 MiB of re-upload. Needs the `db` container up.
-- [ ] Phase 2 (Claude, fresh session): move `ingestion/`, `archive/`, `db/base.py`,
-      `db/lake_models.py`, `lens` into the `data-lake` package; swap `archive/`'s `Settings`
-      annotations for a Protocol the package owns; `ibkr_trader` becomes a consumer.
+- [x] ~~*stale `ARCHIVE_S3_BUCKET` shell export*~~ [2026-07-30] — cleared by the reboot; `.env` is
+      authoritative again. The gotcha itself is still real, so the write-up stays in
+      [remote-archive.md](docs/operations/remote-archive.md): check `env | grep ARCHIVE_` before
+      debugging any "ignored config".
+- [x] ~~*Delete the now-unused empty `ibkr-trader` bucket*~~ [2026-07-29] — `data-lake` is the only
+      bucket.
+- [x] ~~*Phase 2 — extract the package*~~ [2026-07-30] — `ingestion/`, `archive/`, `db/base.py`,
+      `db/lake_models.py` and the lens moved to `data_lake`; settings became a structural
+      `Protocol`, wiring is `data_lake.configure()` from `src/ibkr_trader/lake.py`. Seam guarded on
+      both sides. See the [plan](docs/plans/active/data-lake.md) for the wiring notes.
+- [ ] **Owner (declined 2026-07-30, recorded not nagged):** the bootstrap `CLOUDFLARE_API_TOKEN` in
+      `.env` self-expires 2026-08-05; the R2 object token's **access key ID** (not the secret) was
+      printed to a session transcript on 2026-07-29. You chose not to rotate — reopen only if the
+      threat model changes.
+- [x] ~~*Finish archiving the scored payload backlog*~~ [2026-07-30] — `archive raw
+      --min-age-days 0` completed: **280 667 payloads** offloaded across 13 monthly partitions,
+      catalog now reports 282 171 rows spanning 2025-07-22 → 2026-07-21, and **0 rows lost a title
+      or a sentiment**. Took ~2 h holding the whole batch in memory (~1.1 GB RSS) and committing
+      the local NULLs in one transaction at the end.
+- [x] ~~*Reclaim the disk the archive freed*~~ [2026-07-30] — `VACUUM (FULL, ANALYZE)
+      news_articles` returned **200 MB**: database 1299 → **1099 MB**, the table 361 → 161 MB, in
+      5 seconds, with row count/titles/sentiments unchanged. Remember this step: archiving alone
+      *grows* the database. `price_bars` is now the bulk (~900 MB) and is a compressed Timescale
+      hypertable — never `VACUUM FULL` that one.
+- [ ] Commit per partition in `archive raw` (currently one transaction for the whole run). Not a
+      correctness bug — an interrupt leaves data in both places, never neither — but it caps
+      memory and is what Phase 3's cloud job timeouts will require.
 - [ ] Phase 3: GitHub Actions cron writes Parquet → R2 (IBKR pacing lives in the runner).
 
 ## Housekeeping

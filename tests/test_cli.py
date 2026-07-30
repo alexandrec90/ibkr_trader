@@ -387,7 +387,7 @@ def test_serve_starts_the_scheduler(monkeypatch):
 
 def test_ingest_finnhub_news_reports_error_cleanly(monkeypatch):
     """Missing key must exit 1 with a readable message, not a traceback."""
-    from ibkr_trader.ingestion.news import finnhub_news
+    from data_lake.ingestion.news import finnhub_news
 
     def boom(self, **kwargs):
         raise RuntimeError("FINNHUB_KEY is not set (see .env.example)")
@@ -399,7 +399,7 @@ def test_ingest_finnhub_news_reports_error_cleanly(monkeypatch):
 
 
 def test_ingest_finnhub_news_reports_count(monkeypatch):
-    from ibkr_trader.ingestion.news import finnhub_news
+    from data_lake.ingestion.news import finnhub_news
 
     monkeypatch.setattr(finnhub_news.FinnhubNewsConnector, "fetch", lambda self, **kw: 7)
     result = runner.invoke(cli.app, ["ingest", "finnhub-news", "AAPL"])
@@ -486,7 +486,7 @@ def test_ingest_finnhub_news_batch_uses_universe_file(monkeypatch):
 
 def test_ingest_news_reports_error_cleanly(monkeypatch):
     """Missing key must exit 1 with a readable message, not a traceback."""
-    from ibkr_trader.ingestion.news import newsapi
+    from data_lake.ingestion.news import newsapi
 
     def boom(self, **kwargs):
         raise RuntimeError("NEWSAPI_KEY is not set (see .env.example)")
@@ -498,7 +498,7 @@ def test_ingest_news_reports_error_cleanly(monkeypatch):
 
 
 def test_ingest_news_flows_options_into_fetch(monkeypatch):
-    from ibkr_trader.ingestion.news import newsapi
+    from data_lake.ingestion.news import newsapi
 
     seen = {}
 
@@ -533,7 +533,7 @@ def test_ingest_news_flows_options_into_fetch(monkeypatch):
 
 
 def test_ingest_news_empty_query_exits_nonzero(monkeypatch):
-    from ibkr_trader.ingestion.news import newsapi
+    from data_lake.ingestion.news import newsapi
 
     def boom(self, **kwargs):
         raise ValueError("query is required")
@@ -581,7 +581,7 @@ def test_ingest_prices_batch_is_alpha_vantage_only():
 
 
 def test_ingest_prices_batch_flows_into_fetch_universe(monkeypatch, tmp_path):
-    from ibkr_trader.ingestion.market import alpha_vantage
+    from data_lake.ingestion.market import alpha_vantage
 
     tickers = tmp_path / "t.txt"
     tickers.write_text("# comment\nnvda\nmsft\n", encoding="utf-8")
@@ -871,17 +871,25 @@ def test_print_train_summary_prints_folds_and_overall_ic(capsys):
 
 
 def _patch_archive_settings(monkeypatch, tmp_path) -> None:
+    """Point the archive at a temp directory, through the real wiring.
+
+    The archive lives in the ``data_lake`` package now and reads whatever settings object the
+    CLI's root callback handed ``data_lake.configure``. So patching *this repo's*
+    ``get_settings`` is both the honest seam and a test of ``lake.configure_lake`` itself —
+    patching something inside the package would bypass the wiring these tests exist to cover.
+    """
+    _patch_settings(monkeypatch, archive_backend="local", archive_local_dir=str(tmp_path))
+
+
+def _patch_settings(monkeypatch, **overrides) -> None:
     from ibkr_trader.config import Settings
 
-    settings = Settings(_env_file=None, archive_backend="local", archive_local_dir=str(tmp_path))
-    monkeypatch.setattr("ibkr_trader.archive.store.get_settings", lambda: settings)
+    settings = Settings(_env_file=None, **overrides)
+    monkeypatch.setattr("ibkr_trader.config.get_settings", lambda: settings)
 
 
 def test_archive_commands_refuse_unconfigured_backend(monkeypatch):
-    from ibkr_trader.config import Settings
-
-    settings = Settings(_env_file=None, archive_backend="none")
-    monkeypatch.setattr("ibkr_trader.archive.store.get_settings", lambda: settings)
+    _patch_settings(monkeypatch, archive_backend="none")
     result = runner.invoke(cli.app, ["archive", "status"])
     assert result.exit_code == 1
     assert "no archive backend configured" in _all_output(result)
@@ -1104,7 +1112,7 @@ def test_sentiment_rescore_cli_respects_global_limit(monkeypatch):
 
 
 def test_ingest_fx_source_yahoo_uses_yahoo_connector(monkeypatch):
-    from ibkr_trader.ingestion.market import yahoo_fx
+    from data_lake.ingestion.market import yahoo_fx
 
     seen = {}
 
@@ -1122,7 +1130,7 @@ def test_ingest_fx_source_yahoo_uses_yahoo_connector(monkeypatch):
 
 
 def test_ingest_fx_default_source_is_fmp(monkeypatch):
-    from ibkr_trader.ingestion.market import fmp_fx
+    from data_lake.ingestion.market import fmp_fx
 
     monkeypatch.setattr(fmp_fx.FmpFxConnector, "fetch", lambda self, **kw: 3)
     result = runner.invoke(cli.app, ["ingest", "fx"])

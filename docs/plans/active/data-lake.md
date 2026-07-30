@@ -34,7 +34,7 @@ a self-describing catalog (Phase 1).
 | 1 | **Catalog layer** in this repo's `archive/` module (self-describing manifest per dataset) | Claude | ✅ done — see below |
 | 1.5 | **Extraction prep** in this repo: models split + config inversion (no new repo needed) | Claude | ✅ done — see below |
 | 1.6 | **Session inversion**: `ingestion/` accepts a caller-supplied session factory | Claude | ✅ done — see below |
-| 2 | Extract `ingestion/ + archive/ + lens` into a `data-lake` package; `ibkr_trader` depends on it | Claude | ☐ **unblocked — ready for a fresh session** (prep + infra done, write path validated) |
+| 2 | Extract `ingestion/ + archive/ + lens` into a `data-lake` package; `ibkr_trader` depends on it | Claude | ✅ done 2026-07-30 — see below |
 | 3 | Cloud auto-pull: GitHub Actions (or CF Worker) cron writes Parquet → R2, pacing in the runner | Claude | ☐ pending — needs R2 secrets in CI |
 | 4 | Second consumer (sports-betting) reads the lake via the DuckDB lens + catalog | later | ☐ future |
 
@@ -181,24 +181,50 @@ the safe direction: those payloads exist in *both* places, never neither, and a 
 idempotently. Phase 3 note: a cloud runner hitting a job timeout takes exactly this path, so a long
 archive job either completes or accomplishes nothing locally — commit per partition if that bites.
 
-### Phase 2 — extraction (next, fresh session)
+### Phase 2 — extraction — done (2026-07-30)
 
-- New repo **`data-lake`** (name settled in Phase 0). Move `ingestion/`, `archive/`, `db/base.py`,
-  `db/lake_models.py`, and the DuckDB `lens` into an installable package with a stable public API
-  (connectors, `store_from_settings`, the catalog readers, restore helpers). `db/trading_models.py`
-  stays here and keeps importing the package's `Base` + `Instrument`.
-- Config, models and sessions are all inverted now (Phases 1.5 + 1.6) — no coupling left to
-  break before the move. Two things still to decide *during* it:
-  - `ingestion/` and `archive/` import the `db.models` façade, which registers the trading tables
-    too. Post-move they should import `lake_models` directly; the façade's "import it, not the
-    halves" rule exists so `Base.metadata` stays complete for Alembic, and only this repo needs
-    that.
-  - `archive/store.py` and `archive/lens.py` still import `ibkr_trader.config` eagerly (they take
-    an optional `Settings`, so it is injection-ready — just not lazy like `ingestion/base.py`).
-- `ibkr_trader` depends on it; its `signals/`/`backtest/`/`execution/` keep restoring into local
-  Postgres. Update this repo's imports, tests, CI, and CLAUDE.md.
-- Watch: this repo's test suite + coverage floor shift when `ingestion/`/`archive/` leave. Make
-  it one reviewable, revertible commit.
+~3,900 lines moved to [alexandrec90/data-lake](https://github.com/alexandrec90/data-lake) as an
+installable `data_lake` package: `ingestion/`, `archive/` (store, catalog, parquet_io, bars, raw,
+lens), `db/base.py`, and `db/lake_models.py` → `data_lake/db/models.py`. The prep work paid off —
+the only coupling left in all of it was **three files**: `ingestion/base.py` (lazy) plus
+`archive/store.py` and `archive/lens.py` (eager `config.Settings`).
+
+How the package gets what it no longer owns:
+
+- **`data_lake.settings`** — `LakeSettings` is a `Protocol` (split into `IngestionSettings` +
+  `ArchiveSettings`, so an archive-only caller needs no provider credentials). Structural, so
+  `ibkr_trader.config.Settings` satisfies it **unchanged** and never imports the package. Members
+  are read-only properties, not attributes: a Protocol's plain attributes are invariant, which
+  would have rejected `archive_backend: Literal[...]`.
+- **`data_lake.configure(settings=..., session_factory=...)`** — process-wide defaults set once at
+  the consumer's entry point. `src/ibkr_trader/lake.py` does it, called from the CLI's root
+  callback and `build_scheduler()`. Per-call injection still wins, which is what tests use.
+  Unconfigured raises a `RuntimeError` naming the fix instead of reaching for a database.
+- **One `Base` across two repos.** `db/trading_models.py` declares its five tables against
+  `data_lake.db.base.Base`, so `Base.metadata` still covers all 15 and Alembic is unchanged.
+
+Guardrails on both sides, mutation-checked. Package (`tests/test_lake_seam.py`): nothing
+account-shaped may be declared there — including a *shareable table growing an `account_id`* —
+and nothing under `src/data_lake/` may import a consumer. This repo
+(`tests/test_db_models_split.py`): the two halves must share one `Base` (two would silently split
+`Base.metadata`, and the next autogenerate would propose dropping every table it could no longer
+see — nothing else would have caught that), the installed package must declare no trading table
+(a bad *version* can now introduce one with no change here), and `signals/`/`backtest/`/
+`execution/` must never import the research lens.
+
+Wiring notes worth keeping:
+
+- **Dependency is an editable path**, `../data-lake`, not a git URL: the repo is private, so a path
+  keeps `uv sync` working offline and credential-free, and package edits are live here with no
+  reinstall. The cost is that the sibling checkout is now **required** — `uv sync` fails without it.
+- **Docker's build context moved up one level** (`context: ..`, `dockerfile: ibkr_trader/Dockerfile`)
+  because Docker cannot `COPY` from outside its context. This is the one piece of the layout that
+  is now load-bearing for the `app` profile.
+- This repo's `[archive]`/`[research]` extras now forward to the package's; `httpx`, `praw`,
+  `pytrends` and `yfinance` left this repo's dependency list entirely.
+- Connector tests moved with the code, and their credentials now inject through the settings
+  object instead of `monkeypatch.setenv` — which also stops a real key exported in a developer's
+  shell from reaching a test run (the same class of bug as the Phase 0 `.env` shadowing gotcha).
 
 ### Phase 3 — cloud auto-pull
 

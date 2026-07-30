@@ -64,7 +64,7 @@ def test_build_scheduler_honours_overridden_cadence():
 
 
 def test_poll_reddit_returns_connector_count(monkeypatch):
-    from ibkr_trader.ingestion.social.reddit import RedditConnector
+    from data_lake.ingestion.social.reddit import RedditConnector
 
     monkeypatch.setattr(RedditConnector, "fetch", lambda self, **kw: 12)
     assert scheduler.poll_reddit() == 12
@@ -75,7 +75,7 @@ def test_poll_trends_noops_without_keywords():
 
 
 def test_poll_trends_calls_connector_with_keywords(monkeypatch):
-    from ibkr_trader.ingestion.social.google_trends import GoogleTrendsConnector
+    from data_lake.ingestion.social.google_trends import GoogleTrendsConnector
 
     seen = {}
 
@@ -89,7 +89,7 @@ def test_poll_trends_calls_connector_with_keywords(monkeypatch):
 
 
 def test_poll_trends_pairs_sends_one_request_per_keyword(monkeypatch):
-    from ibkr_trader.ingestion.social.google_trends import GoogleTrendsConnector
+    from data_lake.ingestion.social.google_trends import GoogleTrendsConnector
 
     calls: list[dict] = []
 
@@ -117,7 +117,7 @@ def test_poll_trends_pairs_sends_one_request_per_keyword(monkeypatch):
 
 
 def test_poll_trends_pairs_skips_a_failing_keyword(monkeypatch):
-    from ibkr_trader.ingestion.social.google_trends import GoogleTrendsConnector
+    from data_lake.ingestion.social.google_trends import GoogleTrendsConnector
 
     def fake_fetch(self, keywords=None, **kw):
         if keywords == ["Nvidia"]:
@@ -158,7 +158,7 @@ def test_poll_trends_job_falls_back_to_keywords(monkeypatch, tmp_path):
 
 
 def _patch_newsapi(monkeypatch, fake_fetch, fresh: set[str] | None = None):
-    from ibkr_trader.ingestion.news import newsapi
+    from data_lake.ingestion.news import newsapi
 
     monkeypatch.setattr(newsapi.NewsApiConnector, "fetch", fake_fetch)
     monkeypatch.setattr(newsapi, "fresh_tagged_symbols", lambda cutoff: fresh or set())
@@ -195,7 +195,7 @@ def test_poll_newsapi_pairs_respects_request_budget(monkeypatch):
 
 
 def test_poll_newsapi_pairs_aborts_on_fatal_status(monkeypatch):
-    from ibkr_trader.ingestion.news.newsapi import NewsApiProviderError
+    from data_lake.ingestion.news.newsapi import NewsApiProviderError
 
     calls: list[str] = []
 
@@ -214,7 +214,7 @@ def test_poll_newsapi_pairs_aborts_on_fatal_status(monkeypatch):
 
 
 def test_poll_newsapi_pairs_skips_a_failing_query(monkeypatch):
-    from ibkr_trader.ingestion.news.newsapi import NewsApiProviderError
+    from data_lake.ingestion.news.newsapi import NewsApiProviderError
 
     def fake_fetch(self, query="", symbol="", **kw):
         if symbol == "B":
@@ -227,7 +227,7 @@ def test_poll_newsapi_pairs_skips_a_failing_query(monkeypatch):
 
 
 def test_poll_newsapi_pairs_zero_refresh_disables_freshness_check(monkeypatch):
-    from ibkr_trader.ingestion.news import newsapi
+    from data_lake.ingestion.news import newsapi
 
     def boom(cutoff):
         raise AssertionError("freshness check must not run when refresh_after_hours=0")
@@ -241,7 +241,7 @@ def test_poll_newsapi_pairs_zero_refresh_disables_freshness_check(monkeypatch):
 def test_poll_finnhub_news_iterates_universe_and_spaces_calls(monkeypatch, tmp_path):
     universe = tmp_path / "u.txt"
     universe.write_text("aapl\nmsft\ngoog\n")
-    from ibkr_trader.ingestion.news.finnhub_news import FinnhubNewsConnector
+    from data_lake.ingestion.news.finnhub_news import FinnhubNewsConnector
 
     calls: list[str] = []
     sleeps: list[float] = []
@@ -264,7 +264,7 @@ def test_poll_finnhub_news_iterates_universe_and_spaces_calls(monkeypatch, tmp_p
 def test_poll_finnhub_news_passes_backfill_window_through(monkeypatch, tmp_path):
     universe = tmp_path / "u.txt"
     universe.write_text("aapl\n")
-    from ibkr_trader.ingestion.news.finnhub_news import FinnhubNewsConnector
+    from data_lake.ingestion.news.finnhub_news import FinnhubNewsConnector
 
     seen = {}
 
@@ -283,7 +283,7 @@ def test_poll_finnhub_news_passes_backfill_window_through(monkeypatch, tmp_path)
 def test_poll_finnhub_news_skips_a_failing_symbol(monkeypatch, tmp_path):
     universe = tmp_path / "u.txt"
     universe.write_text("aapl\nbad\nmsft\n")
-    from ibkr_trader.ingestion.news.finnhub_news import FinnhubNewsConnector
+    from data_lake.ingestion.news.finnhub_news import FinnhubNewsConnector
 
     def fake_fetch(self, symbol="", **kw):
         if symbol == "BAD":
@@ -311,7 +311,7 @@ def test_backfill_finnhub_news_reads_universe_and_delegates(monkeypatch, tmp_pat
         seen["kwargs"] = kwargs
         return 7
 
-    from ibkr_trader.ingestion.news import finnhub_backfill
+    from data_lake.ingestion.news import finnhub_backfill
 
     monkeypatch.setattr(finnhub_backfill, "run_backfill", fake_run_backfill)
 
@@ -371,8 +371,9 @@ def _sqlite_session_scope():
 def test_poll_yahoo_prices_refreshes_each_tracked_symbol(monkeypatch):
     from datetime import UTC, datetime
 
+    from data_lake.ingestion.market.yahoo import YahooConnector
+
     from ibkr_trader.db.models import Instrument, PriceBar
-    from ibkr_trader.ingestion.market.yahoo import YahooConnector
 
     scope = _sqlite_session_scope()
     with scope() as session:
@@ -413,9 +414,10 @@ def test_poll_yahoo_prices_refreshes_each_tracked_symbol(monkeypatch):
 def test_poll_fx_starts_from_newest_stored_bar(monkeypatch):
     from datetime import UTC, datetime
 
+    from data_lake.ingestion.market.fmp_fx import FmpFxConnector
+    from data_lake.ingestion.market.yahoo_fx import YahooFxConnector
+
     from ibkr_trader.db.models import Instrument, PriceBar
-    from ibkr_trader.ingestion.market.fmp_fx import FmpFxConnector
-    from ibkr_trader.ingestion.market.yahoo_fx import YahooFxConnector
 
     scope = _sqlite_session_scope()
     with scope() as session:
@@ -458,8 +460,8 @@ def test_poll_fx_starts_from_newest_stored_bar(monkeypatch):
 
 
 def test_poll_fx_empty_history_fetches_full_range(monkeypatch):
-    from ibkr_trader.ingestion.market.fmp_fx import FmpFxConnector
-    from ibkr_trader.ingestion.market.yahoo_fx import YahooFxConnector
+    from data_lake.ingestion.market.fmp_fx import FmpFxConnector
+    from data_lake.ingestion.market.yahoo_fx import YahooFxConnector
 
     scope = _sqlite_session_scope()
     seen = {}
@@ -478,8 +480,8 @@ def test_poll_fx_empty_history_fetches_full_range(monkeypatch):
 
 def test_poll_fx_provider_failures_are_isolated(monkeypatch):
     """One provider blowing up must not stop the other (or the pair loop)."""
-    from ibkr_trader.ingestion.market.fmp_fx import FmpFxConnector
-    from ibkr_trader.ingestion.market.yahoo_fx import YahooFxConnector
+    from data_lake.ingestion.market.fmp_fx import FmpFxConnector
+    from data_lake.ingestion.market.yahoo_fx import YahooFxConnector
 
     scope = _sqlite_session_scope()
 

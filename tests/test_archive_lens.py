@@ -4,12 +4,12 @@ from datetime import UTC, datetime
 
 import pandas as pd
 import pytest
+from data_lake.archive import lens
+from data_lake.archive.parquet_io import frame_to_parquet_bytes
+from data_lake.archive.store import LocalDirStore
 from typer.testing import CliRunner
 
 from ibkr_trader import cli
-from ibkr_trader.archive import lens
-from ibkr_trader.archive.parquet_io import frame_to_parquet_bytes
-from ibkr_trader.archive.store import LocalDirStore
 from ibkr_trader.config import Settings
 
 duckdb = pytest.importorskip("duckdb")

@@ -1,5 +1,12 @@
 # Remote cold-data archive
 
+> **Where the code lives:** since Phase 2 of the [data-lake plan](../plans/active/data-lake.md)
+> the archive is `data_lake.archive`, in the sibling
+> [`data-lake`](https://github.com/alexandrec90/data-lake) checkout — not this repo. The
+> `ibkr-trader archive …` commands below are unchanged; they are this repo's CLI over that
+> package. Fix archive behaviour in `../data-lake`, and configure it through the same `.env`
+> keys (`Settings` is handed to the package by `src/ibkr_trader/lake.py`).
+
 The local box has little disk, so cold data is offloaded to object storage as Parquet and
 pulled back on demand. Postgres remains the single source of truth for everything the hot
 path reads — the trainer (`signals/`), the backtester, and the audit trail never leave the
@@ -73,6 +80,39 @@ path, never the repo.
 `archive raw` is the non-destructive replacement for `prune_scored_raw`: the row (title,
 body, sentiment, hashed author) always stays in Postgres; only the payload blob moves, and
 `restore-raw` can bring it back for reprocessing.
+
+> **Archiving does not shrink the database file — vacuum it afterwards.** NULLing a `raw` blob
+> writes a new row version and leaves the old one dead; the space becomes reusable but is not
+> returned to the filesystem, so the database *grows*. Autovacuum reuses it for future inserts,
+> which is fine on a growing table and needs no action. To actually reclaim the disk:
+>
+> ```bash
+> docker compose exec db psql -U trader -d ibkr_trader -c "VACUUM (FULL, ANALYZE) news_articles;"
+> ```
+>
+> Measured 2026-07-30, after offloading 280 667 payloads:
+>
+> | | database | `news_articles` total | heap |
+> | --- | --- | --- | --- |
+> | after `archive raw` | 1299 MB | 361 MB | 315 MB |
+> | after `VACUUM FULL` | **1099 MB** | **161 MB** | 138 MB |
+>
+> It took **5 seconds**, not the minutes the exclusive lock implies — the rewrite is cheap once
+> the payloads are gone. Row count, titles and sentiments were unchanged (282 171 / 0 / 0).
+> `VACUUM FULL` still takes an **ACCESS EXCLUSIVE** lock and rewrites the table into new files,
+> so it needs roughly the table's size in free space and must not run while `serve` is writing.
+> `pg_repack` is the online alternative if that ever matters.
+>
+> Do **not** point `VACUUM FULL` at `price_bars`: it is a TimescaleDB hypertable whose chunks
+> are compressed, and it now dominates the database (~900 MB of the 1099 MB). Timescale's own
+> compression policy is what manages that space.
+
+**One run = one transaction.** The local NULLing commits once, at the end, after every
+partition has uploaded and verified. An interrupted run therefore leaves the partitions in the
+bucket and Postgres completely untouched — payloads exist in both places, never neither, and a
+rerun merges idempotently. The run also holds the whole batch in memory (~1.1 GB RSS for
+280 k payloads) and took ~2 h. Committing per partition would fix both, and Phase 3's cloud
+job timeouts will need it.
 
 ## Setup
 

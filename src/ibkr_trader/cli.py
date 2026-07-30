@@ -33,6 +33,19 @@ sentiment_app = typer.Typer(help="Manage local sentiment models and re-score sto
 app.add_typer(sentiment_app, name="sentiment")
 
 
+@app.callback()
+def _configure() -> None:
+    """Runs before every subcommand: hand the shared data-lake package our config + engine.
+
+    The connectors and the archive live in the ``data_lake`` package now and own neither, so
+    without this any ``ingest``/``archive`` command would raise rather than reach for a
+    database (docs/plans/active/data-lake.md, Phase 2).
+    """
+    from ibkr_trader.lake import configure_lake
+
+    configure_lake()
+
+
 class TrainSearch(StrEnum):
     """Supported LightGBM capacity selectors exposed by ``train run``."""
 
@@ -140,7 +153,8 @@ def ingest_news(
     or a key/quota failure — so re-runs are cheap and a dead key can't burn the day's quota.
     Free tier: ~100 req/day, articles delayed 24 h, first 100 results per search."""
     if mapping_file:
-        from ibkr_trader.ingestion.social.google_trends import read_mapping_file
+        from data_lake.ingestion.social.google_trends import read_mapping_file
+
         from ibkr_trader.scheduler import poll_newsapi_pairs
 
         try:
@@ -153,7 +167,7 @@ def ingest_news(
         typer.echo(f"upserted {count} articles")
         return
 
-    from ibkr_trader.ingestion.news.newsapi import NewsApiConnector
+    from data_lake.ingestion.news.newsapi import NewsApiConnector
 
     try:
         count = NewsApiConnector().fetch(
@@ -196,7 +210,7 @@ def ingest_finnhub_news(
     if not symbol.strip():
         raise typer.BadParameter("provide a SYMBOL or --universe-file")
 
-    from ibkr_trader.ingestion.news.finnhub_news import FinnhubNewsConnector
+    from data_lake.ingestion.news.finnhub_news import FinnhubNewsConnector
 
     try:
         count = FinnhubNewsConnector().fetch(symbol=symbol, date_from=date_from, date_to=date_to)
@@ -242,7 +256,7 @@ def ingest_finnhub_backfill(
 
 @ingest_app.command("reddit")
 def ingest_reddit(limit: int = 100):
-    from ibkr_trader.ingestion.social.reddit import RedditConnector
+    from data_lake.ingestion.social.reddit import RedditConnector
 
     try:
         count = RedditConnector().fetch(limit=limit)
@@ -273,7 +287,8 @@ def ingest_trends(
     doubles as backfill. Fresh keywords are skipped (see --refresh-after-days), so re-runs cost
     seconds and a partially-failed batch resumes from the failures."""
     if mapping_file:
-        from ibkr_trader.ingestion.social.google_trends import read_mapping_file
+        from data_lake.ingestion.social.google_trends import read_mapping_file
+
         from ibkr_trader.scheduler import poll_trends_pairs
 
         try:
@@ -290,7 +305,7 @@ def ingest_trends(
         typer.echo(f"upserted {count} trend points")
         return
 
-    from ibkr_trader.ingestion.social.google_trends import DEFAULT_TIMEFRAME, GoogleTrendsConnector
+    from data_lake.ingestion.social.google_trends import DEFAULT_TIMEFRAME, GoogleTrendsConnector
 
     try:
         count = GoogleTrendsConnector().fetch(
@@ -326,7 +341,7 @@ def ingest_prices(
                 "--universe-file batching is alpha_vantage-only "
                 "(FMP/Yahoo have their own batch tasks)"
             )
-        from ibkr_trader.ingestion.market.alpha_vantage import fetch_universe, read_tickers_file
+        from data_lake.ingestion.market.alpha_vantage import fetch_universe, read_tickers_file
 
         try:
             symbols = read_tickers_file(universe_file)
@@ -342,10 +357,10 @@ def ingest_prices(
         raise typer.BadParameter("provide a SYMBOL or --universe-file")
 
     connectors = {
-        "fmp": "ibkr_trader.ingestion.market.fmp:FmpConnector",
-        "yahoo": "ibkr_trader.ingestion.market.yahoo:YahooConnector",
-        "alpha_vantage": "ibkr_trader.ingestion.market.alpha_vantage:AlphaVantageConnector",
-        "ibkr": "ibkr_trader.ingestion.market.ibkr_historical:IbkrHistoricalConnector",
+        "fmp": "data_lake.ingestion.market.fmp:FmpConnector",
+        "yahoo": "data_lake.ingestion.market.yahoo:YahooConnector",
+        "alpha_vantage": "data_lake.ingestion.market.alpha_vantage:AlphaVantageConnector",
+        "ibkr": "data_lake.ingestion.market.ibkr_historical:IbkrHistoricalConnector",
     }
     if source not in connectors:
         raise typer.BadParameter(f"unknown source {source!r}")
@@ -363,7 +378,7 @@ def ingest_prices(
 def ingest_fundamentals(symbol: str):
     """Upsert Yahoo corporate data (dividends, share counts, statements, sector, earnings dates)
     for one symbol (e.g. AAPL, RY.TO). ETFs ingest dividends only, gracefully."""
-    from ibkr_trader.ingestion.market.yahoo_fundamentals import YahooFundamentalsConnector
+    from data_lake.ingestion.market.yahoo_fundamentals import YahooFundamentalsConnector
 
     try:
         count = YahooFundamentalsConnector().fetch(symbol=symbol)
@@ -383,15 +398,15 @@ def ingest_fx(
     ),
 ):
     """Ingest daily FX rates (the simulator converts US holdings to CAD via these)."""
-    from ibkr_trader.ingestion.base import Connector
+    from data_lake.ingestion.base import Connector
 
     connector: Connector
     if source == "fmp":
-        from ibkr_trader.ingestion.market.fmp_fx import FmpFxConnector
+        from data_lake.ingestion.market.fmp_fx import FmpFxConnector
 
         connector = FmpFxConnector()
     elif source == "yahoo":
-        from ibkr_trader.ingestion.market.yahoo_fx import YahooFxConnector
+        from data_lake.ingestion.market.yahoo_fx import YahooFxConnector
 
         connector = YahooFxConnector()
     else:
@@ -900,7 +915,7 @@ def _print_train_summary(metadata: dict) -> None:
 
 def _archive_store():
     """The configured backend, with config errors surfaced as clean CLI failures."""
-    from ibkr_trader.archive import store_from_settings
+    from data_lake.archive import store_from_settings
 
     try:
         return store_from_settings()
@@ -943,7 +958,8 @@ def archive_query(
     csv_output: bool = typer.Option(False, "--csv", help="emit CSV with a header"),
 ):
     """Run one research-only SELECT against the bars and raw_payloads archive views."""
-    from ibkr_trader.archive.lens import connect_lens
+    from data_lake.archive.lens import connect_lens
+
     from ibkr_trader.config import get_settings
 
     if not sql.lstrip().lower().startswith(("select", "with")):
@@ -976,7 +992,8 @@ def archive_bars(
 ):
     """Upload old intraday bars as Parquet, verify the upload, then delete the local rows.
     Daily bars never leave Postgres — they are the training/backtest input."""
-    from ibkr_trader.archive import archive_price_bars
+    from data_lake.archive import archive_price_bars
+
     from ibkr_trader.db.session import get_session
 
     store = _archive_store()
@@ -1001,7 +1018,8 @@ def archive_raw(
 ):
     """Upload scored raw provider payloads (news/social) as Parquet, verify, then NULL them
     locally. The rows themselves (title, body, sentiment, hashed author) stay in Postgres."""
-    from ibkr_trader.archive import archive_raw_payloads
+    from data_lake.archive import archive_raw_payloads
+
     from ibkr_trader.db.session import get_session
 
     store = _archive_store()
@@ -1024,7 +1042,8 @@ def archive_restore_bars(
 ):
     """Pull archived bars for a date range back into Postgres (idempotent), e.g. before
     training an intraday model — the trainer itself stays DB-only."""
-    from ibkr_trader.archive import restore_price_bars
+    from data_lake.archive import restore_price_bars
+
     from ibkr_trader.db.session import get_session
 
     store = _archive_store()
@@ -1050,7 +1069,8 @@ def archive_restore_raw(
 ):
     """Refill NULLed raw payloads from the archive for reprocessing (idempotent; never
     overwrites a populated payload, never inserts rows)."""
-    from ibkr_trader.archive import restore_raw_payloads
+    from data_lake.archive import restore_raw_payloads
+
     from ibkr_trader.db.session import get_session
 
     store = _archive_store()
@@ -1069,7 +1089,7 @@ def archive_restore_raw(
 @archive_app.command("status")
 def archive_status():
     """List archived data objects and their sizes (catalog metadata is shown by `catalog`)."""
-    from ibkr_trader.archive.catalog import CATALOG_PREFIX
+    from data_lake.archive.catalog import CATALOG_PREFIX
 
     try:
         objects = [
@@ -1098,7 +1118,7 @@ def archive_catalog(
     ``--rebuild`` re-reads every partition to regenerate the manifests (needs the [archive]
     extra) — use it to backfill a bucket archived before catalogging, or after a manual change.
     """
-    from ibkr_trader.archive.catalog import load_catalog, rebuild_catalog
+    from data_lake.archive.catalog import load_catalog, rebuild_catalog
 
     store = _archive_store()
     try:

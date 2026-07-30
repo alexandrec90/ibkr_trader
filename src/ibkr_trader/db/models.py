@@ -1,17 +1,18 @@
 """SQLAlchemy 2.0 models — the single source of truth for all pipeline data.
 
-The tables are defined in two modules either side of the data-lake seam
-(docs/plans/active/data-lake.md):
+The tables sit either side of the data-lake seam (docs/plans/active/data-lake.md), and since
+Phase 2 the two halves live in different repositories:
 
-- :mod:`ibkr_trader.db.lake_models` — market/corporate/news/social/feature data, shareable;
-  destined for the ``data-lake`` package in Phase 2.
+- :mod:`data_lake.db.models` — market/corporate/news/social/feature data, shareable. Owned by
+  the `data-lake <https://github.com/alexandrec90/data-lake>`_ package, which this repo consumes.
 - :mod:`ibkr_trader.db.trading_models` — predictions, orders, executions, backtests, strategy
-  state; **never** leaves this repo.
+  state. **Never** leaves this repo; declared here against the package's ``Base``.
 
-This module re-exports both so ``from ibkr_trader.db.models import X`` keeps working everywhere
-(including Alembic's ``target_metadata = Base.metadata``, which needs every table registered).
-Import it — not the halves — from application code; ``lake_models`` alone does not register the
-trading tables.
+Because both halves map onto one ``Base``, a single ``Base.metadata`` still describes the whole
+database — which is what Alembic's ``target_metadata`` needs. This module re-exports everything
+so ``from ibkr_trader.db.models import X`` keeps working everywhere. Import it, not the halves:
+``data_lake.db.models`` alone does not register the trading tables, so autogenerate against it
+would propose dropping them.
 
 Conventions:
 - Timestamps are timezone-aware UTC.
@@ -22,8 +23,8 @@ Conventions:
   hashes, never usernames.
 """
 
-from ibkr_trader.db.base import Base, JsonVariant, SqliteFriendlyBigInt
-from ibkr_trader.db.lake_models import (
+from data_lake.db.base import Base, JsonVariant, SqliteFriendlyBigInt
+from data_lake.db.models import (
     Dividend,
     EarningsEvent,
     Feature,
@@ -35,6 +36,7 @@ from ibkr_trader.db.lake_models import (
     SocialPost,
     TrendPoint,
 )
+
 from ibkr_trader.db.trading_models import (
     BacktestRun,
     Execution,
@@ -44,7 +46,7 @@ from ibkr_trader.db.trading_models import (
     StrategySnapshot,
 )
 
-#: Tables the shared data lake may hold (non-PII, non-account).
+#: Tables owned by the shared data-lake package (non-PII, non-account).
 LAKE_TABLES = frozenset(
     {
         "dividends",
