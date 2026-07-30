@@ -138,6 +138,38 @@ those horizons mature). Automating this cadence in `serve` is a follow-up, not p
 - [ ] **TOOLS-07:** Add vectorbt for read-only coarse screening when hundreds of variants need sweeping.
 - [ ] **TOOLS-07:** Add skfolio after a predictor passes OOS and forward shadow and reaches paper.
 
+## Shared data lake ([plan](docs/plans/active/data-lake.md))
+
+Phases 0 (infra), 1 (catalog), 1.5 (models split + config inversion) and 1.75 (session inversion)
+are done — **prep and infrastructure are both complete, Phase 2 is unblocked**. R2 bucket
+`ibkr-trader` is wired in `.env` and verified reachable (empty); repo
+[alexandrec90/data-lake](https://github.com/alexandrec90/data-lake) created private 2026-07-29.
+
+- [x] ~~*R2 bucket renamed to `data-lake`*~~ [2026-07-29] — created via the Cloudflare REST API with
+      a short-TTL user API token while the bucket was still empty (free). Public access verified
+      **disabled** on both buckets (no `r2.dev` domain, no custom domains). Old `ibkr-trader` bucket
+      is empty and unused — safe to delete.
+- [x] ~~*First real archive run, end to end*~~ [2026-07-29] — `archive raw --min-age-days 13` →
+      1 505 payloads in `raw/news_articles/2026-07.parquet`, catalog manifest written, and the
+      DuckDB lens reads it back from R2 (the Phase 4 reuse contract, proven). 0 rows lost title or
+      sentiment. **Not `archive bars`:** every stored bar is `1 day`, which it refuses by design, so
+      it writes nothing until the IBKR intraday connector exists.
+- [ ] **Owner:** fix the stale `ARCHIVE_S3_BUCKET=ibkr-trader` exported in your terminal session —
+      it outranks `.env`, so `.env` edits are silently ignored (restarting the shell/editor clears
+      it). Check with `env | grep ARCHIVE_`. Cost real debugging time; see
+      [remote-archive.md](docs/operations/remote-archive.md) "Gotcha".
+- [ ] **Owner:** delete the bootstrap `CLOUDFLARE_API_TOKEN` from `.env` + Cloudflare (account-level
+      R2 Edit; self-expires 2026-08-05). Consider rotating the R2 object token — its **access key
+      ID** (not the secret) was printed to a session transcript on 2026-07-29.
+- [ ] Delete the now-unused empty `ibkr-trader` bucket (needs an account-scoped token; the current
+      object token is `data-lake`-only).
+- [ ] Archive the remaining ~280 666 scored payloads (`archive raw --min-age-days 0`) whenever
+      reclaiming the 182 MB news table is worth it — nothing depends on it.
+- [ ] Phase 2 (Claude, fresh session): move `ingestion/`, `archive/`, `db/base.py`,
+      `db/lake_models.py`, `lens` into the `data-lake` package; swap `archive/`'s `Settings`
+      annotations for a Protocol the package owns; `ibkr_trader` becomes a consumer.
+- [ ] Phase 3: GitHub Actions cron writes Parquet → R2 (IBKR pacing lives in the runner).
+
 ## Housekeeping
 
 - [ ] Re-check official/current IBKR and deployment details as each area gets touched

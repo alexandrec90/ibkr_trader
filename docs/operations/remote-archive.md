@@ -92,7 +92,25 @@ uv sync --extra archive
 
 **The bucket must be private.** Social payloads are scraped content stored under Québec
 Law 25 constraints (authors hashed only) — never a public bucket, never a public dataset
-host.
+host. R2 buckets are private by default, but an enabled `r2.dev` managed domain or a custom
+domain makes objects public, and **the S3 credentials cannot report that** — only the
+Cloudflare REST API or the dashboard can (R2 → bucket → Settings → Public access).
+
+> **Gotcha: a shell environment variable silently outranks `.env`.**
+> `Settings` is pydantic-settings, which ranks the process environment *above* the `.env`
+> file. If `ARCHIVE_S3_BUCKET` (or any other key) is exported in the shell — e.g. left over
+> from an earlier `source .env`, inherited from the terminal that launched your editor — then
+> editing `.env` changes nothing and the CLI keeps talking to the old bucket, with no warning.
+> This cost real debugging time on 2026-07-29: `archive status` returned `AccessDenied` while a
+> direct boto3 call to the same-named bucket succeeded, because the two were reading different
+> bucket names. When a config change appears to be ignored, check first:
+>
+> ```bash
+> env | grep ARCHIVE_          # anything here wins over .env
+> ```
+>
+> Fix it at the source (restart the shell/editor session, or correct whatever exports them);
+> `VAR=value uv run …` is only a per-command workaround.
 
 ## Commands
 
