@@ -81,6 +81,27 @@ path, never the repo.
 body, sentiment, hashed author) always stays in Postgres; only the payload blob moves, and
 `restore-raw` can bring it back for reprocessing.
 
+> **Archiving does not shrink the database file.** NULLing a `raw` blob writes a new row
+> version and leaves the old one dead; the space becomes reusable but is not returned to the
+> filesystem. Measured 2026-07-30: offloading 280 667 payloads (~180 MB of blobs) took the dev
+> database from 1120 MB to **1299 MB**. Autovacuum will reuse that space for future inserts, so
+> on a growing database this is fine and needs no action. To actually reclaim the disk:
+>
+> ```bash
+> docker compose exec db psql -U trader -d ibkr_trader -c "VACUUM (FULL, ANALYZE) news_articles;"
+> ```
+>
+> `VACUUM FULL` takes an **exclusive lock** and rewrites the table, so it needs roughly the
+> table's size in free space and must not run while `serve` is writing. `pg_repack` is the
+> online alternative if that ever matters.
+
+**One run = one transaction.** The local NULLing commits once, at the end, after every
+partition has uploaded and verified. An interrupted run therefore leaves the partitions in the
+bucket and Postgres completely untouched — payloads exist in both places, never neither, and a
+rerun merges idempotently. The run also holds the whole batch in memory (~1.1 GB RSS for
+280 k payloads) and took ~2 h. Committing per partition would fix both, and Phase 3's cloud
+job timeouts will need it.
+
 ## Setup
 
 Install the extra and configure a backend in `.env` (see `.env.example`):

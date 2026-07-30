@@ -169,12 +169,18 @@ as an **editable path dependency at `../data-lake`**, so that sibling checkout i
       `.env` self-expires 2026-08-05; the R2 object token's **access key ID** (not the secret) was
       printed to a session transcript on 2026-07-29. You chose not to rotate — reopen only if the
       threat model changes.
-- [ ] Finish archiving the remaining ~280 666 scored payloads: rerun
-      `archive raw --min-age-days 0` (idempotent — merges what's already there). Two attempts have
-      been interrupted; the run holds every payload in memory (~1.1 GB RSS) and commits the local
-      NULLs in **one transaction at the end**, so an interrupted run leaves R2 populated and
-      Postgres untouched. Nothing is at risk — but consider committing per partition before the
-      next attempt, which is also what Phase 3's job timeouts will need. Needs the `db` container.
+- [x] ~~*Finish archiving the scored payload backlog*~~ [2026-07-30] — `archive raw
+      --min-age-days 0` completed: **280 667 payloads** offloaded across 13 monthly partitions,
+      catalog now reports 282 171 rows spanning 2025-07-22 → 2026-07-21, and **0 rows lost a title
+      or a sentiment**. Took ~2 h holding the whole batch in memory (~1.1 GB RSS) and committing
+      the local NULLs in one transaction at the end.
+- [ ] **Reclaim the disk the archive freed.** NULLing the blobs left dead tuples, so the database
+      *grew* 1120 → 1299 MB. Autovacuum makes the space reusable but never returns it to the
+      filesystem. One command, needs an exclusive lock and no `serve` running:
+      `docker compose exec db psql -U trader -d ibkr_trader -c "VACUUM (FULL, ANALYZE) news_articles;"`
+- [ ] Commit per partition in `archive raw` (currently one transaction for the whole run). Not a
+      correctness bug — an interrupt leaves data in both places, never neither — but it caps
+      memory and is what Phase 3's cloud job timeouts will require.
 - [ ] Phase 3: GitHub Actions cron writes Parquet → R2 (IBKR pacing lives in the runner).
 
 ## Housekeeping
