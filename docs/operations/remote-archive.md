@@ -81,19 +81,31 @@ path, never the repo.
 body, sentiment, hashed author) always stays in Postgres; only the payload blob moves, and
 `restore-raw` can bring it back for reprocessing.
 
-> **Archiving does not shrink the database file.** NULLing a `raw` blob writes a new row
-> version and leaves the old one dead; the space becomes reusable but is not returned to the
-> filesystem. Measured 2026-07-30: offloading 280 667 payloads (~180 MB of blobs) took the dev
-> database from 1120 MB to **1299 MB**. Autovacuum will reuse that space for future inserts, so
-> on a growing database this is fine and needs no action. To actually reclaim the disk:
+> **Archiving does not shrink the database file — vacuum it afterwards.** NULLing a `raw` blob
+> writes a new row version and leaves the old one dead; the space becomes reusable but is not
+> returned to the filesystem, so the database *grows*. Autovacuum reuses it for future inserts,
+> which is fine on a growing table and needs no action. To actually reclaim the disk:
 >
 > ```bash
 > docker compose exec db psql -U trader -d ibkr_trader -c "VACUUM (FULL, ANALYZE) news_articles;"
 > ```
 >
-> `VACUUM FULL` takes an **exclusive lock** and rewrites the table, so it needs roughly the
-> table's size in free space and must not run while `serve` is writing. `pg_repack` is the
-> online alternative if that ever matters.
+> Measured 2026-07-30, after offloading 280 667 payloads:
+>
+> | | database | `news_articles` total | heap |
+> | --- | --- | --- | --- |
+> | after `archive raw` | 1299 MB | 361 MB | 315 MB |
+> | after `VACUUM FULL` | **1099 MB** | **161 MB** | 138 MB |
+>
+> It took **5 seconds**, not the minutes the exclusive lock implies — the rewrite is cheap once
+> the payloads are gone. Row count, titles and sentiments were unchanged (282 171 / 0 / 0).
+> `VACUUM FULL` still takes an **ACCESS EXCLUSIVE** lock and rewrites the table into new files,
+> so it needs roughly the table's size in free space and must not run while `serve` is writing.
+> `pg_repack` is the online alternative if that ever matters.
+>
+> Do **not** point `VACUUM FULL` at `price_bars`: it is a TimescaleDB hypertable whose chunks
+> are compressed, and it now dominates the database (~900 MB of the 1099 MB). Timescale's own
+> compression policy is what manages that space.
 
 **One run = one transaction.** The local NULLing commits once, at the end, after every
 partition has uploaded and verified. An interrupted run therefore leaves the partitions in the

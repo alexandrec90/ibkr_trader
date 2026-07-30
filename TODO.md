@@ -174,10 +174,11 @@ as an **editable path dependency at `../data-lake`**, so that sibling checkout i
       catalog now reports 282 171 rows spanning 2025-07-22 → 2026-07-21, and **0 rows lost a title
       or a sentiment**. Took ~2 h holding the whole batch in memory (~1.1 GB RSS) and committing
       the local NULLs in one transaction at the end.
-- [ ] **Reclaim the disk the archive freed.** NULLing the blobs left dead tuples, so the database
-      *grew* 1120 → 1299 MB. Autovacuum makes the space reusable but never returns it to the
-      filesystem. One command, needs an exclusive lock and no `serve` running:
-      `docker compose exec db psql -U trader -d ibkr_trader -c "VACUUM (FULL, ANALYZE) news_articles;"`
+- [x] ~~*Reclaim the disk the archive freed*~~ [2026-07-30] — `VACUUM (FULL, ANALYZE)
+      news_articles` returned **200 MB**: database 1299 → **1099 MB**, the table 361 → 161 MB, in
+      5 seconds, with row count/titles/sentiments unchanged. Remember this step: archiving alone
+      *grows* the database. `price_bars` is now the bulk (~900 MB) and is a compressed Timescale
+      hypertable — never `VACUUM FULL` that one.
 - [ ] Commit per partition in `archive raw` (currently one transaction for the whole run). Not a
       correctness bug — an interrupt leaves data in both places, never neither — but it caps
       memory and is what Phase 3's cloud job timeouts will require.
