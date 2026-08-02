@@ -46,7 +46,7 @@ The practical new-listing gate is the static source list, not just the history s
 new public listings quarterly (and after a specifically noteworthy IPO): once daily market data
 and the basic instrument metadata are available, add the provider-formatted symbol to
 `tickers-yahoo.txt`, run `Ingest: Run Source` twice (Yahoo prices, then Yahoo fundamentals), then
-run `Tickers: Aggregate Universe (tickers.txt)`. Do not hand-edit the aggregate as the source of
+run `uv run python .vscode/aggregate_tickers.py`. Do not hand-edit the aggregate as the source of
 truth. A listing enters a strategy only after it also clears that run's `min_history_days` and
 the other eligibility rules. Private/pre-IPO companies such as SpaceX have no public daily bars
 or tradable listing and are entirely out of scope.
@@ -124,9 +124,9 @@ ibkr-trader report       # static HTML report: leaderboard + equity/drawdown cha
 
 Every persisted run stores its daily equity curve (and the benchmark's) in
 `backtest_runs.metrics` — that is what the report plots; runs persisted before curve
-storage list but don't chart. VS Code tasks cover all of this: `Backtest: Run` (the ETF floor
-is its default universe), `Backtest: Compare (Leaderboard)`, `Backtest: OOS (Honest Per-Fold)`,
-`Train: Run`, `Report: Generate (Static HTML)`.
+storage list but don't chart. VS Code keeps the parameter-heavy `Backtest: Run` (the ETF floor
+is its default universe) and `Backtest: OOS (Honest Per-Fold)` workflows; use the explicit
+`ibkr-trader` commands above for compare, training, and report generation.
 
 **Survivorship bounds:** `tickers.txt` results are upper bounds (curated from today's
 survivors). `tickers-etfs.txt` — 24 broad-market ETFs (XIU/XIC/XBB/XSP listed 1999-2002,
