@@ -1,429 +1,159 @@
 {
-  // Label convention: "Domain: Title Case Action", matching the carameli workspace so
-  // the two read as one system in the multi-root window. Every task carries a `detail`
-  // — that's the second line in the task quick-pick, and the only place a one-click
-  // action can say what it costs or what it touches.
-  //
-  // Variants of one action are folded into a single task with a `${input:...}` picker
-  // rather than one palette entry each. The thirteen ingest sources dispatch through
-  // .vscode/ingest_task.py, because VS Code can't vary an args array from a picker.
-  //
-  // Machine-wide Docker maintenance (prune + VHDX compaction) lives in the USER-level
-  // tasks.json — it acts on the daemon, not this project. That task delegates back to
-  // .vscode/docker_prune.py, which stays here because it knows this project's compose
-  // file and guards the ibkr_trader_pgdata volume.
+  // Shared test, lint, git, agent-context, Docker-maintenance, port, and shipping
+  // actions live in alex-projects.code-workspace. This file keeps only IBKR-specific
+  // workflows where a picker/composite or GUI launch is materially better than the
+  // documented CLI. Hidden tasks are implementation steps for the monthly snapshot.
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "Start: Full Stack (Postgres + IB Gateway)",
-      "detail": "`compose --profile ibkr up -d` — brings up the DB and the gateway together.",
-      "type": "shell",
-      "command": "docker compose --profile ibkr up -d",
-      "problemMatcher": []
-    },
-    {
       "label": "Stop: Docker Stack",
-      "detail": "`compose down` across the ibkr and app profiles. Named volumes (and the ingested bars in them) survive.",
+      "detail": "Stop IBKR containers across the ibkr/app profiles. Named volumes and ingested bars survive.",
       "type": "shell",
       "command": "docker compose --profile ibkr --profile app down",
       "problemMatcher": []
     },
     {
-      "label": "Docker: Start Postgres",
-      "detail": "Just the db service, on host port 5433. Enough for ingest, backtests, and pytest.",
+      "label": "IBKR: Open Gateway VNC Viewer",
+      "detail": "Attach TigerVNC to the paper gateway for login and 2FA prompts.",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": ["${workspaceFolder}\\.vscode\\vnc_viewer.py", "${env:ProgramFiles}\\TigerVNC\\vncviewer.exe"],
+      "problemMatcher": []
+    },
+    {
+      "label": "Ingest: Run Source",
+      "detail": "Run one source pull. The optional argument is used only by single-symbol, keyword, or FX-pair modes.",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": ["${workspaceFolder}\\.vscode\\ingest_task.py", "${input:ingestSource}", "--arg", "${input:ingestArg}"],
+      "options": { "env": { "DATABASE_URL": "postgresql+psycopg://trader:trader@127.0.0.1:5433/ibkr_trader?connect_timeout=5" } },
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "Snapshot: Run Monthly",
+      "detail": "Run the monthly forward-shadow ritual: database, migrations, FMP/Yahoo prices, ticker aggregation, then snapshot run --all.",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\ibkr-trader.exe",
+      "args": ["snapshot", "run", "--all"],
+      "dependsOrder": "sequence",
+      "dependsOn": ["Snapshot: Prepare Monthly Data"],
+      "options": { "env": { "DATABASE_URL": "postgresql+psycopg://trader:trader@127.0.0.1:5433/ibkr_trader?connect_timeout=5" } },
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "Backtest: Run",
+      "detail": "Simulate one allocator over one universe with the standing warm-up and evaluation-window defaults.",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\ibkr-trader.exe",
+      "args": [
+        "backtest", "run",
+        "--strategy", "${input:btStrategy}",
+        "--account", "${input:btAccount}",
+        "--universe-file", "${input:btUniverseFile}",
+        "--start", "${input:btStart}",
+        "--eval-start", "${input:btEvalStart}",
+        "--end", "${input:btEnd}"
+      ],
+      "options": { "env": { "DATABASE_URL": "postgresql+psycopg://trader:trader@127.0.0.1:5433/ibkr_trader?connect_timeout=5" } },
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "Backtest: OOS (Honest Per-Fold)",
+      "detail": "Run the walk-forward out-of-sample evaluation; each fold trains only on data then available.",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\ibkr-trader.exe",
+      "args": [
+        "backtest", "oos", "--end", "${input:oosEnd}",
+        "--start", "2008-06-02", "--sim-start", "2010-01-04",
+        "--account", "${input:btAccount}"
+      ],
+      "options": { "env": { "DATABASE_URL": "postgresql+psycopg://trader:trader@127.0.0.1:5433/ibkr_trader?connect_timeout=5" } },
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "Snapshot: Start Postgres",
+      "detail": "Hidden implementation step for the monthly snapshot.",
+      "hide": true,
       "type": "shell",
       "command": "docker compose up -d db",
       "problemMatcher": []
     },
     {
-      "label": "Docker: Start IB Gateway",
-      "detail": "Just the ib-gateway service (opt-in `ibkr` profile). Only needed for live IBKR connectivity.",
-      "type": "shell",
-      "command": "docker compose --profile ibkr up -d ib-gateway",
-      "problemMatcher": []
-    },
-    {
-      "label": "Docker: Tail Stack Logs",
-      "detail": "Follow all service logs from the last 100 lines.",
-      "type": "shell",
-      "command": "docker compose logs -f --tail=100",
-      "problemMatcher": []
-    },
-    {
-      "label": "Docker: Rebuild App",
-      "detail": "`compose build app` — needed after a Dockerfile or dependency change.",
-      "type": "shell",
-      "command": "docker compose build app",
-      "problemMatcher": []
-    },
-    {
-      "label": "DB: Apply Migrations",
-      "detail": "`alembic upgrade head` against the local Postgres on 5433. Run after pulling a branch that adds a migration.",
+      "label": "Snapshot: Apply Migrations",
+      "detail": "Hidden implementation step for the monthly snapshot.",
+      "hide": true,
       "type": "process",
       "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
-      "args": [
-        "${workspaceFolder}\\.vscode\\task_artifact_runner.py",
-        "--artifact",
-        "db-migrate",
-        "--",
-        "-m",
-        "alembic",
-        "upgrade",
-        "head"
-      ],
-      "options": {
-        "env": {
-          "DATABASE_URL": "postgresql+psycopg://trader:trader@127.0.0.1:5433/ibkr_trader?connect_timeout=5"
-        }
-      },
-      "presentation": {
-        "reveal": "silent",
-        "panel": "dedicated",
-        "clear": false
-      },
+      "args": ["${workspaceFolder}\\.vscode\\task_artifact_runner.py", "--artifact", "db-migrate", "--", "-m", "alembic", "upgrade", "head"],
+      "options": { "env": { "DATABASE_URL": "postgresql+psycopg://trader:trader@127.0.0.1:5433/ibkr_trader?connect_timeout=5" } },
       "problemMatcher": []
     },
     {
-      "label": "DB: New Migration (Autogenerate)",
-      "detail": "`alembic revision --autogenerate` from the current model diff. Always read the generated file before committing it.",
-      "type": "shell",
-      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
-      "args": [
-        "-m",
-        "alembic",
-        "revision",
-        "--autogenerate",
-        "-m",
-        "${input:migrationMessage}"
-      ],
-      "options": {
-        "env": {
-          "DATABASE_URL": "postgresql+psycopg://trader:trader@127.0.0.1:5433/ibkr_trader?connect_timeout=5"
-        }
-      },
-      "problemMatcher": []
-    },
-    {
-      "label": "IBKR: Connection Check",
-      "detail": "Probe the IB Gateway connection. Needs 'Docker: Start IB Gateway' first.",
-      "type": "shell",
-      "command": "${workspaceFolder}\\.venv\\Scripts\\ibkr-trader.exe",
-      "args": ["ibkr-check"],
-      "problemMatcher": []
-    },
-    {
-      "label": "IBKR: Open Gateway VNC Viewer",
-      "detail": "Attach TigerVNC to the gateway container — the only way to see and click its login/2FA prompts.",
-      "type": "process",
-      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
-      "args": [
-        "${workspaceFolder}\\.vscode\\vnc_viewer.py",
-        "${env:ProgramFiles}\\TigerVNC\\vncviewer.exe"
-      ],
-      "problemMatcher": []
-    },
-    {
-      "label": "Test: Run pytest",
-      "detail": "The full pytest suite via uv. Needs Postgres up ('Docker: Start Postgres').",
-      "type": "process",
-      "command": "uv",
-      "args": [
-        "run",
-        "python",
-        "${workspaceFolder}\\.vscode\\task_artifact_runner.py",
-        "--artifact",
-        "test",
-        "--",
-        "-m",
-        "pytest"
-      ],
-      "group": { "kind": "test", "isDefault": true },
-      "presentation": {
-        "reveal": "silent",
-        "panel": "dedicated",
-        "clear": false
-      },
-      "problemMatcher": []
-    },
-    {
-      "label": "Lint: Run Check",
-      "detail": "Pick one: ruff lint, ruff format --check, or mypy. Each writes its own artifact (lint / format-check / typecheck). Replaces the three separate tasks.",
+      "label": "Snapshot: Ingest Price Batches",
+      "detail": "Hidden implementation step for the monthly snapshot.",
+      "hide": true,
       "type": "shell",
       "command": "pwsh",
       "args": [
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
-        "$r = '${workspaceFolder}\\.vscode\\task_artifact_runner.py'; switch ('${input:lintCheck}') { 'ruff' { uv run python $r --artifact lint -- -m ruff check src tests } 'format' { uv run python $r --artifact format-check -- -m ruff format --check src tests } 'mypy' { uv run python $r --artifact typecheck -- -m mypy src } }; exit $LASTEXITCODE"
-      ],
-      "group": "build",
-      "presentation": {
-        "reveal": "silent",
-        "panel": "dedicated",
-        "clear": false
-      },
-      "problemMatcher": []
-    },
-    {
-      "label": "Check: All (Lint + Format + Types + Tests)",
-      "detail": "All four gates in one pass. Unlike the old dependsOn chain this does NOT stop at the first failure — one run surfaces every problem, so you fix them in a single round instead of one per re-run. Each step still writes its own artifact.",
-      "type": "shell",
-      "command": "pwsh",
-      "args": [
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
-        "$r = '${workspaceFolder}\\.vscode\\task_artifact_runner.py'; $f = 0; uv run python $r --artifact lint -- -m ruff check src tests; if ($LASTEXITCODE) { $f = 1 }; uv run python $r --artifact format-check -- -m ruff format --check src tests; if ($LASTEXITCODE) { $f = 1 }; uv run python $r --artifact typecheck -- -m mypy src; if ($LASTEXITCODE) { $f = 1 }; uv run python $r --artifact test -- -m pytest; if ($LASTEXITCODE) { $f = 1 }; exit $f"
-      ],
-      "group": { "kind": "build", "isDefault": true },
-      "presentation": {
-        "reveal": "always",
-        "panel": "dedicated",
-        "clear": true
-      },
-      "problemMatcher": []
-    },
-    {
-      "label": "Ingest: Run Source",
-      "detail": "One data pull, source picked from the list. The second prompt is only used by the single-symbol / single-keyword / FX-pair modes — leave it blank for the batch ones and each mode's own default applies.",
-      "type": "process",
-      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
-      "args": [
-        "${workspaceFolder}\\.vscode\\ingest_task.py",
-        "${input:ingestSource}",
-        "--arg",
-        "${input:ingestArg}"
-      ],
-      "options": {
-        "env": {
-          "DATABASE_URL": "postgresql+psycopg://trader:trader@127.0.0.1:5433/ibkr_trader?connect_timeout=5"
-        }
-      },
-      "presentation": {
-        "reveal": "always",
-        "panel": "dedicated",
-        "clear": true
-      },
-      "problemMatcher": []
-    },
-    {
-      "label": "Ingest: Bootstrap (DB + All Prices)",
-      "detail": "Cold-start sequence: Postgres up, migrate, FMP prices, Yahoo prices, then rebuild tickers.txt. This is what 'Snapshot: Run Monthly' runs first.",
-      "dependsOrder": "sequence",
-      "dependsOn": [
-        "Docker: Start Postgres",
-        "DB: Apply Migrations",
-        "Ingest: FMP + Yahoo Prices (batch)",
-        "Tickers: Aggregate Universe (tickers.txt)"
-      ],
-      "problemMatcher": []
-    },
-    {
-      "label": "Ingest: FMP + Yahoo Prices (batch)",
-      "detail": "Both price batches back to back, no prompts. Exists so the bootstrap and monthly-snapshot chains stay promptless; for a single source use 'Ingest: Run Source'.",
-      "type": "shell",
-      "command": "pwsh",
-      "args": [
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
+        "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
         "$i = '${workspaceFolder}\\.vscode\\ingest_task.py'; $p = '${workspaceFolder}\\.venv\\Scripts\\python.exe'; & $p $i fmp-prices-batch; $f = $LASTEXITCODE; & $p $i yahoo-prices-batch; if ($f -ne 0 -or $LASTEXITCODE -ne 0) { exit 1 }; exit 0"
       ],
-      "options": {
-        "env": {
-          "DATABASE_URL": "postgresql+psycopg://trader:trader@127.0.0.1:5433/ibkr_trader?connect_timeout=5"
-        }
-      },
-      "presentation": {
-        "reveal": "silent",
-        "panel": "dedicated",
-        "clear": false
-      },
+      "options": { "env": { "DATABASE_URL": "postgresql+psycopg://trader:trader@127.0.0.1:5433/ibkr_trader?connect_timeout=5" } },
       "problemMatcher": []
     },
     {
-      "label": "Tickers: Aggregate Universe (tickers.txt)",
-      "detail": "Rebuild tickers.txt from the per-source ticker files.",
+      "label": "Snapshot: Aggregate Tickers",
+      "detail": "Hidden implementation step for the monthly snapshot.",
+      "hide": true,
       "type": "process",
       "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
       "args": ["${workspaceFolder}\\.vscode\\aggregate_tickers.py"],
       "problemMatcher": []
     },
     {
-      "label": "Snapshot: Run Monthly",
-      "detail": "The monthly forward-shadow ritual: full price ingest, then `snapshot run --all`.",
-      "type": "process",
-      "command": "${workspaceFolder}\\.venv\\Scripts\\ibkr-trader.exe",
-      "args": ["snapshot", "run", "--all"],
+      "label": "Snapshot: Prepare Monthly Data",
+      "detail": "Hidden implementation aggregate for the monthly snapshot.",
+      "hide": true,
       "dependsOrder": "sequence",
-      "dependsOn": ["Ingest: Bootstrap (DB + All Prices)"],
-      "options": {
-        "env": {
-          "DATABASE_URL": "postgresql+psycopg://trader:trader@127.0.0.1:5433/ibkr_trader?connect_timeout=5"
-        }
-      },
-      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
-      "problemMatcher": []
-    },
-    {
-      "label": "Backtest: Run",
-      "detail": "Simulate one allocator over one universe. The date defaults are the standing policy window (load from 2008-06-02, first decision 2010-01-04) — hit Enter through them for the usual ETF-floor or full-universe run.",
-      "type": "process",
-      "command": "${workspaceFolder}\\.venv\\Scripts\\ibkr-trader.exe",
-      "args": [
-        "backtest",
-        "run",
-        "--strategy",
-        "${input:btStrategy}",
-        "--account",
-        "${input:btAccount}",
-        "--universe-file",
-        "${input:btUniverseFile}",
-        "--start",
-        "${input:btStart}",
-        "--eval-start",
-        "${input:btEvalStart}",
-        "--end",
-        "${input:btEnd}"
+      "dependsOn": [
+        "Snapshot: Start Postgres",
+        "Snapshot: Apply Migrations",
+        "Snapshot: Ingest Price Batches",
+        "Snapshot: Aggregate Tickers"
       ],
-      "options": {
-        "env": {
-          "DATABASE_URL": "postgresql+psycopg://trader:trader@127.0.0.1:5433/ibkr_trader?connect_timeout=5"
-        }
-      },
-      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
-      "problemMatcher": []
-    },
-    {
-      "label": "Backtest: Compare (Leaderboard)",
-      "detail": "Rank every stored backtest run by the chosen metric.",
-      "type": "process",
-      "command": "${workspaceFolder}\\.venv\\Scripts\\ibkr-trader.exe",
-      "args": ["backtest", "compare", "--sort-by", "${input:btSortBy}"],
-      "options": {
-        "env": {
-          "DATABASE_URL": "postgresql+psycopg://trader:trader@127.0.0.1:5433/ibkr_trader?connect_timeout=5"
-        }
-      },
-      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
-      "problemMatcher": []
-    },
-    {
-      "label": "Backtest: OOS (Honest Per-Fold)",
-      "detail": "Walk-forward out-of-sample run — each fold trains only on data available at that point. This is the honest number, not the leaderboard's.",
-      "type": "process",
-      "command": "${workspaceFolder}\\.venv\\Scripts\\ibkr-trader.exe",
-      "args": [
-        "backtest",
-        "oos",
-        "--end",
-        "${input:oosEnd}",
-        "--start",
-        "2008-06-02",
-        "--sim-start",
-        "2010-01-04",
-        "--account",
-        "${input:btAccount}"
-      ],
-      "options": {
-        "env": {
-          "DATABASE_URL": "postgresql+psycopg://trader:trader@127.0.0.1:5433/ibkr_trader?connect_timeout=5"
-        }
-      },
-      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
-      "problemMatcher": []
-    },
-    {
-      "label": "Train: Run",
-      "detail": "Build the training dataset and fit the model. Labels stop 12 months before the window end.",
-      "type": "process",
-      "command": "${workspaceFolder}\\.venv\\Scripts\\ibkr-trader.exe",
-      "args": ["train", "run", "--end", "${input:trainEnd}"],
-      "options": {
-        "env": {
-          "DATABASE_URL": "postgresql+psycopg://trader:trader@127.0.0.1:5433/ibkr_trader?connect_timeout=5"
-        }
-      },
-      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
-      "problemMatcher": []
-    },
-    {
-      "label": "Report: Generate (Static HTML)",
-      "detail": "Render the static dashboard from stored runs — charts, leaderboard, holdings.",
-      "type": "process",
-      "command": "${workspaceFolder}\\.venv\\Scripts\\ibkr-trader.exe",
-      "args": ["report"],
-      "options": {
-        "env": {
-          "DATABASE_URL": "postgresql+psycopg://trader:trader@127.0.0.1:5433/ibkr_trader?connect_timeout=5"
-        }
-      },
-      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
-      "problemMatcher": []
-    },
-    {
-      "label": "Agent: Sync CLAUDE → AGENTS Context",
-      "detail": "Regenerate the AGENTS-side instruction mirror from the CLAUDE-side sources.",
-      "type": "shell",
-      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
-      "args": ["${workspaceFolder}\\.vscode\\sync_claude_to_agents.py"],
-      "problemMatcher": []
-    },
-    {
-      "label": "Todo: Tidy (Move Done Items to End)",
-      "detail": "Reorder TODO.md so completed entries sink to the bottom.",
-      "type": "process",
-      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
-      "args": ["${workspaceFolder}\\.vscode\\reorder_todo.py"],
-      "presentation": { "reveal": "silent", "panel": "dedicated", "clear": false },
       "problemMatcher": []
     }
   ],
   "inputs": [
     {
-      "id": "migrationMessage",
-      "type": "promptString",
-      "description": "Alembic migration message"
-    },
-    {
-      "id": "lintCheck",
-      "type": "pickString",
-      "description": "Which check to run",
-      "options": [
-        { "label": "ruff check (lint)", "value": "ruff" },
-        { "label": "ruff format --check", "value": "format" },
-        { "label": "mypy (types)", "value": "mypy" }
-      ],
-      "default": "ruff"
-    },
-    {
       "id": "ingestSource",
       "type": "pickString",
       "description": "Which data source to pull",
       "options": [
-        { "label": "FMP prices — batch (tickers-fmp.txt)", "value": "fmp-prices-batch" },
+        { "label": "FMP prices — batch", "value": "fmp-prices-batch" },
         { "label": "FMP prices — one symbol", "value": "fmp-price-one" },
-        { "label": "Yahoo prices — batch (tickers-yahoo.txt)", "value": "yahoo-prices-batch" },
-        { "label": "Yahoo fundamentals — batch (tickers-yahoo.txt)", "value": "yahoo-fundamentals-batch" },
-        { "label": "Alpha Vantage prices — batch (tickers-av.txt)", "value": "alpha-vantage-batch" },
-        { "label": "Finnhub news — batch (tickers.txt)", "value": "finnhub-news-batch" },
+        { "label": "Yahoo prices — batch", "value": "yahoo-prices-batch" },
+        { "label": "Yahoo fundamentals — batch", "value": "yahoo-fundamentals-batch" },
+        { "label": "Alpha Vantage prices — batch", "value": "alpha-vantage-batch" },
+        { "label": "Finnhub news — batch", "value": "finnhub-news-batch" },
         { "label": "Finnhub news — one symbol", "value": "finnhub-news-one" },
-        { "label": "NewsAPI headlines — batch (news-keywords.txt)", "value": "newsapi-batch" },
-        { "label": "Google Trends — batch (trends-keywords.txt)", "value": "trends-batch" },
-        { "label": "Google Trends — one keyword (brand name, not a ticker)", "value": "trends-one" },
-        { "label": "Reddit — subreddits from settings (needs REDDIT_* creds)", "value": "reddit" },
+        { "label": "NewsAPI headlines — batch", "value": "newsapi-batch" },
+        { "label": "Google Trends — batch", "value": "trends-batch" },
+        { "label": "Google Trends — one keyword", "value": "trends-one" },
+        { "label": "Reddit", "value": "reddit" },
         { "label": "FMP FX — one pair", "value": "fmp-fx" },
-        { "label": "Yahoo FX — one pair, deep-history backfill", "value": "yahoo-fx-backfill" }
+        { "label": "Yahoo FX — deep-history backfill", "value": "yahoo-fx-backfill" }
       ],
       "default": "fmp-prices-batch"
     },
     {
       "id": "ingestArg",
       "type": "promptString",
-      "description": "Symbol / keyword / FX pair — only used by the single-item modes. Blank = that mode's default (NVDA, AAPL, Nvidia, USDCAD, 100 posts).",
+      "description": "Optional symbol, keyword, or FX pair for single-item modes",
       "default": ""
     },
     {
@@ -436,7 +166,7 @@
     {
       "id": "btAccount",
       "type": "pickString",
-      "description": "Registered account to simulate (drives US-dividend withholding)",
+      "description": "Registered account to simulate",
       "options": ["tfsa", "rrsp", "fhsa", "lira", "nonreg"],
       "default": "tfsa"
     },
@@ -453,38 +183,25 @@
     {
       "id": "btStart",
       "type": "promptString",
-      "description": "Bar-load start (warm-up bars for features; USDCAD coverage starts 2003-09-17)",
+      "description": "Bar-load start",
       "default": "2008-06-02"
     },
     {
       "id": "btEvalStart",
       "type": "promptString",
-      "description": "First decision date (owner policy floor: 2010, to skip the 2008-09 recession)",
+      "description": "First decision date",
       "default": "2010-01-04"
     },
     {
       "id": "btEnd",
       "type": "promptString",
-      "description": "Window end (a far-future date just means 'through the newest bar')",
+      "description": "Window end",
       "default": "2030-01-01"
-    },
-    {
-      "id": "btSortBy",
-      "type": "pickString",
-      "description": "Leaderboard ranking metric",
-      "options": ["sharpe", "calmar", "cagr", "total_return", "excess_return", "max_drawdown"],
-      "default": "calmar"
     },
     {
       "id": "oosEnd",
       "type": "promptString",
-      "description": "OOS dataset window end (labels stop 12 months earlier)",
-      "default": "2026-07-01"
-    },
-    {
-      "id": "trainEnd",
-      "type": "promptString",
-      "description": "Training dataset window end (labels stop 12 months earlier)",
+      "description": "OOS dataset window end",
       "default": "2026-07-01"
     }
   ]
