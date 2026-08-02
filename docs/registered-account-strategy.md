@@ -46,7 +46,7 @@ The practical new-listing gate is the static source list, not just the history s
 new public listings quarterly (and after a specifically noteworthy IPO): once daily market data
 and the basic instrument metadata are available, add the provider-formatted symbol to
 `tickers-yahoo.txt`, run `Ingest: Run Source` twice (Yahoo prices, then Yahoo fundamentals), then
-run `uv run python .vscode/aggregate_tickers.py`. Do not hand-edit the aggregate as the source of
+run `uv run python scripts/aggregate-tickers.py`. Do not hand-edit the aggregate as the source of
 truth. A listing enters a strategy only after it also clears that run's `min_history_days` and
 the other eligibility rules. Private/pre-IPO companies such as SpaceX have no public daily bars
 or tradable listing and are entirely out of scope.

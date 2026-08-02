@@ -23,7 +23,7 @@ for one coding-agent session each); the decisions themselves are settled:
   percentile rank per monthly rebalance date.
 - **Universe & sourcing:** ~180 names (TSX + US large caps + CAD core ETFs), Yahoo-first
   ingestion; FMP demoted to FX + backup. `tickers.txt` is generated from the per-connector
-  lists by `.vscode/aggregate_tickers.py`.
+  lists by `scripts/aggregate-tickers.py`.
 - **Fundamentals:** free yfinance only — statements are ~4–5y deep (probed 2026-07), which
   the owner accepts as a deliberate recency-over-depth bet; snapshot statements quarterly so
   point-in-time history accrues forward. Dividends/share counts/earnings dates are deep and

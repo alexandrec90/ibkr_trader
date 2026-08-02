@@ -48,7 +48,7 @@ Decisions already made (do not relitigate in-session; see
 - **Label:** 12-month forward total return in CAD, in excess of XEQT, converted to a
   cross-sectional percentile rank per rebalance date. Monthly sampling.
 - **Universe:** ~180 names in [tickers.txt](../../tickers.txt), Yahoo-first ingestion
-  (`tickers-yahoo.txt`); `.vscode/aggregate_tickers.py` keeps them in sync.
+  (`tickers-yahoo.txt`); `scripts/aggregate-tickers.py` keeps them in sync.
 - **History:** short fundamental history (~4–5y from free yfinance) is accepted — the owner
   explicitly prefers recent-regime data over depth. Don't block on deeper archives; snapshot
   statements quarterly so history accrues forward.

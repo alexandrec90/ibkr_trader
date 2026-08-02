@@ -49,7 +49,7 @@ our DB, so future feature builds can honestly answer "what did we know at time t
    `period_end`, within ~120 days), store it; downstream availability is
    `report_date or first_seen`.
 3. **CLI**: `ibkr-trader ingest fundamentals SYMBOL` (mirror `ingest prices` conventions) and
-   a batch path via `.vscode/ingest_fmp_tickers.py` (add `--source yahoo-fundamentals` or a
+   a batch path via `scripts/ingest_fmp_tickers.py` (add `--source yahoo-fundamentals` or a
    sibling script) + a VS Code task `ingest: yahoo fundamentals (tickers-yahoo.txt)`.
 4. **Tests** (pattern: stub the yfinance download functions exactly like
    `test_yahoo_connector.py` does — no network in tests): upsert idempotency (re-fetch

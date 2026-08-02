@@ -23,9 +23,9 @@ if this runs unelevated, quitting Docker Desktop still triggers its own reclaim,
 guaranteed full compaction run it from an Administrator terminal.
 
 Usage:
-    python .vscode/docker_prune.py                 # full aggressive reclaim + restore
-    python .vscode/docker_prune.py --no-compact    # prune only; skip VHDX compaction/restart
-    python .vscode/docker_prune.py --no-restart     # compact but leave Docker stopped
+    python scripts/docker-prune.py                 # full aggressive reclaim + restore
+    python scripts/docker-prune.py --no-compact    # prune only; skip VHDX compaction/restart
+    python scripts/docker-prune.py --no-restart     # compact but leave Docker stopped
 """
 
 from __future__ import annotations

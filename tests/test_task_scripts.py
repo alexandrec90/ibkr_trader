@@ -1,4 +1,16 @@
-"""Tests for the non-trivial helper scripts used by VS Code tasks."""
+"""Tests for the non-trivial helper scripts behind the VS Code tasks.
+
+These scripts used to live in `.vscode/`, which is editor configuration and not a
+script home. Eight Python files were in there, and two of them were load-bearing far
+outside the editor: `task_artifact_runner.py` is what `scripts/lint-all.py` and
+`scripts/run-tests.py` both wrap every invocation in, and `sync_claude_to_agents.py`
+was the real implementation behind the shared `sync-agents` contract path — so the
+workspace's lint, test and agent-context tasks all reached into `.vscode/` to work.
+
+They are in `scripts/` now, with the naming split devkit uses: kebab-case for
+entrypoints, snake_case for anything imported as a module (`ingest_fmp_tickers`, which
+`aggregate-tickers.py` imports as a sibling).
+"""
 
 from __future__ import annotations
 
@@ -13,7 +25,8 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SCRIPT_DIR = REPO_ROOT / ".vscode"
+SCRIPT_DIR = REPO_ROOT / "scripts"
+TASKS_JSON = REPO_ROOT / ".vscode" / "tasks.json"
 
 # VS Code reads tasks.json as JSONC, and ours carries a comment block explaining the label
 # convention. Match strings first so a `//` inside one (the DATABASE_URL values) is kept.
@@ -43,10 +56,17 @@ def test_strip_jsonc_comments_keeps_double_slashes_inside_strings():
     assert strip_jsonc_comments(source) == '{\n  \n  "url": "postgresql://trader@host:5433/db", \n}'
 
 
-def test_every_vscode_task_script_reference_exists():
-    raw = strip_jsonc_comments((SCRIPT_DIR / "tasks.json").read_text(encoding="utf-8"))
+def test_every_task_script_reference_exists():
+    """A task pointing at a moved script fails only when someone clicks it.
+
+    This is the check that made the `.vscode/` -> `scripts/` move safe: eight files
+    moved and every reference to them had to follow, including two the workspace's own
+    shared tasks reach through (`task-artifact-runner.py` via lint-all/run-tests, and
+    the agent-context sync).
+    """
+    raw = strip_jsonc_comments(TASKS_JSON.read_text(encoding="utf-8"))
     tasks = json.loads(raw)["tasks"]
-    prefix = "${workspaceFolder}\\.vscode\\"
+    prefix = "${workspaceFolder}\\scripts\\"
     references = [
         argument
         for task in tasks
@@ -59,8 +79,22 @@ def test_every_vscode_task_script_reference_exists():
         assert (SCRIPT_DIR / reference.removeprefix(prefix)).is_file(), reference
 
 
+def test_no_python_lives_under_dot_vscode():
+    """`.vscode/` is editor configuration, not a script home.
+
+    Eight scripts were in there, and the two that mattered most were invisible from the
+    outside: `scripts/lint-all.py` and `scripts/run-tests.py` — the paths the SHARED
+    workspace tasks call — both wrapped every invocation in `.vscode/
+    task_artifact_runner.py`, and `scripts/sync-agents-context.py` was a runpy shim over
+    `.vscode/sync_claude_to_agents.py`. So three of this project's contract entrypoints
+    silently depended on the editor directory.
+    """
+    stray = sorted(p.name for p in (REPO_ROOT / ".vscode").glob("*.py"))
+    assert stray == [], f"scripts belong in scripts/, not .vscode/: {stray}"
+
+
 def test_docker_prune_never_requests_volume_deletion(monkeypatch):
-    script = load_script("docker_prune.py")
+    script = load_script("docker-prune.py")
     commands = []
 
     def fake_step(_label, command):
@@ -82,7 +116,7 @@ def test_docker_prune_never_requests_volume_deletion(monkeypatch):
 
 
 def test_docker_prune_stops_if_protected_volume_is_missing(monkeypatch, capsys):
-    script = load_script("docker_prune.py")
+    script = load_script("docker-prune.py")
     monkeypatch.setattr(script, "run", lambda _command: (0, "some_other_volume"))
 
     with pytest.raises(SystemExit, match="2"):
@@ -92,7 +126,7 @@ def test_docker_prune_stops_if_protected_volume_is_missing(monkeypatch, capsys):
 
 
 def test_reorder_todo_moves_complete_items_and_is_idempotent():
-    script = load_script("reorder_todo.py")
+    script = load_script("reorder-todo.py")
     source = (
         "# Work\n\n"
         "- [x] completed first\n"
@@ -116,7 +150,7 @@ def test_reorder_todo_moves_complete_items_and_is_idempotent():
 
 
 def test_sync_claude_helpers_copy_content_and_respect_exclusions(monkeypatch, tmp_path):
-    script = load_script("sync_claude_to_agents.py")
+    script = load_script("sync-agents-context.py")
     monkeypatch.setattr(script, "ROOT", tmp_path)
     (tmp_path / "CLAUDE.md").write_text("root rules", encoding="utf-8")
     (tmp_path / "nested").mkdir()
@@ -154,7 +188,7 @@ def test_ingest_ticker_helper_continues_after_a_symbol_failure(monkeypatch, tmp_
         lambda: argparse.Namespace(tickers="tickers.txt", source="fmp"),
     )
     monkeypatch.setattr(script, "make_connector", lambda _source: connector)
-    monkeypatch.setattr(script.pathlib.Path, "resolve", lambda _self: tmp_path / ".vscode" / "x")
+    monkeypatch.setattr(script.pathlib.Path, "resolve", lambda _self: tmp_path / "scripts" / "x")
 
     assert script.main() == 1
     output = capsys.readouterr().out
@@ -164,12 +198,12 @@ def test_ingest_ticker_helper_continues_after_a_symbol_failure(monkeypatch, tmp_
 
 
 def test_vnc_viewer_removes_auth_file_after_viewer_exits(monkeypatch, tmp_path):
-    script = load_script("vnc_viewer.py")
+    script = load_script("vnc-viewer.py")
     auth_file = tmp_path / "auth"
     auth_file.write_bytes(b"secret")
     commands = []
     monkeypatch.setattr(script, "fetch_auth_file", lambda: auth_file)
-    monkeypatch.setattr(script.sys, "argv", ["vnc_viewer.py", "viewer.exe"])
+    monkeypatch.setattr(script.sys, "argv", ["vnc-viewer.py", "viewer.exe"])
 
     def fake_run(command, **_kwargs):
         commands.append(command)
@@ -192,13 +226,13 @@ def test_vnc_viewer_removes_auth_file_after_viewer_exits(monkeypatch, tmp_path):
 
 
 def test_task_artifact_runner_records_child_failure(monkeypatch, tmp_path):
-    script = load_script("task_artifact_runner.py")
+    script = load_script("task-artifact-runner.py")
     monkeypatch.setattr(
         script,
         "parse_args",
         lambda: argparse.Namespace(artifact="example", command=["-m", "fake_command"]),
     )
-    monkeypatch.setattr(script.pathlib.Path, "resolve", lambda _self: tmp_path / ".vscode" / "x")
+    monkeypatch.setattr(script.pathlib.Path, "resolve", lambda _self: tmp_path / "scripts" / "x")
     monkeypatch.setattr(
         script.subprocess,
         "run",
