@@ -1,50 +1,62 @@
 {
-  // Shared test, lint, git, agent-context, Docker-maintenance, port, and shipping
-  // actions live in alex-projects.code-workspace. This file keeps only IBKR-specific
-  // workflows where a picker/composite or GUI launch is materially better than the
-  // documented CLI. Hidden tasks are implementation steps for the monthly snapshot.
+  // Keep this palette SMALL. Shared test, lint, git, agent-context, stack start/stop,
+  // Docker-maintenance, port, and shipping actions all live in
+  // alex-projects.code-workspace, defined once and taking the project as an argument.
+  //
+  // THE BAR FOR A TASK IN THIS FILE: a picker, a composite, or a GUI launch has to add
+  // something a workspace task with `--project` cannot. A one-line invocation of a
+  // documented script does NOT qualify — the script is already the interface.
+  // Applying that bar took this file from eleven tasks to four:
+  //
+  //   - "Stop: Docker Stack" became the workspace's "Docker: Stop Stack", which
+  //     delegates to the new scripts/docker-down.py. The profile handling lives there
+  //     now instead of in a task string. The old task shared its label with carameli's
+  //     and ran a different command, so what "Stop" meant depended on the window.
+  //   - "Snapshot: Run Monthly" and its FIVE hidden steps ("Start Postgres", "Apply
+  //     Migrations", "Ingest Price Batches", "Aggregate Tickers", "Prepare Monthly
+  //     Data") are now one call to scripts/snapshot-monthly.py. The sequence was a
+  //     dependsOn chain whose ingest link was a pwsh one-liner doing $LASTEXITCODE
+  //     arithmetic inside a JSON string — a shell script in a task costume, and
+  //     unreadable as a ritual because five of the six entries were hidden.
+  //
+  // There is no "Docker: Start Stack" equivalent here on purpose: CLAUDE.md keeps
+  // containers OFF by default on this machine, so the workspace task delegates to a
+  // scripts/docker-up.py this project deliberately does not ship. Start the one
+  // container a command needs, then put it back down.
+  //
+  // DATABASE_URL is no longer repeated in every entry. It was inlined five times,
+  // credentials included; the scripts resolve it once and the environment wins.
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "Stop: Docker Stack",
-      "detail": "Stop IBKR containers across the ibkr/app profiles. Named volumes and ingested bars survive.",
-      "type": "shell",
-      "command": "docker compose --profile ibkr --profile app down",
-      "problemMatcher": []
-    },
-    {
       "label": "IBKR: Open Gateway VNC Viewer",
-      "detail": "Attach TigerVNC to the paper gateway for login and 2FA prompts.",
+      "detail": "Attach TigerVNC to the paper gateway for login and 2FA prompts. Earns its place: launching a GUI is something no CLI-shaped workspace task can do.",
       "type": "process",
       "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
-      "args": ["${workspaceFolder}\\.vscode\\vnc_viewer.py", "${env:ProgramFiles}\\TigerVNC\\vncviewer.exe"],
+      "args": ["${workspaceFolder}\\scripts\\vnc-viewer.py", "${env:ProgramFiles}\\TigerVNC\\vncviewer.exe"],
       "problemMatcher": []
     },
     {
       "label": "Ingest: Run Source",
-      "detail": "Run one source pull. The optional argument is used only by single-symbol, keyword, or FX-pair modes.",
+      "detail": "Run one source pull. The optional argument is used only by single-symbol, keyword, or FX-pair modes. Earns its place: a thirteen-way picker over source names is materially faster than recalling the flag.",
       "type": "process",
       "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
-      "args": ["${workspaceFolder}\\.vscode\\ingest_task.py", "${input:ingestSource}", "--arg", "${input:ingestArg}"],
-      "options": { "env": { "DATABASE_URL": "postgresql+psycopg://trader:trader@127.0.0.1:5433/ibkr_trader?connect_timeout=5" } },
+      "args": ["${workspaceFolder}\\scripts\\ingest-task.py", "${input:ingestSource}", "--arg", "${input:ingestArg}"],
       "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
       "problemMatcher": []
     },
     {
       "label": "Snapshot: Run Monthly",
-      "detail": "Run the monthly forward-shadow ritual: database, migrations, FMP/Yahoo prices, ticker aggregation, then snapshot run --all.",
+      "detail": "The whole monthly forward-shadow ritual in one step: Postgres up, migrations, FMP + Yahoo prices, ticker aggregation, then `snapshot run --all`. Stops at the first unrecoverable failure and writes it to artifacts/tasks/snapshot-monthly.log — read the artifact, not the terminal. Starts a container; it does NOT stop it afterwards.",
       "type": "process",
-      "command": "${workspaceFolder}\\.venv\\Scripts\\ibkr-trader.exe",
-      "args": ["snapshot", "run", "--all"],
-      "dependsOrder": "sequence",
-      "dependsOn": ["Snapshot: Prepare Monthly Data"],
-      "options": { "env": { "DATABASE_URL": "postgresql+psycopg://trader:trader@127.0.0.1:5433/ibkr_trader?connect_timeout=5" } },
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": ["${workspaceFolder}\\scripts\\snapshot-monthly.py", "${input:snapshotScope}"],
       "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
       "problemMatcher": []
     },
     {
       "label": "Backtest: Run",
-      "detail": "Simulate one allocator over one universe with the standing warm-up and evaluation-window defaults.",
+      "detail": "Simulate one allocator over one universe. Earns its place: six inputs, four of them pickers over registered accounts and universe files.",
       "type": "process",
       "command": "${workspaceFolder}\\.venv\\Scripts\\ibkr-trader.exe",
       "args": [
@@ -56,13 +68,12 @@
         "--eval-start", "${input:btEvalStart}",
         "--end", "${input:btEnd}"
       ],
-      "options": { "env": { "DATABASE_URL": "postgresql+psycopg://trader:trader@127.0.0.1:5433/ibkr_trader?connect_timeout=5" } },
       "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
       "problemMatcher": []
     },
     {
       "label": "Backtest: OOS (Honest Per-Fold)",
-      "detail": "Run the walk-forward out-of-sample evaluation; each fold trains only on data then available.",
+      "detail": "Walk-forward out-of-sample evaluation; each fold trains only on data then available. The warm-up and simulation starts are fixed here deliberately — an OOS run whose windows move is not comparable to the last one.",
       "type": "process",
       "command": "${workspaceFolder}\\.venv\\Scripts\\ibkr-trader.exe",
       "args": [
@@ -70,61 +81,7 @@
         "--start", "2008-06-02", "--sim-start", "2010-01-04",
         "--account", "${input:btAccount}"
       ],
-      "options": { "env": { "DATABASE_URL": "postgresql+psycopg://trader:trader@127.0.0.1:5433/ibkr_trader?connect_timeout=5" } },
       "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
-      "problemMatcher": []
-    },
-    {
-      "label": "Snapshot: Start Postgres",
-      "detail": "Hidden implementation step for the monthly snapshot.",
-      "hide": true,
-      "type": "shell",
-      "command": "docker compose up -d db",
-      "problemMatcher": []
-    },
-    {
-      "label": "Snapshot: Apply Migrations",
-      "detail": "Hidden implementation step for the monthly snapshot.",
-      "hide": true,
-      "type": "process",
-      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
-      "args": ["${workspaceFolder}\\.vscode\\task_artifact_runner.py", "--artifact", "db-migrate", "--", "-m", "alembic", "upgrade", "head"],
-      "options": { "env": { "DATABASE_URL": "postgresql+psycopg://trader:trader@127.0.0.1:5433/ibkr_trader?connect_timeout=5" } },
-      "problemMatcher": []
-    },
-    {
-      "label": "Snapshot: Ingest Price Batches",
-      "detail": "Hidden implementation step for the monthly snapshot.",
-      "hide": true,
-      "type": "shell",
-      "command": "pwsh",
-      "args": [
-        "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
-        "$i = '${workspaceFolder}\\.vscode\\ingest_task.py'; $p = '${workspaceFolder}\\.venv\\Scripts\\python.exe'; & $p $i fmp-prices-batch; $f = $LASTEXITCODE; & $p $i yahoo-prices-batch; if ($f -ne 0 -or $LASTEXITCODE -ne 0) { exit 1 }; exit 0"
-      ],
-      "options": { "env": { "DATABASE_URL": "postgresql+psycopg://trader:trader@127.0.0.1:5433/ibkr_trader?connect_timeout=5" } },
-      "problemMatcher": []
-    },
-    {
-      "label": "Snapshot: Aggregate Tickers",
-      "detail": "Hidden implementation step for the monthly snapshot.",
-      "hide": true,
-      "type": "process",
-      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
-      "args": ["${workspaceFolder}\\.vscode\\aggregate_tickers.py"],
-      "problemMatcher": []
-    },
-    {
-      "label": "Snapshot: Prepare Monthly Data",
-      "detail": "Hidden implementation aggregate for the monthly snapshot.",
-      "hide": true,
-      "dependsOrder": "sequence",
-      "dependsOn": [
-        "Snapshot: Start Postgres",
-        "Snapshot: Apply Migrations",
-        "Snapshot: Ingest Price Batches",
-        "Snapshot: Aggregate Tickers"
-      ],
       "problemMatcher": []
     }
   ],
@@ -155,6 +112,20 @@
       "type": "promptString",
       "description": "Optional symbol, keyword, or FX pair for single-item modes",
       "default": ""
+    },
+    {
+      // Every branch supplies one real token — `--full` is redundant against the
+      // script's default and exists for exactly that reason. An empty option does not
+      // vanish from the args array; it reaches argparse as a stray positional.
+      "id": "snapshotScope",
+      "type": "pickString",
+      "description": "Full ritual, or re-run just the snapshot over data already ingested?",
+      "options": [
+        { "label": "Full ritual — migrations, prices, aggregation, snapshot", "value": "--full" },
+        { "label": "Snapshot only — skip the price ingests", "value": "--skip-ingest" },
+        { "label": "Dry run — print the plan, run nothing", "value": "--dry-run" }
+      ],
+      "default": "--full"
     },
     {
       "id": "btStrategy",

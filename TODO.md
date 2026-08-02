@@ -282,7 +282,7 @@ as an **editable path dependency at `../data-lake`**, so that sibling checkout i
       simulator's CAD conversion; tested (`tests/test_fmp_fx_connector.py`) + VS Code task.
       **[verify]** FMP EOD coverage for FX pairs against the live plan.
 - [x] **Universe widened to ~180 names** (TSX 60-ish + S&P 100-ish + CAD core ETFs) in
-      `tickers-yahoo.txt`; `.vscode/aggregate_tickers.py` + task
+      `tickers-yahoo.txt`; `scripts/aggregate-tickers.py` + task
       `tickers: aggregate universe` regenerates `tickers.txt` (comment-free — cli.py's
       universe reader doesn't skip `#`) from the per-connector lists, warning on
       TSX/US bare-symbol collisions (engine resolves universe lines by symbol only).

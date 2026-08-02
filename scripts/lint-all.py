@@ -8,7 +8,7 @@ import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-RUNNER = ROOT / ".vscode" / "task_artifact_runner.py"
+RUNNER = ROOT / "scripts" / "task-artifact-runner.py"
 
 
 def changed_python_files() -> list[str]:

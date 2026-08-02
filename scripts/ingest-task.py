@@ -7,27 +7,25 @@ can't vary an args array from a picker (an input substitutes one argv element),
 so the table lives here instead and the task passes a mode name.
 
 Each mode maps to (artifact_name, argv) where argv is what
-task_artifact_runner.py runs after its `--`. Modes with a `{arg}` placeholder
+task-artifact-runner.py runs after its `--`. Modes with a `{arg}` placeholder
 take the task's free-text input; the rest ignore it. DATABASE_URL comes from the
 task's env and is inherited.
 
-Usage:  python .vscode/ingest_task.py <mode> [--arg VALUE]
-        python .vscode/ingest_task.py --list
+Usage:  python scripts/ingest-task.py <mode> [--arg VALUE]
+        python scripts/ingest-task.py --list
 """
 
-# The lint hook that runs on this file applies the sibling carameli repo's
-# ruff.toml, whose "scripts/**" per-file-ignores can't match a path outside it.
-# These are the same allowances that config already grants CLI tooling.
-# ruff: noqa: T201, S603
+# ruff: noqa: T201, S603 - a CLI dispatcher: printing IS its output, and every argv it
+# spawns is assembled from the MODES table above, never from user input.
 
 import subprocess
 import sys
 from pathlib import Path
 
-VSCODE = Path(__file__).resolve().parent
-REPO_ROOT = VSCODE.parent
-RUNNER = VSCODE / "task_artifact_runner.py"
-TICKER_INGEST = ".vscode/ingest_fmp_tickers.py"
+SCRIPTS = Path(__file__).resolve().parent
+REPO_ROOT = SCRIPTS.parent
+RUNNER = SCRIPTS / "task-artifact-runner.py"
+TICKER_INGEST = "scripts/ingest_fmp_tickers.py"
 CLI = ["-m", "ibkr_trader.cli"]
 
 # mode -> (artifact, argv, default_arg). `{arg}` in argv is filled from --arg.
