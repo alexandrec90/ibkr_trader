@@ -16,8 +16,6 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
-import json
-import re
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -26,17 +24,6 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_DIR = REPO_ROOT / "scripts"
-TASKS_JSON = REPO_ROOT / ".vscode" / "tasks.json"
-
-# VS Code reads tasks.json as JSONC, and ours carries a comment block explaining the label
-# convention. Match strings first so a `//` inside one (the DATABASE_URL values) is kept.
-_JSONC_STRING_OR_COMMENT = re.compile(r'"(?:\\.|[^"\\])*"|//[^\n]*|/\*.*?\*/', re.DOTALL)
-
-
-def strip_jsonc_comments(text: str) -> str:
-    return _JSONC_STRING_OR_COMMENT.sub(
-        lambda match: match.group(0) if match.group(0).startswith('"') else "", text
-    )
 
 
 def load_script(name: str) -> ModuleType:
@@ -50,33 +37,46 @@ def load_script(name: str) -> ModuleType:
     return module
 
 
-def test_strip_jsonc_comments_keeps_double_slashes_inside_strings():
-    source = '{\n  // a comment\n  "url": "postgresql://trader@host:5433/db", /* trailing */\n}'
+# Every path the SHARED workspace tasks dispatch to, via devkit's `devkit_project.py`.
+# This list replaces a check that parsed `.vscode/tasks.json` and asserted each
+# `${workspaceFolder}\scripts\…` reference resolved. That file is gone: all five IBKR
+# tasks were hoisted to `alex-projects.code-workspace`, because a task defined in this
+# repo is rendered once per WORKTREE — `ibkr_trader` and `ibkr_trader-b` are two folders
+# in one multi-root workspace, so each of them appeared twice in the quick-pick.
+#
+# The reference list is written out rather than parsed because the workspace file lives
+# ABOVE this repo and is not in it: a test that read it would pass locally and skip (or
+# fail) in CI, where there is no workspace. So the invariant is stated from this side —
+# these are the paths this repo promises to keep, and devkit's `--check` reports the
+# other direction. A rename that misses one turns a one-click action into a
+# missing-script error, which is exactly what the old check existed to prevent.
+CONTRACT_ENTRYPOINTS = (
+    "run-tests.py",  # Test: Run Suite
+    "lint-all.py",  # Lint: Everything / Lint: Changed Files
+    "sync-agents-context.py",  # Agent: Sync CLAUDE -> AGENTS Context
+    "vnc-viewer.py",  # IBKR: Open Gateway VNC Viewer
+    "ingest-task.py",  # Ingest: Run Source
+    "snapshot-monthly.py",  # Snapshot: Run Monthly
+    "backtest-task.py",  # Backtest: Run / Backtest: OOS
+    # Not dispatched directly, but every one of the above wraps it, so a rename here
+    # breaks all of them at once and none of them at import time.
+    "task-artifact-runner.py",
+)
 
-    assert strip_jsonc_comments(source) == '{\n  \n  "url": "postgresql://trader@host:5433/db", \n}'
+
+@pytest.mark.parametrize("name", CONTRACT_ENTRYPOINTS)
+def test_every_dispatched_entrypoint_exists(name):
+    """A workspace task pointing at a moved script fails only when someone clicks it."""
+    assert (SCRIPT_DIR / name).is_file(), f"scripts/{name} is dispatched by a workspace task"
 
 
-def test_every_task_script_reference_exists():
-    """A task pointing at a moved script fails only when someone clicks it.
-
-    This is the check that made the `.vscode/` -> `scripts/` move safe: eight files
-    moved and every reference to them had to follow, including two the workspace's own
-    shared tasks reach through (`task-artifact-runner.py` via lint-all/run-tests, and
-    the agent-context sync).
-    """
-    raw = strip_jsonc_comments(TASKS_JSON.read_text(encoding="utf-8"))
-    tasks = json.loads(raw)["tasks"]
-    prefix = "${workspaceFolder}\\scripts\\"
-    references = [
-        argument
-        for task in tasks
-        for argument in [task.get("command", ""), *task.get("args", [])]
-        if argument.startswith(prefix) and argument.endswith(".py")
-    ]
-
-    assert references
-    for reference in references:
-        assert (SCRIPT_DIR / reference.removeprefix(prefix)).is_file(), reference
+def test_this_repo_ships_no_project_level_tasks():
+    """The five IBKR tasks live in the workspace block now, taking the checkout as a
+    picker. A `.vscode/tasks.json` here would reintroduce the per-worktree duplicate."""
+    assert not (REPO_ROOT / ".vscode" / "tasks.json").exists(), (
+        "tasks belong in alex-projects.code-workspace, scoped with devkit_project.py's "
+        "`projects=` field, not in a per-worktree file"
+    )
 
 
 def test_no_python_lives_under_dot_vscode():
@@ -223,6 +223,94 @@ def test_vnc_viewer_removes_auth_file_after_viewer_exits(monkeypatch, tmp_path):
         ]
     ]
     assert not auth_file.exists()
+
+
+def test_backtest_run_passes_every_selected_window_through():
+    script = load_script("backtest-task.py")
+    args = script.parse_args(
+        [
+            "run",
+            "--strategy",
+            "ml_lt_ridge",
+            "--account",
+            "tfsa",
+            "--universe-file",
+            "tickers-etfs.txt",
+            "--start",
+            "2008-06-02",
+            "--eval-start",
+            "2010-01-04",
+            "--end",
+            "2030-01-01",
+        ]
+    )
+
+    assert script.cli_args(args) == [
+        "run",
+        "--strategy",
+        "ml_lt_ridge",
+        "--account",
+        "tfsa",
+        "--universe-file",
+        "tickers-etfs.txt",
+        "--start",
+        "2008-06-02",
+        "--eval-start",
+        "2010-01-04",
+        "--end",
+        "2030-01-01",
+    ]
+
+
+def test_backtest_oos_windows_are_fixed_and_not_selectable():
+    """The warm-up and simulation starts are the whole comparability guarantee.
+
+    They were literals in a tasks.json args array; if they ever become options, an OOS
+    run stops being comparable to the previously recorded one and nothing says so.
+    """
+    script = load_script("backtest-task.py")
+    args = script.parse_args(["oos", "--account", "rrsp", "--end", "2026-07-01"])
+    emitted = script.cli_args(args)
+
+    assert emitted[emitted.index("--start") + 1] == script.OOS_START
+    assert emitted[emitted.index("--sim-start") + 1] == script.OOS_SIM_START
+    with pytest.raises(SystemExit):
+        script.parse_args(
+            ["oos", "--account", "rrsp", "--end", "2026-07-01", "--start", "2020-01-01"]
+        )
+
+
+def test_backtest_modes_write_separate_artifacts():
+    """A shared artifact would let an OOS run overwrite the evidence from the run that
+    prompted it."""
+    script = load_script("backtest-task.py")
+    run = script.build_argv(script.parse_args(["oos", "--account", "tfsa", "--end", "2026-07-01"]))
+    assert run[run.index("--artifact") + 1] == "backtest-oos"
+    assert script.ARTIFACTS["run"] != script.ARTIFACTS["oos"]
+
+
+def test_backtest_reaches_the_cli_as_a_module_not_the_exe_shim():
+    """`task-artifact-runner.py` prepends its own `sys.executable`, so the command it
+    runs has to be a module command; the old tasks named `.venv\\Scripts\\ibkr-trader.exe`
+    directly, which the artifact wrapper cannot invoke."""
+    script = load_script("backtest-task.py")
+    argv = script.build_argv(script.parse_args(["oos", "--account", "tfsa", "--end", "2026-07-01"]))
+
+    assert argv[1].endswith("task-artifact-runner.py")
+    assert argv[argv.index("--") + 1 :][:2] == ["-m", "ibkr_trader.cli"]
+    assert not any(part.endswith("ibkr-trader.exe") for part in argv)
+
+
+def test_backtest_falls_back_to_the_running_interpreter_without_a_venv(tmp_path):
+    """VS Code launches tasks with its own PATH, so the venv is looked up explicitly --
+    but the script must still run from an activated shell and from CI."""
+    script = load_script("backtest-task.py")
+    assert script.python_exe(tmp_path) == sys.executable
+
+    scripts_dir = tmp_path / ".venv" / "Scripts"
+    scripts_dir.mkdir(parents=True)
+    (scripts_dir / "python.exe").write_text("")
+    assert script.python_exe(tmp_path) == str(scripts_dir / "python.exe")
 
 
 def test_task_artifact_runner_records_child_failure(monkeypatch, tmp_path):
