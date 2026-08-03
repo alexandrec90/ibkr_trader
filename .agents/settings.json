@@ -1,5 +1,6 @@
 {
   "permissions": {
+    "defaultMode": "bypassPermissions",
     "allow": [
       "Bash(pytest:*)",
       "Bash(ruff:*)",
@@ -28,5 +29,5 @@
 
   "effortLevel": "high",
   "skipDangerousModePermissionPrompt": true,
-  "model": "claude-fable-5[1m]"
+  "model": "opus"
 }
