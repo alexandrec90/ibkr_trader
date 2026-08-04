@@ -33,7 +33,7 @@ uv sync                        # setup: create .venv, install locked deps + dev 
 uv sync --extra ml             # + ML training extras (lightgbm/scikit-learn)
 uv add <pkg>                   # add a runtime dep (updates pyproject.toml + uv.lock)
 uv lock                        # re-resolve after editing pyproject.toml by hand
-docker compose up -d db        # postgres — only when a command actually needs it (see below)
+docker compose up -d db        # postgres (see "What each container is for" below)
 docker compose --profile ibkr up -d   # + IB Gateway (needs TWS_USERID/PASSWORD in .env)
 docker compose stop            # stop this project's containers (keeps data; `start` to resume)
 uv run pytest                  # tests
@@ -48,32 +48,19 @@ The initial schema migration exists and is applied to the dev DB (host port **54
 occupied by another local Postgres). After changing `db/models.py`, autogenerate a new revision
 and review it before upgrading.
 
-### Containers are OFF by default (laptop with limited RAM/CPU)
+### What each container is for
 
-The owner's dev machine is a memory-constrained laptop running several projects' Docker stacks
-at once. **Leave containers stopped unless the specific command you're about to run needs one,
-and stop it again when you're done.** Do not start containers "just in case" or leave them
-running after a task.
-
-- **The standard gate needs NO container.** `uv run pytest`, `ruff`, and `mypy` all run natively —
+- **The standard gate needs none of them.** `uv run pytest`, `ruff`, and `mypy` all run natively —
   the whole test suite uses in-memory SQLite (no `conftest.py`, no testcontainers; see
   [.claude/rules/testing.md](.claude/rules/testing.md)). Never start Docker to run tests.
-- **`db` container** is needed only for: `alembic upgrade head` / `--autogenerate` (validating
-  migrations) and any `ibkr-trader ingest|backtest|serve` run against the real Postgres dataset.
-- **`ib-gateway`** (the `ibkr` profile) is needed only for live IBKR API calls (`ibkr-check`,
-  `serve` against the gateway). It's the heaviest container — a full Java GUI + VNC — so it stays
-  down until an IBKR-touching task actually requires it.
+- **`db`** — needed for `alembic upgrade head` / `--autogenerate` and any
+  `ibkr-trader ingest|backtest|serve` run against the real Postgres dataset.
+- **`ib-gateway`** (the `ibkr` profile) — live IBKR API calls (`ibkr-check`, `serve` against the
+  gateway).
+- **`app`** (the `app` profile) — the `ibkr-trader serve` scheduler. Rebuild with `--build` after
+  a code change or the container keeps running the old image.
 
-On-demand pattern — start the one container you need, run, then put it back down:
-
-```bash
-docker compose up -d db && docker compose exec db pg_isready -U trader  # wait for healthy
-uv run alembic upgrade head
-docker compose stop db                                                  # release RAM when done
-```
-
-Use `stop` (not `down`) so the `pgdata` volume and schema survive. If you started a container for
-a task, you own stopping it before you finish.
+Prefer `stop` over `down` so the `pgdata` volume and its schema survive.
 
 ## Architecture
 
