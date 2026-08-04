@@ -1,11 +1,9 @@
 """Tests for the non-trivial helper scripts behind the VS Code tasks.
 
 These scripts used to live in `.vscode/`, which is editor configuration and not a
-script home. Eight Python files were in there, and two of them were load-bearing far
-outside the editor: `task_artifact_runner.py` is what `scripts/lint-all.py` and
-`scripts/run-tests.py` both wrap every invocation in, and `sync_claude_to_agents.py`
-was the real implementation behind the shared `sync-agents` contract path — so the
-workspace's lint, test and agent-context tasks all reached into `.vscode/` to work.
+script home. Eight Python files were in there, and `task_artifact_runner.py` was
+load-bearing far outside the editor: `scripts/lint-all.py` and `scripts/run-tests.py`
+both wrap every invocation in it.
 
 They are in `scripts/` now, with the naming split devkit uses: kebab-case for
 entrypoints, snake_case for anything imported as a module (`ingest_fmp_tickers`, which
@@ -53,7 +51,6 @@ def load_script(name: str) -> ModuleType:
 CONTRACT_ENTRYPOINTS = (
     "run-tests.py",  # Test: Run Suite
     "lint-all.py",  # Lint: Everything / Lint: Changed Files
-    "sync-agents-context.py",  # Agent: Sync CLAUDE -> AGENTS Context
     "vnc-viewer.py",  # IBKR: Open Gateway VNC Viewer
     "ingest-task.py",  # Ingest: Run Source
     "snapshot-monthly.py",  # Snapshot: Run Monthly
@@ -83,12 +80,10 @@ def test_this_repo_ships_no_project_level_tasks():
 def test_no_python_lives_under_dot_vscode():
     """`.vscode/` is editor configuration, not a script home.
 
-    Eight scripts were in there, and the two that mattered most were invisible from the
+    Eight scripts were in there, and the one that mattered most was invisible from the
     outside: `scripts/lint-all.py` and `scripts/run-tests.py` — the paths the SHARED
     workspace tasks call — both wrapped every invocation in `.vscode/
-    task_artifact_runner.py`, and `scripts/sync-agents-context.py` was a runpy shim over
-    `.vscode/sync_claude_to_agents.py`. So three of this project's contract entrypoints
-    silently depended on the editor directory.
+    task_artifact_runner.py`.
     """
     stray = sorted(p.name for p in (REPO_ROOT / ".vscode").glob("*.py"))
     assert stray == [], f"scripts belong in scripts/, not .vscode/: {stray}"
@@ -148,27 +143,6 @@ def test_reorder_todo_moves_complete_items_and_is_idempotent():
         "- [X] completed second\n"
     )
     assert script.reorder(result) == result
-
-
-def test_sync_claude_helpers_copy_content_and_respect_exclusions(monkeypatch, tmp_path):
-    script = load_script("sync-agents-context.py")
-    monkeypatch.setattr(script, "ROOT", tmp_path)
-    (tmp_path / "CLAUDE.md").write_text("root rules", encoding="utf-8")
-    (tmp_path / "nested").mkdir()
-    (tmp_path / "nested" / "claude.md").write_text("nested rules", encoding="utf-8")
-    (tmp_path / ".venv").mkdir()
-    (tmp_path / ".venv" / "CLAUDE.md").write_text("excluded", encoding="utf-8")
-    (tmp_path / ".claude" / "rules").mkdir(parents=True)
-    (tmp_path / ".claude" / "rules" / "testing.md").write_text("test policy", encoding="utf-8")
-
-    assert script.sync_claude_markdown() == 2
-    assert script.sync_claude_config() == 1
-    assert (tmp_path / "AGENTS.md").read_text(encoding="utf-8") == "root rules"
-    assert (tmp_path / "nested" / "AGENTS.md").read_text(encoding="utf-8") == "nested rules"
-    assert not (tmp_path / ".venv" / "AGENTS.md").exists()
-    assert (tmp_path / ".agents" / "rules" / "testing.md").read_text(
-        encoding="utf-8"
-    ) == "test policy"
 
 
 def test_ingest_ticker_helper_continues_after_a_symbol_failure(monkeypatch, tmp_path, capsys):
