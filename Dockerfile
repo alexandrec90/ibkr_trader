@@ -25,8 +25,12 @@ RUN uv sync --frozen --no-dev
 COPY ibkr_trader/alembic.ini ./
 COPY ibkr_trader/migrations ./migrations
 
-# Non-root user
-RUN useradd --create-home appuser
+# Non-root user. /app itself stays root-owned (the code is read-only at runtime), but the
+# scheduler writes its health artifact under /app/logs, so that one directory is handed over —
+# otherwise every write fails with EACCES and `ibkr-trader health` has nothing to read.
+RUN useradd --create-home appuser \
+    && mkdir -p /app/logs \
+    && chown appuser:appuser /app/logs
 USER appuser
 
 CMD ["ibkr-trader", "serve"]

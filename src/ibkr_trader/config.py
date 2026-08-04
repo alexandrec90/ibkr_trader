@@ -86,6 +86,17 @@ class Settings(BaseSettings):
     # pairs from FMP. Runs at startup too, so bars catch up after the machine was off.
     poll_prices_hours: int = 24
     fx_pairs: list[str] = ["USDCAD"]
+    # NewsAPI batch poll. Free tier is ~100 requests/day with articles delayed 24 h, so a 12 h
+    # cadence is the useful maximum: the per-symbol freshness skip means a second daily run
+    # costs almost nothing, while the budget keeps one run from eating the day's quota.
+    poll_newsapi_hours: int = 12
+    newsapi_mapping_file: str = "news-keywords.txt"
+    newsapi_refresh_after_hours: float = 12.0
+    newsapi_max_requests: int = 90
+    # Where `serve` writes per-job outcomes, and how long it waits for the database before
+    # firing the startup jobs. See scheduler.wait_for_database and job_health.
+    scheduler_health_file: str = "logs/scheduler-health.json"
+    db_wait_seconds: float = 120.0
 
     # Registered-account long-term strategy defaults.
     # These are env-overridable deployment defaults; a backtest run pins its own values into

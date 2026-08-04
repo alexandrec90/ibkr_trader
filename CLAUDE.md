@@ -41,7 +41,7 @@ uv run ruff check src tests && uv run ruff format --check src tests
 uv run mypy src
 uv run alembic upgrade head    # apply migrations
 uv run alembic revision --autogenerate -m "msg"
-uv run ibkr-trader --help      # CLI: ingest / backtest / ibkr-check / serve
+uv run ibkr-trader --help      # CLI: ingest / backtest / ibkr-check / serve / health
 ```
 
 The initial schema migration exists and is applied to the dev DB (host port **5433**; 5432 is
@@ -79,21 +79,28 @@ Prefer `stop` over `down` so the `pgdata` volume and its schema survive.
   install means the change is live here immediately, with no reinstall and no lockfile bump.
 - `src/ibkr_trader/scheduler.py` — the APScheduler wiring behind `serve`. **A split
   candidate, deliberately not split yet** — read this before proposing to move it:
-  - Five of its seven jobs are pure data-lake ingestion (`reddit_poll`,
-    `finnhub_news_poll`, `finnhub_backfill`, `trends_poll`, `prices_poll`), each importing
-    straight from `data_lake.ingestion.*`. Those are the movable part.
+  - Six of its eight jobs are pure data-lake ingestion (`reddit_poll`,
+    `finnhub_news_poll`, `newsapi_poll`, `finnhub_backfill`, `trends_poll`, `prices_poll`),
+    each importing straight from `data_lake.ingestion.*`. Those are the movable part.
   - Two are **not** and are what block a wholesale move: `sentiment_score` calls
     `ibkr_trader.signals.sentiment.score_pending`, and `prune_raw` calls
     `ibkr_trader.maintenance.prune_scored_raw`. Moving the file as-is would make
     `data_lake` import this package, which is the one thing it must never do —
     `tests/test_lake_seam.py::test_package_never_imports_a_consumer` over there fails on
     it by filename. **The split, not the move, is the work.**
-  - The real cost is config, not code: `build_scheduler()` reads sixteen fields off
-    `Settings` (`poll_*`, `finnhub_backfill_*`, `prune_raw_*`, `score_sentiment_minutes`,
-    `news_universe_file`, `trends_*`, `fx_pairs`), and **none of them are in
-    `data_lake.settings.LakeSettings`**, which covers provider credentials and archive
-    location only. A scheduler over there needs a `SchedulerSettings` Protocol first —
-    see that repo's `CLAUDE.md` for how to extend the seam.
+  - The real cost is config, not code: `build_scheduler()` reads twenty-one fields off
+    `Settings` (`poll_*`, `newsapi_*`, `finnhub_backfill_*`, `prune_raw_*`,
+    `score_sentiment_minutes`, `news_universe_file`, `trends_*`, `fx_pairs`,
+    `scheduler_health_file`), and **none of them are in `data_lake.settings.LakeSettings`**,
+    which covers provider credentials and archive location only. A scheduler over there
+    needs a `SchedulerSettings` Protocol first — see that repo's `CLAUDE.md` for how to
+    extend the seam.
+  - **A guarded job's failure is invisible unless it is recorded.** `_guard` swallows the
+    exception so one dead source cannot stop the rest, and APScheduler then logs the run as
+    "executed successfully" — which hid a six-day outage (a stopped database) in July 2026.
+    Every run therefore records to `job_health`, which writes `logs/scheduler-health.json`;
+    `ibkr-trader health` reads it and exits non-zero on a failing, stale or never-run job.
+    **Anything added to `_guard` must keep that artifact written on the failure path too.**
   - data-lake also carries no scheduler machinery at all today: no apscheduler
     dependency, no `_guard`-equivalent. The `archive` and `research` extras are the
     pattern to copy for adding one.

@@ -3,23 +3,43 @@
 No trading here — the paper loop stays out until backtests justify it (see TODO §4). Each job
 is wrapped by ``_guard`` so a single failure logs and the scheduler keeps running rather than
 dying. Cadence and rate-limit spacing come from ``Settings`` (all off unless `serve` runs).
+
+Two things ``_guard`` does beyond swallowing the exception, both learned from a six-day silent
+outage (the database was stopped; every run logged "executed successfully" anyway):
+
+- **it records the outcome** to ``job_health``, which persists a parseable artifact that
+  `ibkr-trader health` reads. Swallowing a failure is right; hiding it is not.
+- **it retries a job that failed on a dead database**, instead of leaving a daily job to wait
+  a full day. Only connection-shaped errors are retried — a missing credential will not fix
+  itself in five minutes, so retrying it would just be noise.
 """
 
 import logging
 import time
-from collections.abc import Callable
-from datetime import UTC, datetime
+from collections.abc import Callable, Sequence
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from apscheduler.schedulers.blocking import BlockingScheduler
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
+from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError
 
+from ibkr_trader import job_health
 from ibkr_trader.config import Settings, get_settings
 from ibkr_trader.db.models import Instrument, PriceBar
 from ibkr_trader.db.session import get_session
 from ibkr_trader.maintenance import prune_scored_raw
 
 logger = logging.getLogger(__name__)
+
+#: Failures worth retrying sooner than the next scheduled run: the database was unreachable or
+#: the connection dropped. Anything else (bad credentials, a provider rejecting the request) is
+#: recorded and left to its normal cadence.
+TRANSIENT_ERRORS: tuple[type[BaseException], ...] = (OperationalError, InterfaceError, DBAPIError)
+
+#: Backoff for those retries. Deliberately short-then-long: a container that started before its
+#: database usually recovers within seconds, and a longer outage should not spin.
+RETRY_DELAYS_SECONDS: tuple[int, ...] = (300, 900, 3600)
 
 
 def _read_universe_file(path: str) -> list[str]:
@@ -132,7 +152,7 @@ def poll_newsapi_pairs(
       (bad key / plan limit / quota exhausted), so the run stops instead of failing through
       the whole list. Other per-query failures are logged and skipped.
     """
-    from datetime import UTC, datetime, timedelta
+    from datetime import UTC, datetime
 
     from data_lake.ingestion.news.newsapi import (
         FATAL_STATUSES,
@@ -185,6 +205,31 @@ def poll_newsapi_pairs(
         skipped_fresh,
     )
     return total
+
+
+def poll_newsapi_job(settings: Settings) -> int:
+    """The scheduled NewsAPI job: batch the mapping file, or no-op when it is absent.
+
+    ``poll_newsapi_pairs`` existed with full free-tier protection long before anything called
+    it on a schedule — it was reachable only through `ingest news --mapping-file`, so NewsAPI
+    was a manual source that nobody ran manually.
+    """
+    mapping_file = getattr(settings, "newsapi_mapping_file", "")
+    if not mapping_file or not Path(mapping_file).exists():
+        logger.info("newsapi poll skipped: mapping file %r not present", mapping_file)
+        return 0
+    from data_lake.ingestion.social.google_trends import read_mapping_file
+
+    try:
+        pairs = read_mapping_file(mapping_file)
+    except (OSError, ValueError):
+        logger.warning("newsapi mapping file %r not readable; poll is a no-op", mapping_file)
+        return 0
+    return poll_newsapi_pairs(
+        pairs,
+        refresh_after_hours=settings.newsapi_refresh_after_hours,
+        max_requests=settings.newsapi_max_requests,
+    )
 
 
 def poll_finnhub_news(
@@ -292,7 +337,6 @@ def poll_fx(pairs: list[str]) -> int:
     window by widest coverage, so keeping both current stops a long window from ever
     preferring a stale-but-longer series. Each provider fails independently.
     """
-    from datetime import timedelta
 
     from data_lake.ingestion.market.fmp_fx import FmpFxConnector
     from data_lake.ingestion.market.yahoo_fx import YahooFxConnector
@@ -345,16 +389,114 @@ def run_prune(min_age_days: int) -> dict[str, int]:
     return counts
 
 
-def _guard(job: Callable[[], object], label: str) -> Callable[[], None]:
-    """Wrap a job so an exception is logged, not propagated (keeps the scheduler alive)."""
+def _schedule_retry(
+    scheduler: BlockingScheduler | None,
+    wrapped: Callable[[], None],
+    label: str,
+    attempt: int,
+    retry_delays: Sequence[int],
+) -> bool:
+    """Queue a one-shot retry after a transient failure. Returns whether one was scheduled.
+
+    Without this, a job that fires at startup (prices, the Finnhub backfill) and finds the
+    database still coming up burns its only run and waits a full 24 h — which is exactly how a
+    restart during a database outage cost a day of bars.
+    """
+    if scheduler is None or not retry_delays:
+        return False
+    if attempt > len(retry_delays):
+        logger.error(
+            "job %r has failed %d times in a row; leaving it to its next scheduled run",
+            label,
+            attempt,
+        )
+        return False
+    delay = retry_delays[attempt - 1]
+    try:
+        scheduler.add_job(
+            wrapped,
+            "date",
+            run_date=datetime.now(UTC) + timedelta(seconds=delay),
+            id=f"{label}_retry",
+            replace_existing=True,
+        )
+    except Exception:  # a scheduler that is shutting down, say — never fail the job for this
+        logger.exception("could not schedule a retry for %r", label)
+        return False
+    logger.warning("job %r failed transiently; retrying in %ds (attempt %d)", label, delay, attempt)
+    return True
+
+
+def _guard(
+    job: Callable[[], object],
+    label: str,
+    *,
+    scheduler: BlockingScheduler | None = None,
+    retry_delays: Sequence[int] = RETRY_DELAYS_SECONDS,
+    artifact_path: str = job_health.DEFAULT_ARTIFACT,
+) -> Callable[[], None]:
+    """Wrap a job so an exception is logged and recorded, not propagated.
+
+    Keeping the scheduler alive is the point, but a swallowed failure that leaves no trace is
+    how ingestion died quietly for six days. Every outcome lands in ``job_health`` and is
+    flushed to the health artifact; transient (database-connection) failures also earn a retry.
+    """
 
     def wrapped() -> None:
         try:
-            job()
-        except Exception:
+            result = job()
+        except Exception as exc:
             logger.exception("scheduled job %r failed", label)
+            attempt = job_health.record_failure(label, exc)
+            if isinstance(exc, TRANSIENT_ERRORS):
+                _schedule_retry(scheduler, wrapped, label, attempt, retry_delays)
+        else:
+            job_health.record_success(label, result)
+        job_health.write_artifact(artifact_path)
 
     return wrapped
+
+
+def wait_for_database(
+    timeout_seconds: float = 120.0,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+    now: Callable[[], float] = time.monotonic,
+) -> bool:
+    """Block until the database answers ``SELECT 1``, or the timeout expires. Never raises.
+
+    Compose's ``depends_on: service_healthy`` only orders a ``compose up``; when the daemon
+    restarts containers after a reboot the app can come back before its database. The jobs that
+    fire at startup would then fail instantly, so this gives them something to start against.
+    A ``False`` return is not fatal — jobs retry — but it is worth one loud log line.
+    """
+    deadline = now() + timeout_seconds
+    delay = 1.0
+    attempts = 0
+    while True:
+        attempts += 1
+        try:
+            with get_session() as session:
+                session.execute(text("SELECT 1"))
+        except Exception as exc:
+            remaining = deadline - now()
+            if remaining <= 0:
+                logger.error(
+                    "database still unreachable after %.0fs (%d attempts): %s",
+                    timeout_seconds,
+                    attempts,
+                    exc,
+                )
+                return False
+            logger.warning(
+                "database not ready (attempt %d): %s; retrying in %.0fs", attempts, exc, delay
+            )
+            sleep(min(delay, remaining))
+            delay = min(delay * 2, 15.0)
+        else:
+            if attempts > 1:
+                logger.info("database reachable after %d attempt(s)", attempts)
+            return True
 
 
 def build_scheduler(
@@ -370,75 +512,100 @@ def build_scheduler(
     configure_lake()
     settings = settings or get_settings()
     scheduler = scheduler or BlockingScheduler(timezone="UTC")
+    artifact_path = getattr(settings, "scheduler_health_file", job_health.DEFAULT_ARTIFACT)
+    # Carry the previous process's history forward: a restart is not evidence that anything
+    # ingested, and a registry that starts empty reports every job as never-run for a full
+    # cadence afterwards.
+    job_health.seed_from_artifact(artifact_path)
 
-    scheduler.add_job(
-        _guard(poll_reddit, "reddit"),
-        "interval",
-        minutes=settings.poll_reddit_minutes,
-        id="reddit_poll",
-    )
-    scheduler.add_job(
-        _guard(
-            lambda: poll_finnhub_news(
-                settings.news_universe_file, settings.finnhub_request_spacing_seconds
-            ),
-            "finnhub_news",
+    def register(
+        job_id: str,
+        label: str,
+        job: Callable[[], object],
+        *,
+        seconds: float,
+        start_now: bool = False,
+    ) -> None:
+        """Add one guarded interval job, and tell ``job_health`` what cadence to expect."""
+        job_health.record_schedule(label, seconds)
+        extra = {"next_run_time": datetime.now(UTC)} if start_now else {}
+        scheduler.add_job(
+            _guard(job, label, scheduler=scheduler, artifact_path=artifact_path),
+            "interval",
+            seconds=seconds,
+            id=job_id,
+            **extra,
+        )
+
+    register("reddit_poll", "reddit", poll_reddit, seconds=settings.poll_reddit_minutes * 60)
+    register(
+        "finnhub_news_poll",
+        "finnhub_news",
+        lambda: poll_finnhub_news(
+            settings.news_universe_file, settings.finnhub_request_spacing_seconds
         ),
-        "interval",
-        hours=settings.poll_finnhub_news_hours,
-        id="finnhub_news_poll",
+        seconds=settings.poll_finnhub_news_hours * 3600,
     )
-    scheduler.add_job(
-        _guard(lambda: poll_trends_job(settings), "trends"),
-        "interval",
-        hours=settings.poll_trends_hours,
-        id="trends_poll",
+    register(
+        "newsapi_poll",
+        "newsapi",
+        lambda: poll_newsapi_job(settings),
+        seconds=settings.poll_newsapi_hours * 3600,
     )
-    scheduler.add_job(
-        _guard(lambda: run_prune(settings.prune_raw_min_age_days), "prune"),
-        "interval",
-        hours=settings.prune_raw_hours,
-        id="prune_raw",
+    register(
+        "trends_poll",
+        "trends",
+        lambda: poll_trends_job(settings),
+        seconds=settings.poll_trends_hours * 3600,
     )
-    scheduler.add_job(
-        _guard(
-            lambda: backfill_finnhub_news(
-                settings.news_universe_file,
-                backfill_days=settings.finnhub_backfill_days,
-                chunk_days=settings.finnhub_backfill_chunk_days,
-                max_requests=settings.finnhub_backfill_max_requests,
-                request_spacing_seconds=settings.finnhub_request_spacing_seconds,
-            ),
-            "finnhub_backfill",
+    register(
+        "prune_raw",
+        "prune",
+        lambda: run_prune(settings.prune_raw_min_age_days),
+        seconds=settings.prune_raw_hours * 3600,
+    )
+    register(
+        "finnhub_backfill",
+        "finnhub_backfill",
+        lambda: backfill_finnhub_news(
+            settings.news_universe_file,
+            backfill_days=settings.finnhub_backfill_days,
+            chunk_days=settings.finnhub_backfill_chunk_days,
+            max_requests=settings.finnhub_backfill_max_requests,
+            request_spacing_seconds=settings.finnhub_request_spacing_seconds,
         ),
-        "interval",
-        hours=settings.finnhub_backfill_hours,
+        seconds=settings.finnhub_backfill_hours * 3600,
         # Interval jobs first fire one interval after start; the backfill also fires on startup
         # (free-tier history rolls off daily, and a completed backfill makes this near-free).
-        next_run_time=datetime.now(UTC),
-        id="finnhub_backfill",
+        start_now=True,
     )
-    scheduler.add_job(
-        _guard(run_sentiment_scoring, "sentiment"),
-        "interval",
-        minutes=settings.score_sentiment_minutes,
-        id="sentiment_score",
+    register(
+        "sentiment_score",
+        "sentiment",
+        run_sentiment_scoring,
+        seconds=settings.score_sentiment_minutes * 60,
     )
-    scheduler.add_job(
-        _guard(lambda: poll_prices_job(settings), "prices"),
-        "interval",
-        hours=settings.poll_prices_hours,
+    register(
+        "prices_poll",
+        "prices",
+        lambda: poll_prices_job(settings),
+        seconds=settings.poll_prices_hours * 3600,
         # Also fires on startup: bars go stale whenever the machine was off, and the
         # incremental fetch makes an already-current run nearly free.
-        next_run_time=datetime.now(UTC),
-        id="prices_poll",
+        start_now=True,
     )
+    job_health.write_artifact(artifact_path)
     return scheduler
 
 
 def serve() -> None:  # pragma: no cover - blocking loop, exercised via build_scheduler in tests
     """Start the long-running scheduler (blocks). Ctrl-C to stop."""
     logging.basicConfig(level=logging.INFO)
-    scheduler = build_scheduler()
+    settings = get_settings()
+    # Before the startup jobs fire, not after: they get one shot each and a daily cadence, so
+    # firing them against a database that is still booting costs a full day of data.
+    if not wait_for_database(settings.db_wait_seconds):
+        logger.error("serve: starting anyway; jobs will retry, but check the database")
+    scheduler = build_scheduler(settings=settings)
     logger.info("serve: starting scheduler with jobs %s", [job.id for job in scheduler.get_jobs()])
     scheduler.start()

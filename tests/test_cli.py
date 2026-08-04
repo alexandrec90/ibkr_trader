@@ -1173,3 +1173,115 @@ def test_report_writes_html_file(monkeypatch, tmp_path):
     assert result.exit_code == 0, _all_output(result)
     assert out.read_text(encoding="utf-8") == "<html>ok</html>"
     assert f"wrote {out}" in result.output
+
+
+# --- health -----------------------------------------------------------------------------
+# `serve` swallows job failures by design; this command is the only thing that reports them.
+
+
+def _health_artifact(tmp_path, jobs):
+    from ibkr_trader import job_health
+
+    job_health.reset()
+    for name, spec in jobs.items():
+        job_health.record_schedule(name, spec["interval"])
+        if spec.get("error"):
+            job_health.record_failure(name, RuntimeError(spec["error"]))
+        elif spec.get("ok"):
+            job_health.record_success(name, spec.get("result"))
+    target = tmp_path / "health.json"
+    job_health.write_artifact(target)
+    job_health.reset()
+    return target
+
+
+def test_health_reports_all_green(tmp_path):
+    artifact = _health_artifact(
+        tmp_path, {"prices": {"interval": 86400, "ok": True, "result": 809}}
+    )
+    result = runner.invoke(cli.app, ["health", "--artifact", str(artifact)])
+
+    assert result.exit_code == 0, _all_output(result)
+    assert "all jobs healthy" in result.output
+    assert "809" in result.output
+    # Timestamps in the table are rendered to the second so they fit their column instead of
+    # running into the next one (a full ISO stamp is 32 chars and used to overflow). The
+    # artifact header above the table still prints the full stamp.
+    row = next(line for line in result.output.splitlines() if line.startswith("prices"))
+    assert re.search(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\s+\d{4}-\d{2}-\d{2} ", row)
+    assert "+00:00" not in row
+
+
+def test_health_exits_nonzero_when_a_job_is_failing(tmp_path):
+    artifact = _health_artifact(
+        tmp_path,
+        {
+            "prices": {"interval": 86400, "ok": True},
+            "reddit": {"interval": 1800, "error": "REDDIT_CLIENT_ID/SECRET not set"},
+        },
+    )
+    result = runner.invoke(cli.app, ["health", "--artifact", str(artifact)])
+
+    assert result.exit_code == 1
+    assert "failing" in result.output
+    assert "reddit" in _all_output(result)
+
+
+def test_health_ignore_excludes_a_known_broken_job_from_the_exit_code(tmp_path):
+    """Reddit is awaiting API credentials; it must not mask the health of everything else."""
+    artifact = _health_artifact(
+        tmp_path,
+        {
+            "prices": {"interval": 86400, "ok": True},
+            "reddit": {"interval": 1800, "error": "REDDIT_CLIENT_ID/SECRET not set"},
+        },
+    )
+    result = runner.invoke(cli.app, ["health", "--artifact", str(artifact), "--ignore", "reddit"])
+
+    assert result.exit_code == 0, _all_output(result)
+    assert "(ignored)" in result.output
+    # the marker must not run into the next column (it did, at the original width)
+    assert "(ignored)never" not in result.output
+
+
+def test_health_shows_a_job_that_succeeds_without_ingesting(tmp_path):
+    """The finnhub-news case: green on every run, two weeks since it last stored a row."""
+    from ibkr_trader import job_health
+
+    job_health.reset()
+    job_health.record_schedule("finnhub_news", 21600)
+    job_health.record_success("finnhub_news", 0)
+    artifact = tmp_path / "health.json"
+    job_health.write_artifact(artifact)
+    job_health.reset()
+
+    result = runner.invoke(cli.app, ["health", "--artifact", str(artifact)])
+
+    assert result.exit_code == 0  # succeeding is not a failure; it is still worth seeing
+    assert "last wrote" in result.output
+    assert "never" in result.output
+
+
+def test_health_flags_a_job_that_never_ran(tmp_path):
+    artifact = _health_artifact(tmp_path, {"newsapi": {"interval": 43200}})
+    result = runner.invoke(cli.app, ["health", "--artifact", str(artifact)])
+
+    assert result.exit_code == 1
+    assert "never-run" in result.output
+
+
+def test_health_reports_a_missing_artifact_clearly(tmp_path):
+    result = runner.invoke(cli.app, ["health", "--artifact", str(tmp_path / "absent.json")])
+
+    assert result.exit_code == 1
+    assert "cannot read the health artifact" in _all_output(result)
+
+
+def test_health_json_output_is_machine_readable(tmp_path):
+    import json
+
+    artifact = _health_artifact(tmp_path, {"prices": {"interval": 86400, "ok": True}})
+    result = runner.invoke(cli.app, ["health", "--artifact", str(artifact), "--json"])
+
+    assert result.exit_code == 0, _all_output(result)
+    assert json.loads(result.output)["jobs"]["prices"]["last_success"]
