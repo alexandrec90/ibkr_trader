@@ -94,7 +94,14 @@ services:
       - ./tickers.txt:/app/tickers.txt:ro
       - ./trends-keywords.txt:/app/trends-keywords.txt:ro
       - ./news-keywords.txt:/app/news-keywords.txt:ro
+      # The scheduler's health artifact, which `ibkr-trader health` reads. A named volume, not
+      # a path inside the container: `up --build` RECREATES the container, so an artifact
+      # living in the image's filesystem is destroyed on every deploy and every job reads back
+      # as "never-run" for a full cadence afterwards. Named (not bind-mounted) so the
+      # directory keeps the image's appuser ownership — see the chown in the Dockerfile.
+      - applogs:/app/logs
     command: ["ibkr-trader", "serve"]
 
 volumes:
   pgdata:
+  applogs:

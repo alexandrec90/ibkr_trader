@@ -1,11 +1,17 @@
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
-from ibkr_trader import scheduler
+from ibkr_trader import job_health, scheduler
 
 
 def _settings(**overrides):
     base = dict(
+        poll_newsapi_hours=12,
+        newsapi_mapping_file="",
+        newsapi_refresh_after_hours=12.0,
+        newsapi_max_requests=90,
+        scheduler_health_file="",
+        db_wait_seconds=120.0,
         poll_reddit_minutes=30,
         poll_finnhub_news_hours=6,
         poll_trends_hours=24,
@@ -33,6 +39,7 @@ def test_build_scheduler_registers_all_jobs_with_configured_intervals():
     assert set(jobs) == {
         "reddit_poll",
         "finnhub_news_poll",
+        "newsapi_poll",
         "trends_poll",
         "prune_raw",
         "finnhub_backfill",
@@ -41,6 +48,7 @@ def test_build_scheduler_registers_all_jobs_with_configured_intervals():
     }
     assert jobs["reddit_poll"].trigger.interval == timedelta(minutes=30)
     assert jobs["finnhub_news_poll"].trigger.interval == timedelta(hours=6)
+    assert jobs["newsapi_poll"].trigger.interval == timedelta(hours=12)
     assert jobs["trends_poll"].trigger.interval == timedelta(hours=24)
     assert jobs["prune_raw"].trigger.interval == timedelta(hours=24)
     assert jobs["finnhub_backfill"].trigger.interval == timedelta(hours=24)
@@ -55,6 +63,38 @@ def test_backfill_job_also_fires_on_startup():
     sched = scheduler.build_scheduler(settings=_settings())
     jobs = {job.id: job for job in sched.get_jobs()}
     assert jobs["finnhub_backfill"].next_run_time is not None
+
+
+def test_newsapi_is_actually_scheduled():
+    """It was implemented, tested and reachable only by hand — so it never ran. Regression."""
+    sched = scheduler.build_scheduler(settings=_settings())
+    assert "newsapi_poll" in {job.id for job in sched.get_jobs()}
+
+
+def test_build_scheduler_declares_each_job_cadence_for_staleness_checks():
+    job_health.reset()
+    scheduler.build_scheduler(settings=_settings())
+
+    recorded = job_health.snapshot()["jobs"]
+    assert recorded["prices"]["interval_seconds"] == 24 * 3600
+    assert recorded["reddit"]["interval_seconds"] == 30 * 60
+    assert recorded["newsapi"]["interval_seconds"] == 12 * 3600
+
+
+def test_build_scheduler_restores_history_from_a_previous_run(tmp_path):
+    """A `serve` restart must not blank the record of what each job last did."""
+    artifact = tmp_path / "health.json"
+    job_health.reset()
+    job_health.record_success("prices", 6207)
+    job_health.write_artifact(artifact)
+    job_health.reset()
+
+    scheduler.build_scheduler(settings=_settings(scheduler_health_file=str(artifact)))
+
+    entry = job_health.snapshot()["jobs"]["prices"]
+    assert entry["last_success"] is not None
+    assert entry["last_wrote"] is not None
+    assert entry["interval_seconds"] == 24 * 3600  # and the current cadence still wins
 
 
 def test_build_scheduler_honours_overridden_cadence():
@@ -543,11 +583,271 @@ def test_guard_swallows_and_logs_exceptions():
     def boom():
         raise RuntimeError("nope")
 
-    guarded = scheduler._guard(boom, "boom_job")
+    guarded = scheduler._guard(boom, "boom_job", artifact_path="")
     guarded()  # must not raise
 
 
 def test_guard_runs_the_job():
     ran = {}
-    scheduler._guard(lambda: ran.setdefault("x", 1), "ok")()
+    scheduler._guard(lambda: ran.setdefault("x", 1), "ok", artifact_path="")()
     assert ran == {"x": 1}
+
+
+# --- health recording -------------------------------------------------------------------
+# The regression these cover: a guarded job that raises used to leave nothing behind except a
+# log line that APScheduler immediately followed with "executed successfully".
+
+
+def test_guard_records_a_success_with_its_result():
+    job_health.reset()
+    scheduler._guard(lambda: 809, "prices", artifact_path="")()
+
+    entry = job_health.snapshot()["jobs"]["prices"]
+    assert entry["last_success"] is not None
+    assert entry["last_result"] == "809"
+
+
+def test_guard_records_a_failure_with_its_error():
+    job_health.reset()
+
+    def boom():
+        raise RuntimeError("db is gone")
+
+    scheduler._guard(boom, "prices", artifact_path="")()
+
+    entry = job_health.snapshot()["jobs"]["prices"]
+    assert entry["consecutive_failures"] == 1
+    assert entry["last_error"] == "RuntimeError: db is gone"
+    assert entry["last_success"] is None
+
+
+def test_guard_writes_the_health_artifact_after_a_failed_run(tmp_path):
+    """The artifact has to be written on failure too, not only on success."""
+    job_health.reset()
+    artifact = tmp_path / "health.json"
+
+    def boom():
+        raise RuntimeError("db is gone")
+
+    scheduler._guard(boom, "prices", artifact_path=str(artifact))()
+
+    assert job_health.load_artifact(artifact)["jobs"]["prices"]["last_error"]
+
+
+# --- transient-failure retry ------------------------------------------------------------
+
+
+class _FakeScheduler:
+    """Records add_job calls; enough surface for the retry path."""
+
+    def __init__(self):
+        self.jobs = []
+
+    def add_job(self, func, trigger=None, **kwargs):
+        self.jobs.append({"func": func, "trigger": trigger, **kwargs})
+
+
+def _operational_error():
+    from sqlalchemy.exc import OperationalError
+
+    return OperationalError("SELECT 1", {}, Exception("could not translate host name 'db'"))
+
+
+def test_guard_retries_a_database_failure_instead_of_waiting_a_full_interval():
+    """The 24 h-gap bug: a startup job that met a booting database waited a whole day."""
+    job_health.reset()
+    fake = _FakeScheduler()
+
+    def boom():
+        raise _operational_error()
+
+    scheduler._guard(boom, "prices", scheduler=fake, artifact_path="")()
+
+    assert len(fake.jobs) == 1
+    retry = fake.jobs[0]
+    assert retry["trigger"] == "date"
+    assert retry["id"] == "prices_retry"
+    assert retry["replace_existing"] is True
+
+
+def test_retry_delay_backs_off_with_each_consecutive_failure():
+    job_health.reset()
+    fake = _FakeScheduler()
+
+    def boom():
+        raise _operational_error()
+
+    guarded = scheduler._guard(
+        boom, "prices", scheduler=fake, retry_delays=(300, 900), artifact_path=""
+    )
+    guarded()
+    guarded()
+
+    gaps = [(job["run_date"] - datetime.now(UTC)).total_seconds() for job in fake.jobs]
+    assert 280 < gaps[0] < 310  # ~5 min
+    assert 880 < gaps[1] < 910  # ~15 min
+
+
+def test_retries_stop_after_the_delay_list_is_exhausted():
+    """Otherwise a permanently dead database would be retried forever."""
+    job_health.reset()
+    fake = _FakeScheduler()
+
+    def boom():
+        raise _operational_error()
+
+    guarded = scheduler._guard(
+        boom, "prices", scheduler=fake, retry_delays=(300,), artifact_path=""
+    )
+    guarded()
+    guarded()
+    guarded()
+
+    assert len(fake.jobs) == 1  # only the first failure earned a retry
+
+
+def test_a_non_transient_failure_is_not_retried():
+    """A missing credential will not fix itself in five minutes; retrying is just noise."""
+    job_health.reset()
+    fake = _FakeScheduler()
+
+    def boom():
+        raise RuntimeError("REDDIT_CLIENT_ID/SECRET not set")
+
+    scheduler._guard(boom, "reddit", scheduler=fake, artifact_path="")()
+
+    assert fake.jobs == []
+
+
+def test_a_successful_run_clears_the_streak_so_retries_start_over():
+    job_health.reset()
+    fake = _FakeScheduler()
+    outcomes = [_operational_error(), None, _operational_error()]
+
+    def flaky():
+        result = outcomes.pop(0)
+        if result is not None:
+            raise result
+
+    guarded = scheduler._guard(flaky, "prices", scheduler=fake, artifact_path="")
+    guarded()
+    guarded()
+    guarded()
+
+    gaps = [(job["run_date"] - datetime.now(UTC)).total_seconds() for job in fake.jobs]
+    assert len(gaps) == 2
+    assert 280 < gaps[1] < 310  # back to the first delay, not escalated
+
+
+def test_guard_without_a_scheduler_still_records_the_failure():
+    job_health.reset()
+
+    def boom():
+        raise _operational_error()
+
+    scheduler._guard(boom, "prices", scheduler=None, artifact_path="")()  # must not raise
+    assert job_health.snapshot()["jobs"]["prices"]["consecutive_failures"] == 1
+
+
+# --- startup database wait --------------------------------------------------------------
+
+
+def test_wait_for_database_returns_immediately_when_reachable(monkeypatch):
+    from contextlib import contextmanager
+
+    @contextmanager
+    def ok_session():
+        yield SimpleNamespace(execute=lambda _stmt: None)
+
+    monkeypatch.setattr(scheduler, "get_session", ok_session)
+    slept: list[float] = []
+
+    assert scheduler.wait_for_database(60.0, sleep=slept.append) is True
+    assert slept == []
+
+
+def test_wait_for_database_retries_until_the_database_answers(monkeypatch):
+    from contextlib import contextmanager
+
+    attempts = {"n": 0}
+
+    @contextmanager
+    def flaky_session():
+        attempts["n"] += 1
+        if attempts["n"] < 3:
+            raise _operational_error()
+        yield SimpleNamespace(execute=lambda _stmt: None)
+
+    monkeypatch.setattr(scheduler, "get_session", flaky_session)
+    slept: list[float] = []
+
+    assert scheduler.wait_for_database(60.0, sleep=slept.append) is True
+    assert attempts["n"] == 3
+    assert slept == [1.0, 2.0]  # exponential backoff between probes
+
+
+def test_wait_for_database_gives_up_at_the_timeout(monkeypatch):
+    from contextlib import contextmanager
+
+    @contextmanager
+    def dead_session():
+        raise _operational_error()
+        yield  # pragma: no cover - unreachable, keeps this a generator
+
+    clock = {"t": 0.0}
+
+    def fake_now():
+        return clock["t"]
+
+    def fake_sleep(seconds):
+        clock["t"] += seconds
+
+    monkeypatch.setattr(scheduler, "get_session", dead_session)
+
+    assert scheduler.wait_for_database(10.0, sleep=fake_sleep, now=fake_now) is False
+
+
+def test_wait_for_database_never_raises(monkeypatch):
+    """A surprising error here must not stop `serve` from starting — jobs retry anyway."""
+    from contextlib import contextmanager
+
+    @contextmanager
+    def exploding_session():
+        raise ValueError("something unexpected")
+        yield  # pragma: no cover - unreachable, keeps this a generator
+
+    monkeypatch.setattr(scheduler, "get_session", exploding_session)
+
+    assert scheduler.wait_for_database(0.0, sleep=lambda _s: None) is False
+
+
+# --- the newsapi job --------------------------------------------------------------------
+
+
+def test_poll_newsapi_job_batches_the_mapping_file(monkeypatch, tmp_path):
+    mapping = tmp_path / "news-keywords.txt"
+    mapping.write_text("AAPL,Apple Inc\nNVDA,Nvidia\n", encoding="utf-8")
+    seen = {}
+
+    def fake_pairs(pairs, refresh_after_hours=0.0, max_requests=0):
+        seen.update(pairs=pairs, refresh=refresh_after_hours, budget=max_requests)
+        return 11
+
+    monkeypatch.setattr(scheduler, "poll_newsapi_pairs", fake_pairs)
+    settings = _settings(
+        newsapi_mapping_file=str(mapping), newsapi_refresh_after_hours=8.0, newsapi_max_requests=50
+    )
+
+    assert scheduler.poll_newsapi_job(settings) == 11
+    assert seen["pairs"] == [("AAPL", "Apple Inc"), ("NVDA", "Nvidia")]
+    assert seen["refresh"] == 8.0
+    assert seen["budget"] == 50
+
+
+def test_poll_newsapi_job_missing_mapping_file_is_noop(tmp_path):
+    settings = _settings(newsapi_mapping_file=str(tmp_path / "absent.txt"))
+    assert scheduler.poll_newsapi_job(settings) == 0
+
+
+def test_poll_newsapi_job_unset_mapping_file_is_noop():
+    assert scheduler.poll_newsapi_job(_settings(newsapi_mapping_file="")) == 0

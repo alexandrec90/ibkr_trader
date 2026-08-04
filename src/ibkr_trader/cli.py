@@ -1229,14 +1229,95 @@ def report(
 def serve():
     """Long-running mode: APScheduler jobs for periodic ingestion, scoring and raw pruning.
 
-    Polls Reddit / Finnhub news / Google Trends on the cadence in Settings, backfills Finnhub
-    news history to the free-tier floor, scores unscored rows, and drops the ``raw``
+    Polls Reddit / Finnhub news / NewsAPI / Google Trends on the cadence in Settings, backfills
+    Finnhub news history to the free-tier floor, scores unscored rows, and drops the ``raw``
     blob on rows already sentiment-scored. No trading loop — that stays out until backtests +
     paper validation justify it. Blocks; Ctrl-C to stop.
+
+    Waits for the database before the startup jobs fire, and records every job's outcome to the
+    health artifact — check it with `ibkr-trader health`, since a failing job is deliberately
+    not fatal here and will not stand out in the log.
     """
     from ibkr_trader.scheduler import serve as run_scheduler
 
     run_scheduler()
+
+
+@app.command()
+def health(
+    artifact: str = typer.Option("", help="health artifact path (default: from Settings)"),
+    ignore: list[str] = typer.Option(
+        [], "--ignore", help="job name to exclude from the exit code (repeatable)"
+    ),
+    as_json: bool = typer.Option(False, "--json", help="print the raw artifact instead"),
+):
+    """Report what each `serve` job last did — 'is ingestion actually pulling data?'.
+
+    Reads the artifact `serve` writes after every job run. Exits 1 if any job is failing, stale
+    or has never run, so it doubles as a check: a scheduler whose jobs all error still logs
+    "executed successfully" per run, which is precisely how a dead pipeline went unnoticed for
+    six days. Use --ignore for a job that is known-broken and being tracked elsewhere.
+
+    Read the "last wrote" column separately from "last success": a poll whose provider answers
+    200 OK with an empty list succeeds forever while ingesting nothing, and only that column
+    shows it. It is not part of the exit code — plenty of runs legitimately write zero rows.
+    """
+    import json
+    from datetime import UTC, datetime
+
+    from ibkr_trader import job_health
+    from ibkr_trader.config import get_settings
+
+    path = artifact or get_settings().scheduler_health_file
+    try:
+        payload = job_health.load_artifact(path)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"error: cannot read the health artifact at {path}: {exc}", err=True)
+        typer.echo("is `serve` running? it writes this file after each job.", err=True)
+        raise typer.Exit(code=1) from None
+
+    if as_json:
+        typer.echo(json.dumps(payload, indent=2, sort_keys=True))
+        raise typer.Exit(code=0)
+
+    jobs = payload.get("jobs", {})
+    if not jobs:
+        typer.echo(f"{path}: no jobs recorded yet")
+        raise typer.Exit(code=1)
+
+    def stamp(value):
+        """`2026-08-04T22:28:45.608831+00:00` -> `2026-08-04 22:28:45` (the column is 20 wide)."""
+        if not value:
+            return "never"
+        try:
+            return datetime.fromisoformat(str(value)).strftime("%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return str(value)[:19]
+
+    now = datetime.now(UTC)
+    ignored = {name.strip() for name in ignore if name.strip()}
+    typer.echo(f"health artifact: {path} (written {payload.get('written_at', '?')})")
+    typer.echo(
+        f"{'job':<18}{'status':<20}{'last success':<21}{'last wrote':<21}"
+        f"{'runs':>6}{'fails':>7}  last result/error"
+    )
+    unhealthy: list[str] = []
+    for name, entry in sorted(jobs.items()):
+        status = job_health.status_for(entry, now=now)
+        if status != "ok" and name not in ignored:
+            unhealthy.append(name)
+        detail = entry.get("last_error") or entry.get("last_result") or ""
+        mark = " (ignored)" if name in ignored and status != "ok" else ""
+        typer.echo(
+            f"{name:<18}{status + mark:<20}{stamp(entry.get('last_success')):<21}"
+            f"{stamp(entry.get('last_wrote')):<21}"
+            f"{entry.get('runs', 0):>6}{entry.get('failures', 0):>7}  {str(detail)[:70]}"
+        )
+
+    if unhealthy:
+        typer.echo(f"\nunhealthy: {', '.join(unhealthy)}", err=True)
+        raise typer.Exit(code=1)
+    typer.echo("\nall jobs healthy")
 
 
 if __name__ == "__main__":

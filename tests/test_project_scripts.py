@@ -77,6 +77,22 @@ def test_teardown_never_destroys_volumes():
         assert not ({"-v", "--volumes"} & set(docker_down.compose_argv(profiles)))
 
 
+def test_health_artifact_survives_a_container_rebuild():
+    """`up --build` recreates the app container, wiping anything in the image's filesystem.
+
+    The scheduler's health artifact has to outlive that or every deploy resets each job to
+    "never-run" for a full cadence, which is exactly as uninformative as the silent failures
+    it exists to surface. A named volume keeps it (and keeps the appuser ownership the
+    Dockerfile sets, which a bind mount would not).
+    """
+    import yaml
+
+    compose = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+
+    assert "applogs" in compose["volumes"]
+    assert "applogs:/app/logs" in compose["services"]["app"]["volumes"]
+
+
 def test_db_only_teardown_leaves_the_profiled_services_alone():
     assert docker_down.compose_argv(()) == ["docker", "compose", "down"]
 
