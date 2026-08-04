@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Read(//c/Users/Administrator/.claude/**)",
-      "Read(//c/ProgramData/ClaudeCode/**)",
-      "Read(//Library/Application Support/ClaudeCode/**)"
-    ]
-  }
-}
