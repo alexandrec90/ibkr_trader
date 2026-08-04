@@ -77,6 +77,26 @@ Prefer `stop` over `down` so the `pgdata` volume and its schema survive.
   `data_lake.configure(...)`, called from the CLI's root callback and `build_scheduler()`.
   Changing a connector means editing `../data-lake` and committing **there** — the editable
   install means the change is live here immediately, with no reinstall and no lockfile bump.
+- `src/ibkr_trader/scheduler.py` — the APScheduler wiring behind `serve`. **A split
+  candidate, deliberately not split yet** — read this before proposing to move it:
+  - Five of its seven jobs are pure data-lake ingestion (`reddit_poll`,
+    `finnhub_news_poll`, `finnhub_backfill`, `trends_poll`, `prices_poll`), each importing
+    straight from `data_lake.ingestion.*`. Those are the movable part.
+  - Two are **not** and are what block a wholesale move: `sentiment_score` calls
+    `ibkr_trader.signals.sentiment.score_pending`, and `prune_raw` calls
+    `ibkr_trader.maintenance.prune_scored_raw`. Moving the file as-is would make
+    `data_lake` import this package, which is the one thing it must never do —
+    `tests/test_lake_seam.py::test_package_never_imports_a_consumer` over there fails on
+    it by filename. **The split, not the move, is the work.**
+  - The real cost is config, not code: `build_scheduler()` reads sixteen fields off
+    `Settings` (`poll_*`, `finnhub_backfill_*`, `prune_raw_*`, `score_sentiment_minutes`,
+    `news_universe_file`, `trends_*`, `fx_pairs`), and **none of them are in
+    `data_lake.settings.LakeSettings`**, which covers provider credentials and archive
+    location only. A scheduler over there needs a `SchedulerSettings` Protocol first —
+    see that repo's `CLAUDE.md` for how to extend the seam.
+  - data-lake also carries no scheduler machinery at all today: no apscheduler
+    dependency, no `_guard`-equivalent. The `archive` and `research` extras are the
+    pattern to copy for adding one.
 - `src/ibkr_trader/signals/` — features + `Predictor` ABC. Reads/writes DB only.
 - `src/ibkr_trader/backtest/` — engine (costs are first-class, no look-ahead) + metrics.
   DB only, no network.
