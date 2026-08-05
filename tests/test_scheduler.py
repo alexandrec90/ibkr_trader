@@ -1,6 +1,9 @@
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
+import pytest
+from sqlalchemy.exc import OperationalError
+
 from ibkr_trader import job_health, scheduler
 
 
@@ -334,6 +337,76 @@ def test_poll_finnhub_news_skips_a_failing_symbol(monkeypatch, tmp_path):
 
     total = scheduler.poll_finnhub_news(str(universe), 0.0, sleep=lambda _s: None)
     assert total == 2  # AAPL + MSFT, BAD swallowed
+
+
+# --- a swallowed error for EVERY item must still fail the job ---------------------------
+# The actual cause of two weeks of stale Finnhub news: the database was unreachable, all 190
+# symbols failed their write, and the poll reported "upserted 0 articles across 190 symbols".
+
+
+def test_poll_finnhub_news_fails_when_every_symbol_failed(monkeypatch, tmp_path):
+    universe = tmp_path / "u.txt"
+    universe.write_text("aapl\nmsft\ngoog\n")
+    from data_lake.ingestion.news.finnhub_news import FinnhubNewsConnector
+
+    def dead_db(self, symbol="", **kw):
+        raise _operational_error()
+
+    monkeypatch.setattr(FinnhubNewsConnector, "fetch", dead_db)
+
+    with pytest.raises(OperationalError):  # the type survives, so _guard still retries it
+        scheduler.poll_finnhub_news(str(universe), 0.0, sleep=lambda _s: None)
+
+
+def test_poll_finnhub_news_still_tolerates_a_partial_failure(monkeypatch, tmp_path):
+    """One dead ticker must stay a skip — that is what the per-symbol catch is for."""
+    universe = tmp_path / "u.txt"
+    universe.write_text("aapl\nbad\nmsft\n")
+    from data_lake.ingestion.news.finnhub_news import FinnhubNewsConnector
+
+    def fake_fetch(self, symbol="", **kw):
+        if symbol == "BAD":
+            raise RuntimeError("provider blew up")
+        return 1
+
+    monkeypatch.setattr(FinnhubNewsConnector, "fetch", fake_fetch)
+    assert scheduler.poll_finnhub_news(str(universe), 0.0, sleep=lambda _s: None) == 2
+
+
+def test_poll_finnhub_news_empty_universe_does_not_fail():
+    """Zero symbols is not "everything failed"; it is nothing to do."""
+    assert scheduler.poll_finnhub_news("", 0.0, sleep=lambda _s: None) == 0
+
+
+def test_poll_yahoo_prices_fails_when_every_symbol_failed(monkeypatch):
+    from data_lake.ingestion.market.yahoo import YahooConnector
+
+    scope = _sqlite_session_scope()
+    monkeypatch.setattr(scheduler, "get_session", scope)
+    monkeypatch.setattr(
+        "data_lake.ingestion.market.yahoo_common.tracked_yahoo_symbols",
+        lambda session: ["AAPL", "MSFT"],
+    )
+
+    def dead_db(self, symbol="", **kwargs):
+        raise _operational_error()
+
+    monkeypatch.setattr(YahooConnector, "fetch", dead_db)
+
+    with pytest.raises(OperationalError):
+        scheduler.poll_yahoo_prices()
+
+
+def test_poll_trends_pairs_fails_when_every_keyword_failed(monkeypatch):
+    from data_lake.ingestion.social.google_trends import GoogleTrendsConnector
+
+    def dead_db(self, keywords=None, **kw):
+        raise _operational_error()
+
+    monkeypatch.setattr(GoogleTrendsConnector, "fetch", dead_db)
+
+    with pytest.raises(OperationalError):
+        scheduler.poll_trends_pairs([("AAPL", "Apple"), ("NVDA", "Nvidia")])
 
 
 def test_poll_finnhub_news_missing_universe_is_noop(tmp_path):
