@@ -101,6 +101,12 @@ Prefer `stop` over `down` so the `pgdata` volume and its schema survive.
     Every run therefore records to `job_health`, which writes `logs/scheduler-health.json`;
     `ibkr-trader health` reads it and exits non-zero on a failing, stale or never-run job.
     **Anything added to `_guard` must keep that artifact written on the failure path too.**
+  - **The same trap one level down:** the polls catch per-symbol errors so one dead ticker
+    cannot abort a run, which means a *systemic* failure reads as an empty result. A database
+    outage made all 190 Finnhub symbols fail their write and logged "upserted 0 articles
+    across 190 symbols" — indistinguishable from a quiet news day, and it stayed that way for
+    two weeks. `_fail_if_every_item_failed` re-raises when nothing at all succeeded. Any new
+    per-item loop needs the same call, or it will hide the next outage the same way.
   - data-lake also carries no scheduler machinery at all today: no apscheduler
     dependency, no `_guard`-equivalent. The `archive` and `research` extras are the
     pattern to copy for adding one.

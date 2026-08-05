@@ -42,6 +42,25 @@ TRANSIENT_ERRORS: tuple[type[BaseException], ...] = (OperationalError, Interface
 RETRY_DELAYS_SECONDS: tuple[int, ...] = (300, 900, 3600)
 
 
+def _fail_if_every_item_failed(
+    label: str, attempted: int, failures: int, last_error: BaseException | None
+) -> None:
+    """Re-raise when a per-item loop swallowed an error for *every* item.
+
+    Skipping one bad ticker is the point of those loops; swallowing all 190 is not. While the
+    database was down, ``poll_finnhub_news`` fetched every symbol from Finnhub fine, failed to
+    write every single one, and reported "upserted 0 articles across 190 symbols" — a line that
+    reads like a quiet news day and is indistinguishable from one. Raising here lets `_guard`
+    record the real error and, for a connection failure, retry instead of waiting the cadence.
+
+    The original exception is re-raised rather than wrapped, so its type still drives the
+    transient-retry decision.
+    """
+    if attempted and failures == attempted and last_error is not None:
+        logger.error("%s: all %d item(s) failed; failing the job", label, attempted)
+        raise last_error
+
+
 def _read_universe_file(path: str) -> list[str]:
     try:
         with open(path) as handle:
@@ -94,6 +113,8 @@ def poll_trends_pairs(
     connector = GoogleTrendsConnector()
     total = 0
     fetched = 0
+    failures = 0
+    last_error: BaseException | None = None
     for symbol, keyword in pairs:
         try:
             points = connector.fetch(
@@ -102,17 +123,21 @@ def poll_trends_pairs(
                 timeframe=timeframe,
                 skip_if_newer_than_days=refresh_after_days,
             )
-        except Exception:
+        except Exception as exc:
+            failures += 1
+            last_error = exc
             logger.exception("trends poll failed for %s (%r)", symbol, keyword)
         else:
             total += points
             fetched += 1 if points else 0
     logger.info(
-        "trends poll upserted %d points across %d keywords (%d fetched, rest fresh/failed)",
+        "trends poll upserted %d points across %d keywords (%d fetched, %d failed)",
         total,
         len(pairs),
         fetched,
+        failures,
     )
+    _fail_if_every_item_failed("trends poll", len(pairs), failures, last_error)
     return total
 
 
@@ -251,14 +276,24 @@ def poll_finnhub_news(
     symbols = _read_universe_file(universe_file)
     connector = FinnhubNewsConnector()
     total = 0
+    failures = 0
+    last_error: BaseException | None = None
     for index, symbol in enumerate(symbols):
         if index:
             sleep(request_spacing_seconds)
         try:
             total += connector.fetch(symbol=symbol, date_from=date_from, date_to=date_to)
-        except Exception:
+        except Exception as exc:
+            failures += 1
+            last_error = exc
             logger.exception("finnhub-news poll failed for %s", symbol)
-    logger.info("finnhub-news poll upserted %d articles across %d symbols", total, len(symbols))
+    logger.info(
+        "finnhub-news poll upserted %d articles across %d symbols (%d failed)",
+        total,
+        len(symbols),
+        failures,
+    )
+    _fail_if_every_item_failed("finnhub-news poll", len(symbols), failures, last_error)
     return total
 
 
@@ -309,11 +344,13 @@ def poll_yahoo_prices() -> int:
     connector = YahooConnector()
     total = 0
     failures = 0
+    last_error: BaseException | None = None
     for symbol in symbols:
         try:
             total += connector.fetch(symbol=symbol)
-        except Exception:
+        except Exception as exc:
             failures += 1
+            last_error = exc
             logger.exception("price poll failed for %s", symbol)
     logger.info(
         "price poll upserted %d bars across %d symbols (%d failed)",
@@ -321,6 +358,7 @@ def poll_yahoo_prices() -> int:
         len(symbols),
         failures,
     )
+    _fail_if_every_item_failed("price poll", len(symbols), failures, last_error)
     return total
 
 
