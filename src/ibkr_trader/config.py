@@ -124,6 +124,21 @@ class Settings(BaseSettings):
     archive_s3_access_key_id: str = ""
     archive_s3_secret_access_key: str = ""
     archive_s3_prefix: str = ""  # optional key prefix inside the bucket
+    # Offload cadence and windows for the `serve` archive jobs. Both jobs no-op unless
+    # archive_backend is configured, so these are inert on a default install.
+    #
+    # archive_bars_older_than_days is the hot/cold boundary and the one knob that actually
+    # bounds local disk: intraday bars older than it leave Postgres for the bucket. 90 rather
+    # than a year because the local box has little disk and intraday history is exactly the
+    # bulk nothing in the hot path reads — the trainer and backtester use daily bars, which
+    # are never archived. Restore before training an intraday model (`archive restore-bars`).
+    archive_bars_older_than_days: int = 90
+    archive_bars_hours: int = 24
+    # Grace on fetched_at before a *scored* payload's raw blob is offloaded. Unlike pruning
+    # this is reversible (`archive restore-raw`), so the grace only needs to cover reprocessing
+    # you would notice quickly.
+    archive_raw_min_age_days: int = 30
+    archive_raw_hours: int = 24
 
     def configured_live_accounts(self) -> dict[AccountType, str]:
         """Return non-empty funded-account references keyed by the strategy account type.

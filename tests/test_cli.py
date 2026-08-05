@@ -946,6 +946,83 @@ def test_archive_catalog_empty_then_populated_and_rebuild(monkeypatch, tmp_path)
     assert "price_bars: 1 rows" in rebuilt.output
 
 
+def test_archive_bars_falls_back_to_the_configured_window(monkeypatch, tmp_path):
+    """Omitting --older-than-days must use the same setting the `serve` job reads, so a manual
+    drain and the scheduled run cannot apply different hot/cold boundaries."""
+    pytest.importorskip("pyarrow")
+    from ibkr_trader.db.models import Instrument, PriceBar
+
+    session = _make_session()
+    session.add(Instrument(id=1, symbol="AAPL", exchange="SMART", currency="USD"))
+    # 120 days old: inside a 365-day window (would be left alone), outside a 90-day one.
+    session.add(
+        PriceBar(
+            instrument_id=1,
+            ts=datetime.now(UTC) - timedelta(days=120),
+            bar_size="1 min",
+            source="ibkr",
+            what_to_show="TRADES",
+            open=9.0,
+            high=11.0,
+            low=8.0,
+            close=10.0,
+            volume=100.0,
+        )
+    )
+    session.commit()
+    _patch_session(monkeypatch, session)
+    _patch_settings(
+        monkeypatch,
+        archive_backend="local",
+        archive_local_dir=str(tmp_path),
+        archive_bars_older_than_days=90,
+    )
+
+    result = runner.invoke(cli.app, ["archive", "bars"])
+    assert result.exit_code == 0
+    assert "archived 1 bars → deleted 1 local rows" in result.output
+
+
+def test_archive_bars_window_default_is_ninety_days():
+    """The knob that actually bounds local disk. Raising it silently would undo the offload."""
+    from ibkr_trader.config import Settings
+
+    assert Settings(_env_file=None).archive_bars_older_than_days == 90
+
+
+def test_archive_raw_falls_back_to_the_configured_grace(monkeypatch, tmp_path):
+    """Omitting --min-age-days uses ARCHIVE_RAW_MIN_AGE_DAYS; a payload inside the grace
+    period stays put."""
+    pytest.importorskip("pyarrow")
+    from ibkr_trader.db.models import NewsArticle
+
+    session = _make_session()
+    session.add(
+        NewsArticle(
+            source="finnhub",
+            external_id="fresh-1",
+            title="t",
+            url="https://example.com/1",
+            published_at=datetime.now(UTC) - timedelta(days=1),
+            fetched_at=datetime.now(UTC) - timedelta(days=1),
+            sentiment=0.5,
+            raw={"a": 1},
+        )
+    )
+    session.commit()
+    _patch_session(monkeypatch, session)
+    _patch_settings(
+        monkeypatch,
+        archive_backend="local",
+        archive_local_dir=str(tmp_path),
+        archive_raw_min_age_days=30,
+    )
+
+    result = runner.invoke(cli.app, ["archive", "raw"])
+    assert result.exit_code == 0
+    assert "archived 0 payloads" in result.output
+
+
 def test_archive_bars_roundtrip_via_cli(monkeypatch, tmp_path):
     pytest.importorskip("pyarrow")
     from ibkr_trader.db.models import Instrument, PriceBar
