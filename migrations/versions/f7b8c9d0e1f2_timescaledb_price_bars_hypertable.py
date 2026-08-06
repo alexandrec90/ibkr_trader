@@ -27,14 +27,15 @@ Revises: a7b8c9d0e1f2
 Create Date: 2026-07-19 00:00:00.000000
 
 """
+
 from typing import Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
 
 
-revision: str = 'f7b8c9d0e1f2'
-down_revision: Union[str, None] = 'a7b8c9d0e1f2'
+revision: str = "f7b8c9d0e1f2"
+down_revision: Union[str, None] = "a7b8c9d0e1f2"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -96,8 +97,5 @@ def downgrade() -> None:
     # pre-migration pg_dump if a plain table is truly needed. The composite primary key is also
     # left in place because a hypertable cannot drop the partitioning column from its PK.
     op.execute("SELECT remove_compression_policy('price_bars', if_exists => true)")
-    op.execute(
-        "SELECT decompress_chunk(c, true) "
-        "FROM show_chunks('price_bars') c"
-    )
+    op.execute("SELECT decompress_chunk(c, true) FROM show_chunks('price_bars') c")
     op.execute("ALTER TABLE price_bars SET (timescaledb.compress = false)")

@@ -25,9 +25,7 @@ def upgrade() -> None:
         sa.Column("model_version", sa.String(length=32), nullable=False),
         sa.Column("feature_set_version", sa.String(length=16), nullable=False),
         sa.Column("ts", sa.DateTime(timezone=True), nullable=False),
-        sa.Column(
-            "weights", postgresql.JSONB(astext_type=sa.Text()), nullable=False
-        ),
+        sa.Column("weights", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
         sa.Column("params", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.PrimaryKeyConstraint("id"),
