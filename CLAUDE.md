@@ -30,7 +30,6 @@ editable path dependency, so `uv sync` fails without it:
 
 ```bash
 uv sync                        # setup: create .venv, install locked deps + dev group
-uv run pre-commit install      # setup: the commit-time devkit gate (once per clone)
 uv sync --extra ml             # + ML training extras (lightgbm/scikit-learn)
 uv add <pkg>                   # add a runtime dep (updates pyproject.toml + uv.lock)
 uv lock                        # re-resolve after editing pyproject.toml by hand

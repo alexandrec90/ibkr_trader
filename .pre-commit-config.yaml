@@ -5,7 +5,15 @@ fail_fast: true
 # `python scripts/lint-all.py` / `python scripts/run-tests.py`. A commit hook that
 # runs the suite gets bypassed, and a bypassed gate is worse than no gate.
 #
-# Install once per clone: `uv run pre-commit install` (pre-commit is in the dev group).
+# There is nothing to install. The owner's machine sets a global `core.hooksPath`
+# (~/.devkit/git-hooks, from devkit's install-git-policy.py), and that dispatcher runs
+# the pre-commit framework itself whenever a repo has this file — `pre-commit install`
+# would write into .git/hooks, which core.hooksPath bypasses entirely.
+#
+# What it needs instead is for pre-commit to be *importable*: the dispatcher looks for
+# .venv/Scripts/pre-commit.exe (then PATH, then the module) and prints "project has
+# .pre-commit-config.yaml but pre-commit is not installed" if it finds none. That is
+# why pre-commit is in the dev group — `uv sync` is the whole setup step.
 repos:
   # --- devkit's published hooks ------------------------------------------------
   # Cheap by design (a TOML parse, an import scan, a byte-compare), so these honour
