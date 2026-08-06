@@ -31,6 +31,11 @@ def _settings(**overrides):
         fx_pairs=["USDCAD"],
         trends_keywords=[],
         trends_mapping_file="",
+        archive_backend="none",
+        archive_bars_older_than_days=90,
+        archive_bars_hours=24,
+        archive_raw_min_age_days=30,
+        archive_raw_hours=24,
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -48,6 +53,8 @@ def test_build_scheduler_registers_all_jobs_with_configured_intervals():
         "finnhub_backfill",
         "sentiment_score",
         "prices_poll",
+        "archive_bars",
+        "archive_raw",
     }
     assert jobs["reddit_poll"].trigger.interval == timedelta(minutes=30)
     assert jobs["finnhub_news_poll"].trigger.interval == timedelta(hours=6)
@@ -58,6 +65,31 @@ def test_build_scheduler_registers_all_jobs_with_configured_intervals():
     assert jobs["sentiment_score"].trigger.interval == timedelta(minutes=60)
     assert jobs["prices_poll"].trigger.interval == timedelta(hours=24)
     assert jobs["prices_poll"].next_run_time is not None  # bars catch up on startup
+    assert jobs["archive_bars"].trigger.interval == timedelta(hours=24)
+    assert jobs["archive_raw"].trigger.interval == timedelta(hours=24)
+
+
+def test_archive_jobs_are_registered_even_when_the_backend_is_off():
+    """They no-op internally rather than going unregistered.
+
+    ``job_health`` seeds itself from the previous run's artifact, so a job that disappears from
+    the registration list keeps its recorded ``interval_seconds`` and is reported ``stale``
+    forever. Registering unconditionally is what keeps that from happening.
+    """
+    sched = scheduler.build_scheduler(settings=_settings(archive_backend="none"))
+    jobs = {job.id for job in sched.get_jobs()}
+    assert {"archive_bars", "archive_raw"} <= jobs
+
+
+def test_archive_jobs_do_not_fire_on_startup():
+    """A first run against an undrained backlog is heavy (one transaction, whole batch in
+    memory); it must not land while the process is still coming up."""
+    sched = scheduler.build_scheduler(settings=_settings(archive_backend="local"))
+    jobs = {job.id: job for job in sched.get_jobs()}
+    # On an unstarted scheduler only a job built with an explicit next_run_time carries the
+    # attribute at all — which is precisely what `start_now=True` sets.
+    assert getattr(jobs["archive_bars"], "next_run_time", None) is None
+    assert getattr(jobs["archive_raw"], "next_run_time", None) is None
 
 
 def test_backfill_job_also_fires_on_startup():
@@ -650,6 +682,135 @@ def test_run_prune_uses_a_session(monkeypatch):
     result = scheduler.run_prune(min_age_days=2)
     assert result == {"news_articles": 3, "social_posts": 4}
     assert calls["min_age_days"] == 2
+
+
+# --- cold-storage offload jobs ----------------------------------------------------------
+
+
+@pytest.fixture
+def fake_session(monkeypatch):
+    """Hand the archive jobs a throwaway session without touching a database."""
+    from contextlib import contextmanager
+
+    session = object()
+
+    @contextmanager
+    def fake_get_session():
+        yield session
+
+    monkeypatch.setattr(scheduler, "get_session", fake_get_session)
+    return session
+
+
+def _archive_result(rows_archived: int, rows_removed: int):
+    return SimpleNamespace(
+        rows_archived=rows_archived,
+        rows_removed=rows_removed,
+        objects={"price_bars/bar_size=1_min/2020-01.parquet": rows_archived},
+    )
+
+
+@pytest.mark.parametrize(
+    ("job", "target"),
+    [
+        (scheduler.run_archive_bars, "archive_price_bars"),
+        (scheduler.run_archive_raw, "archive_raw_payloads"),
+    ],
+)
+def test_archive_jobs_no_op_when_the_backend_is_off(monkeypatch, job, target):
+    """A default install has no bucket; that must be a quiet skip, not a daily failure."""
+    import data_lake.archive as lake_archive
+
+    def fail(*args, **kwargs):
+        raise AssertionError("must not reach the archive with the backend off")
+
+    monkeypatch.setattr(lake_archive, "store_from_settings", fail)
+    monkeypatch.setattr(lake_archive, target, fail)
+
+    assert job(_settings(archive_backend="none")) == {}
+
+
+def test_run_archive_bars_passes_the_configured_window(monkeypatch, fake_session):
+    import data_lake.archive as lake_archive
+
+    calls = {}
+    store = object()
+
+    def fake_archive(session, given_store, *, older_than_days):
+        calls.update(session=session, store=given_store, older_than_days=older_than_days)
+        return _archive_result(12, 12)
+
+    monkeypatch.setattr(lake_archive, "store_from_settings", lambda: store)
+    monkeypatch.setattr(lake_archive, "archive_price_bars", fake_archive)
+
+    result = scheduler.run_archive_bars(
+        _settings(archive_backend="local", archive_bars_older_than_days=90)
+    )
+
+    assert result == {"bars_archived": 12}
+    assert calls["older_than_days"] == 90
+    assert calls["session"] is fake_session
+    assert calls["store"] is store
+
+
+def test_run_archive_raw_passes_the_configured_grace(monkeypatch, fake_session):
+    import data_lake.archive as lake_archive
+
+    calls = {}
+
+    def fake_archive(session, store, *, min_age_days):
+        calls["min_age_days"] = min_age_days
+        return _archive_result(7, 7)
+
+    monkeypatch.setattr(lake_archive, "store_from_settings", lambda: object())
+    monkeypatch.setattr(lake_archive, "archive_raw_payloads", fake_archive)
+
+    result = scheduler.run_archive_raw(
+        _settings(archive_backend="local", archive_raw_min_age_days=30)
+    )
+
+    assert result == {"payloads_archived": 7}
+    assert calls["min_age_days"] == 30
+
+
+def test_archive_job_counts_reach_the_health_registry(monkeypatch, fake_session):
+    """The returned dict has to be shaped so ``_rows_written`` sees the offload as a write."""
+    import data_lake.archive as lake_archive
+
+    monkeypatch.setattr(lake_archive, "store_from_settings", lambda: object())
+    monkeypatch.setattr(
+        lake_archive,
+        "archive_price_bars",
+        lambda session, store, *, older_than_days: _archive_result(5, 5),
+    )
+    job_health.reset()
+    settings = _settings(archive_backend="local")
+
+    scheduler._guard(
+        lambda: scheduler.run_archive_bars(settings), "archive_bars", artifact_path=""
+    )()
+
+    entry = job_health.snapshot()["jobs"]["archive_bars"]
+    assert entry["last_wrote"] is not None
+    assert entry["last_error"] is None
+
+
+def test_archive_job_failure_is_recorded_not_raised(monkeypatch):
+    """A bucket outage must not kill the scheduler, and must not vanish either."""
+    import data_lake.archive as lake_archive
+
+    def boom():
+        raise RuntimeError("bucket unreachable")
+
+    monkeypatch.setattr(lake_archive, "store_from_settings", boom)
+    job_health.reset()
+    settings = _settings(archive_backend="s3")
+
+    scheduler._guard(lambda: scheduler.run_archive_raw(settings), "archive_raw", artifact_path="")()
+
+    entry = job_health.snapshot()["jobs"]["archive_raw"]
+    assert entry["consecutive_failures"] == 1
+    assert "bucket unreachable" in entry["last_error"]
 
 
 def test_guard_swallows_and_logs_exceptions():

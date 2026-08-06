@@ -985,7 +985,11 @@ def archive_query(
 
 @archive_app.command("bars")
 def archive_bars(
-    older_than_days: int = typer.Option(365, min=0, help="only archive bars older than this"),
+    older_than_days: int = typer.Option(
+        None,
+        min=0,
+        help="only archive bars older than this [default: ARCHIVE_BARS_OLDER_THAN_DAYS]",
+    ),
     bar_size: list[str] = typer.Option(
         [], help='bar sizes to archive, e.g. "1 min" (default: every size except "1 day")'
     ),
@@ -994,8 +998,13 @@ def archive_bars(
     Daily bars never leave Postgres — they are the training/backtest input."""
     from data_lake.archive import archive_price_bars
 
+    from ibkr_trader.config import get_settings
     from ibkr_trader.db.session import get_session
 
+    # Falls back to the setting the `serve` job uses, so a manual drain and the scheduled run
+    # apply the same hot/cold boundary instead of quietly disagreeing about it.
+    if older_than_days is None:
+        older_than_days = get_settings().archive_bars_older_than_days
     store = _archive_store()
     try:
         with get_session() as session:
@@ -1013,15 +1022,22 @@ def archive_bars(
 @archive_app.command("raw")
 def archive_raw(
     min_age_days: int = typer.Option(
-        0, min=0, help="fetched_at grace period before a scored raw blob is offloaded"
+        None,
+        min=0,
+        help="fetched_at grace before a scored raw blob is offloaded "
+        "[default: ARCHIVE_RAW_MIN_AGE_DAYS]",
     ),
 ):
     """Upload scored raw provider payloads (news/social) as Parquet, verify, then NULL them
     locally. The rows themselves (title, body, sentiment, hashed author) stay in Postgres."""
     from data_lake.archive import archive_raw_payloads
 
+    from ibkr_trader.config import get_settings
     from ibkr_trader.db.session import get_session
 
+    # Same reason as `archive bars`: one source of truth for the window.
+    if min_age_days is None:
+        min_age_days = get_settings().archive_raw_min_age_days
     store = _archive_store()
     try:
         with get_session() as session:

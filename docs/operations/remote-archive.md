@@ -14,8 +14,8 @@ DB — and the archive holds only:
 
 | data | archived when | archive layout |
 | --- | --- | --- |
-| intraday price bars (`price_bars` where `bar_size != "1 day"`) | older than `--older-than-days` (default 365) | `price_bars/bar_size=<slug>/<YYYY-MM>.parquet` |
-| `raw` provider payloads on `news_articles` / `social_posts` | sentiment already scored (+ optional `--min-age-days` grace) | `raw/<table>/<YYYY-MM>.parquet` |
+| intraday price bars (`price_bars` where `bar_size != "1 day"`) | older than `--older-than-days` (default `ARCHIVE_BARS_OLDER_THAN_DAYS`, 90) | `price_bars/bar_size=<slug>/<YYYY-MM>.parquet` |
+| `raw` provider payloads on `news_articles` / `social_posts` | sentiment already scored (+ `--min-age-days` grace, default `ARCHIVE_RAW_MIN_AGE_DAYS`, 30) | `raw/<table>/<YYYY-MM>.parquet` |
 
 Never archived: **daily bars** (the training/backtest input — `archive bars` refuses
 `"1 day"` outright), and **orders / executions** (tax + audit trail).
@@ -152,11 +152,32 @@ Cloudflare REST API or the dashboard can (R2 → bucket → Settings → Public 
 > Fix it at the source (restart the shell/editor session, or correct whatever exports them);
 > `VAR=value uv run …` is only a per-command workaround.
 
+## Running it on a schedule
+
+`serve` registers two daily jobs — `archive_bars` and `archive_raw` — that run the same
+offloads as the CLI, using `ARCHIVE_BARS_OLDER_THAN_DAYS` and `ARCHIVE_RAW_MIN_AGE_DAYS`.
+They are what keeps the local database from growing back; the CLI commands below remain the
+way to do a one-off or a different window.
+
+Both jobs **no-op while `ARCHIVE_BACKEND=none`**, so they are inert on a default install. They
+are still registered in that case, deliberately: `job_health` seeds itself from the previous
+run's artifact, so a job that stops being registered keeps its recorded cadence and is
+reported `stale` forever after.
+
+> **Drain the backlog once from the CLI before relying on the schedule.** A run holds the
+> whole batch in memory in a single transaction — measured ~1.1 GB RSS and ~2 h for the
+> initial 280 k payloads. That is why neither job fires at startup. Once the backlog is
+> drained each daily run only has a day of new rows to move, which is cheap.
+
+Cadence knobs: `ARCHIVE_BARS_HOURS`, `ARCHIVE_RAW_HOURS` (both 24 by default). Job outcomes
+land in the scheduler health artifact like every other job — `ibkr-trader health` reads it.
+
 ## Commands
 
 ```bash
-ibkr-trader archive bars --older-than-days 365      # offload old intraday bars
-ibkr-trader archive raw --min-age-days 30           # offload scored raw payloads
+ibkr-trader archive bars                            # offload intraday bars past the window
+ibkr-trader archive raw                             # offload scored raw payloads
+ibkr-trader archive bars --older-than-days 365      # ...or override the window for one run
 ibkr-trader archive status                          # list archived data objects
 ibkr-trader archive catalog                         # summarize datasets from the catalog
 ibkr-trader archive catalog --rebuild               # recompute the catalog from partitions

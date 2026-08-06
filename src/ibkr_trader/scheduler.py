@@ -1,4 +1,4 @@
-"""APScheduler wiring for `serve`: periodic ingestion polls + raw-pruning maintenance.
+"""APScheduler wiring for `serve`: periodic ingestion polls + disk maintenance.
 
 No trading here — the paper loop stays out until backtests justify it (see TODO §4). Each job
 is wrapped by ``_guard`` so a single failure logs and the scheduler keeps running rather than
@@ -427,6 +427,73 @@ def run_prune(min_age_days: int) -> dict[str, int]:
     return counts
 
 
+def _archive_store(backend: str, label: str):
+    """The configured object store, or ``None`` when archiving is switched off.
+
+    The archive jobs are registered unconditionally, so a disabled backend has to be a clean
+    no-op here rather than a failure — same shape as the newsapi/trends polls skipping on a
+    missing mapping file. Registering them conditionally would be worse than it looks: the
+    health registry is seeded from the previous run's artifact, so a job that stops being
+    registered keeps its recorded ``interval_seconds`` and is reported ``stale`` forever.
+    """
+    if backend == "none":
+        logger.info("%s skipped: archive_backend is 'none'", label)
+        return None
+    from data_lake.archive import store_from_settings
+
+    return store_from_settings()
+
+
+def run_archive_bars(settings: Settings) -> dict[str, int]:
+    """Offload intraday bars past the hot window to object storage, then delete them locally.
+
+    This is the job that bounds local disk. Daily bars are never touched — ``archive_price_bars``
+    refuses them outright — so the trainer and backtester keep reading Postgres unchanged.
+    """
+    store = _archive_store(settings.archive_backend, "archive bars")
+    if store is None:
+        return {}
+    from data_lake.archive import archive_price_bars
+
+    with get_session() as session:
+        result = archive_price_bars(
+            session, store, older_than_days=settings.archive_bars_older_than_days
+        )
+    logger.info(
+        "archived %d bars into %d partition(s), deleted %d local rows",
+        result.rows_archived,
+        len(result.objects),
+        result.rows_removed,
+    )
+    return {"bars_archived": result.rows_archived}
+
+
+def run_archive_raw(settings: Settings) -> dict[str, int]:
+    """Offload scored raw provider payloads, then NULL the local blobs.
+
+    Non-destructive, unlike ``run_prune``: the row (title, body, sentiment, hashed author)
+    stays in Postgres and ``archive restore-raw`` can bring the payload back for reprocessing.
+    Note that NULLing does not shrink the database file — see the VACUUM note in
+    docs/operations/remote-archive.md.
+    """
+    store = _archive_store(settings.archive_backend, "archive raw")
+    if store is None:
+        return {}
+    from data_lake.archive import archive_raw_payloads
+
+    with get_session() as session:
+        result = archive_raw_payloads(
+            session, store, min_age_days=settings.archive_raw_min_age_days
+        )
+    logger.info(
+        "archived %d payloads into %d partition(s), NULLed %d local blobs",
+        result.rows_archived,
+        len(result.objects),
+        result.rows_removed,
+    )
+    return {"payloads_archived": result.rows_archived}
+
+
 def _schedule_retry(
     scheduler: BlockingScheduler | None,
     wrapped: Callable[[], None],
@@ -631,6 +698,23 @@ def build_scheduler(
         # Also fires on startup: bars go stale whenever the machine was off, and the
         # incremental fetch makes an already-current run nearly free.
         start_now=True,
+    )
+    # Cold-storage offload. Deliberately *not* start_now: a first run against an undrained
+    # backlog reads the whole batch into memory in one transaction (measured ~1.1 GB RSS and
+    # ~2 h for 280 k payloads), which is not something to fire while the process is also
+    # coming up. Drain the backlog once from the CLI, then let the daily cadence keep pace —
+    # each subsequent run only has a day of new rows to move. See remote-archive.md.
+    register(
+        "archive_bars",
+        "archive_bars",
+        lambda: run_archive_bars(settings),
+        seconds=settings.archive_bars_hours * 3600,
+    )
+    register(
+        "archive_raw",
+        "archive_raw",
+        lambda: run_archive_raw(settings),
+        seconds=settings.archive_raw_hours * 3600,
     )
     job_health.write_artifact(artifact_path)
     return scheduler
