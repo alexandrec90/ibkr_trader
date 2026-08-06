@@ -30,6 +30,7 @@ editable path dependency, so `uv sync` fails without it:
 
 ```bash
 uv sync                        # setup: create .venv, install locked deps + dev group
+uv run pre-commit install      # setup: the commit-time devkit gate (once per clone)
 uv sync --extra ml             # + ML training extras (lightgbm/scikit-learn)
 uv add <pkg>                   # add a runtime dep (updates pyproject.toml + uv.lock)
 uv lock                        # re-resolve after editing pyproject.toml by hand
@@ -37,6 +38,7 @@ docker compose up -d db        # postgres (see "What each container is for" belo
 docker compose --profile ibkr up -d   # + IB Gateway (needs TWS_USERID/PASSWORD in .env)
 docker compose stop            # stop this project's containers (keeps data; `start` to resume)
 uv run pytest                  # tests
+uv run python -m pytest scripts/hooks/tests/   # the vendored harness suite (own PR-gate job)
 uv run ruff check src tests && uv run ruff format --check src tests
 uv run mypy src
 uv run alembic upgrade head    # apply migrations
@@ -122,10 +124,44 @@ Prefer `stop` over `down` so the `pgdata` volume and its schema survive.
   tables and proposes dropping them. Migrations stay here (`migrations/`).
 - Postgres is the single source of truth; models/backtests never call external APIs.
 
+## The vendored devkit harness
+
+Shared agent tooling comes from [devkit](https://github.com/alexandrec90/devkit) and is
+**vendored, not submoduled** — cloning this repo alone gets everything. `DEVKIT_VERSION`
+records the upstream commit; `DEVKIT_FILES.json` is the path→hash receipt of what the last
+pull managed.
+
+- **Never hand-edit a vendored file.** Everything in `sync-devkit.py`'s `MANIFEST`
+  (`scripts/hooks/*`, `scripts/ship.py`, `scripts/task_branch.py`, `scripts/sync-*.py`,
+  `.claude/hooks/`, `.claude/rules/engineering.md`, `.claude/rules/authoring.md`,
+  `.claude/skills/ship/`) is byte-compared against the pinned devkit rev by the
+  `devkit-drift` pre-commit hook and the `pr-gate` workflow. A local fix there is reverted
+  by the next pull and reads as CI drift in the meantime — change it in devkit and pull.
+- **`.devkit.toml` is the seam** and is deliberately *not* in the MANIFEST: it is where this
+  repo's shape (paths, env prefix, which tiers are on) is declared, and editing it is correct.
+  Only the tables `scripts/hooks/harness_config.py` consumes are legal — an unknown one is
+  silently ignored by the loader, so the `devkit-manifest` hook is what makes it visible.
+- **Upgrading** is one operation, never folded into another change:
+  `python scripts/sync-devkit.py --pull --src ../devkit` moves the files, the
+  `DEVKIT_VERSION` stamp, the `rev:` in `.pre-commit-config.yaml`, and the `ref:` in
+  `.github/workflows/pr-gate.yml` together. It refuses a dirty or untagged source, because
+  the pins can only name a tag. Adopting a release in an existing project takes **two**
+  `--pull` runs — the first installs the new `sync-devkit.py`, the second applies the
+  manifest it brought.
+- **The vendored tests do not run under `uv run pytest`** (pyproject's `testpaths` is
+  `["tests"]`). They are their own PR-gate job: `python -m pytest scripts/hooks/tests/`.
+  Run that after any change to `.devkit.toml`, `.claude/rules/`, `.claude/skills/`, or to
+  `scripts/lint-all.py` / `scripts/run-tests.py` — `test_repo_contract.py` asserts the Stop
+  hook's dispatch targets and remediation flags actually exist here.
+- General engineering and instruction-authoring policy is vendored, not restated:
+  [.claude/rules/engineering.md](.claude/rules/engineering.md) and
+  [.claude/rules/authoring.md](.claude/rules/authoring.md) are the authority.
+
 ## Conventions
 
 - **IBKR-specific testing policy:** safety-gate coverage, layer-specific test strategy, and this
   repo's full local completion gate live in [.claude/rules/testing.md](.claude/rules/testing.md).
+  It is this repo's own rule and layers *on top of* the vendored engineering policy above.
 - SQLAlchemy 2.0 typed style (`Mapped[...]`), UTC timestamps everywhere.
 - Skeleton stubs raise `NotImplementedError` with a `TODO(skeleton)` comment describing the
   intended implementation — replace stub-by-stub, keep the comments' intent.
