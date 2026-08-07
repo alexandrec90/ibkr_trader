@@ -30,6 +30,7 @@ from data_lake.db.models import (
     Feature,
     FundamentalSnapshot,
     Instrument,
+    Listing,
     NewsArticle,
     PriceBar,
     ShareCount,
@@ -47,6 +48,11 @@ from ibkr_trader.db.trading_models import (
 )
 
 #: Tables owned by the shared data-lake package (non-PII, non-account).
+#:
+#: This is what the lake *declares*, not what this repo materialises. ``listings`` is
+#: apt-finder's housing data, which lives in the lake because it is ordinary shared content;
+#: it lands in our ``Base.metadata`` simply because importing the package registers the whole
+#: schema. :mod:`ibkr_trader.db.adoption` is what keeps it out of our migrations.
 LAKE_TABLES = frozenset(
     {
         "dividends",
@@ -54,6 +60,7 @@ LAKE_TABLES = frozenset(
         "features",
         "fundamental_snapshots",
         "instruments",
+        "listings",
         "news_articles",
         "price_bars",
         "share_counts",
@@ -85,6 +92,7 @@ __all__ = [
     "FundamentalSnapshot",
     "Instrument",
     "JsonVariant",
+    "Listing",
     "NewsArticle",
     "Order",
     "OrderSide",
