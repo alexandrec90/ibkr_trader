@@ -1,0 +1,55 @@
+name: PR Gate
+
+# The devkit half of the gate, kept separate from ci.yml on purpose.
+#
+# ci.yml is this project's own gate (ruff, mypy, pytest) and needs the full
+# environment: a second private checkout for ../data-lake, uv, and every extra. The
+# checks here need none of that — the vendored hook scripts are stdlib-only by
+# contract — so they run on a bare Python and stay green even when the dependency
+# install is broken, which is exactly when you want to still be able to see harness
+# drift.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: pr-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  devkit:
+    name: Vendored devkit harness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      # The vendored suite. It is NOT reachable from `uv run pytest`: pyproject's
+      # testpaths is ["tests"], so these would never run there — including
+      # test_repo_contract.py, whose whole job is to catch a Stop hook that dispatches
+      # to a script this repo does not have.
+      - name: Install pytest
+        run: python -m pip install --disable-pip-version-check pytest
+
+      - name: Vendored hook tests
+        run: python -m pytest scripts/hooks/tests/ -q --tb=short
+
+      # Cross-repo drift: the vendored files must match the devkit revision this repo
+      # is stamped at. Pinned to a tag, never @main — one bad upstream commit must not
+      # redden this repo. `sync-devkit.py --pull` bumps this `ref:`, the `rev:` in
+      # .pre-commit-config.yaml, and DEVKIT_VERSION together; all three name the same
+      # upstream revision and a mismatch means the two gates compare different trees.
+      - name: Check out devkit
+        uses: actions/checkout@v7
+        with:
+          repository: alexandrec90/devkit
+          ref: v0.6.0
+          path: .devkit-src
+
+      - name: Vendored devkit harness in sync
+        env:
+          DEVKIT_DIR: ${{ github.workspace }}/.devkit-src
+        run: python scripts/sync-devkit.py --check

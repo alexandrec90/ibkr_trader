@@ -1,5 +1,16 @@
 #!/usr/bin/env python3
-"""Workspace-task contract for IBKR lint, formatting, and type checks."""
+"""Workspace-task contract for IBKR lint, formatting, and type checks.
+
+Usage: python scripts/lint-all.py [--changed] [--no-secrets]
+
+  --changed     lint changed Python files only (mypy still runs the full src scope)
+  --no-secrets  compatibility no-op
+
+`--changed` is the flag the vendored Stop hook names in its failure report ("fix:
+python scripts/lint-all.py --changed | ..."), and scripts/hooks/tests/
+test_repo_contract.py checks this usage text declares it — a runner that exited 2
+on the gate's own advice is worse than no advice.
+"""
 
 from __future__ import annotations
 

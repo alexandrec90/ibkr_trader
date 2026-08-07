@@ -18,6 +18,11 @@ build/
 .coverage.*
 htmlcov/
 
+# The devkit checkout the pr-gate workflow lands beside this one to drift-check
+# against. CI-only, but ignored here too so a local `sync-devkit.py --src .devkit-src`
+# never shows up as untracked noise.
+.devkit-src/
+
 # Data & runtime artifacts
 data/
 artifacts/

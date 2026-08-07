@@ -80,6 +80,10 @@ dev = [
     "pytest-cov>=6",
     "ruff>=0.4",
     "mypy>=1.10",
+    # The commit-time devkit gate (.pre-commit-config.yaml). In the dev group so the
+    # documented `uv run pre-commit install` works from a plain `uv sync` — a gate that
+    # needs its own out-of-band install is a gate nobody has installed.
+    "pre-commit>=3.7",
 ]
 
 [project.scripts]

@@ -1,15 +1,20 @@
-# Per-project config for the vendored agent-harness hook scripts, read by
-# scripts/hooks/harness_config.py. Schema + neutral defaults: that module's
+# Per-project config for the vendored devkit hook scripts (scripts/hooks/*.py), read
+# by scripts/hooks/harness_config.py. Schema + neutral defaults: that module's
 # dataclasses. Upstream source of truth for the scripts themselves:
 # https://github.com/alexandrec90/devkit
 #
-# This file is the per-project seam and is deliberately NOT in sync-harness.py's
+# This file is the per-project seam and is deliberately NOT in sync-devkit.py's
 # MANIFEST — editing it here is correct and is never reported as drift.
+#
+# Only the tables `harness_config.from_dict` consumes are legal here ([project],
+# [paths], [db], [frontend], [python], [bash]). The loader never inspects what it
+# did not consume, so an unknown table reads as "unset" and silently disables the
+# tier it was meant to configure; the pre-commit `devkit-manifest` hook and
+# scripts/hooks/tests/test_repo_contract.py are what make that visible.
 
 [project]
-# Prefix for the harness control env vars:
-#   IBKR_TRADER_SKIP_STOP_VERIFY, IBKR_TRADER_STOP_TESTS_AUTOSTART,
-#   IBKR_TRADER_NORMALIZE_KNOWN_FIXES_ON_STOP
+# Prefix for the harness control env vars stop.py reads:
+#   IBKR_TRADER_SKIP_STOP_VERIFY, IBKR_TRADER_STOP_TESTS_AUTOSTART
 env_prefix = "IBKR_TRADER"
 
 [paths]
@@ -18,11 +23,6 @@ tests = "tests/"
 # Flat suite — no tests/unit split, so an app-code change runs everything under
 # tests/. `stop.py` uses this as the target when application code changes.
 unit_tests = "tests"
-
-[stop]
-# No state-carrying skills adopted here yet. An entry naming a skill this repo does
-# not have would make the Stop hook do nothing useful on every single turn.
-finalize_targets = []
 
 [db]
 # OFF on purpose, and this is the important line in the file.

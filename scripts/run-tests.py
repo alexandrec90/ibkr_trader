@@ -1,5 +1,16 @@
 #!/usr/bin/env python3
-"""Workspace-task contract for the IBKR pytest suite."""
+"""Workspace-task contract for the IBKR pytest suite.
+
+Usage: python scripts/run-tests.py [--changed] [extra pytest args...]
+
+  --changed   run pytest's last-failed subset (falls back to the whole suite when
+              nothing failed last time)
+
+`--changed` is not optional decoration: the vendored Stop hook signs its failure
+report off with "Re-run locally: ... | python scripts/run-tests.py --changed", and
+scripts/hooks/tests/test_repo_contract.py checks this usage text declares the flag.
+A runner that rejected it would fail on the very advice the gate handed the agent.
+"""
 
 from __future__ import annotations
 

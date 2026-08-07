@@ -1,0 +1,25 @@
+# Normalize to LF in the repo. Not cosmetic here: `core.autocrlf=true` is set globally
+# on the owner's Windows machine, so without this a fresh clone checks the vendored
+# devkit files out as CRLF — and the `devkit-drift` gate byte-compares them against
+# upstream, which is LF. The gate would fail on every commit, in a file the project is
+# not allowed to edit, for a reason invisible in the diff.
+.gitattributes -text
+* text=auto eol=lf
+
+# Preserve native Windows line endings for command shell scripts.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Treat common binary assets as binary.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.parquet binary
+*.pkl binary
+*.joblib binary
