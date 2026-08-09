@@ -1,17 +1,31 @@
 name: PR Gate
 
-# The devkit half of the gate, kept separate from ci.yml on purpose.
+# Both halves of the gate, in two independent jobs.
 #
-# ci.yml is this project's own gate (ruff, mypy, pytest) and needs the full
-# environment: a second private checkout for ../data-lake, uv, and every extra. The
-# checks here need none of that — the vendored hook scripts are stdlib-only by
-# contract — so they run on a bare Python and stay green even when the dependency
-# install is broken, which is exactly when you want to still be able to see harness
-# drift.
+# They used to be two *workflows* — this one, and a `CI` workflow carrying ruff, mypy
+# and pytest. The separation was for a good reason and it survives here: `devkit` needs
+# no dependency install (the vendored hook scripts are stdlib-only by contract), so it
+# runs on a bare Python and stays green even when the environment is broken, which is
+# exactly when you still want to see harness drift. Jobs are separate runners, so
+# nothing about that changes by living in one file.
+#
+# What did change is that the split was no longer only cosmetic. The vendored
+# `dependabot-automerge.yml` merges a bot PR when the workflow titled **`PR Gate`**
+# succeeds, and it is titled that in every project because the file is byte-identical
+# everywhere. With the real checks in a workflow called `CI`, this gate could pass on a
+# PR whose lint and tests had failed, and the bump would merge on the strength of a
+# drift check.
 on:
   push:
     branches: [main]
   pull_request:
+
+# Read-only, declared at the top level so it applies to every job rather than being
+# inherited from the repository default — which is settable per repo and per org, so a
+# workflow that says nothing does not actually know what it has. The sibling checkout
+# authenticates with DATA_LAKE_DEPLOY_KEY, not this token, so nothing here needs write.
+permissions:
+  contents: read
 
 concurrency:
   group: pr-gate-${{ github.ref }}
@@ -46,10 +60,59 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: alexandrec90/devkit
-          ref: v0.6.0
+          ref: v0.7.0
           path: .devkit-src
 
       - name: Vendored devkit harness in sync
         env:
           DEVKIT_DIR: ${{ github.workspace }}/.devkit-src
         run: python scripts/sync-devkit.py --check
+
+  check:
+    name: Lint and tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ibkr_trader
+    steps:
+      # Keep both private repositories side by side so the editable ../data-lake source in
+      # pyproject.toml resolves exactly as it does in the documented local checkout.
+      - name: Checkout ibkr_trader
+        uses: actions/checkout@v7
+        with:
+          path: ibkr_trader
+
+      - name: Checkout data-lake
+        uses: actions/checkout@v7
+        with:
+          repository: alexandrec90/data-lake
+          ssh-key: ${{ secrets.DATA_LAKE_DEPLOY_KEY }}
+          path: data-lake
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          working-directory: ibkr_trader
+          # Cache the uv download + resolver cache, keyed on the committed lockfile.
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Sync environment (locked, dev group + optional extras)
+        # --frozen fails the build if uv.lock is out of date with pyproject.toml, so the
+        # committed lockfile is authoritative. Optional extras matter: their tests
+        # importorskip optional dependencies, so without the extras CI can silently skip them.
+        # The dev group installs by default.
+        # Python comes from .python-version (3.12); numpy's stubs need >= 3.12 to parse.
+        run: uv sync --frozen --extra ml --extra tracking --extra archive --extra research --extra sentiment --extra report
+
+      - name: Ruff lint
+        run: uv run ruff check src tests
+
+      - name: Ruff format
+        run: uv run ruff format --check src tests
+
+      - name: Mypy
+        run: uv run mypy src
+
+      - name: Pytest (with coverage floor — fail_under lives in pyproject.toml)
+        run: uv run pytest -q --cov=ibkr_trader
