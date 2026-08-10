@@ -1,0 +1,116 @@
+name: Nightly
+
+# The scheduled full run against the default branch. The PR gate only fires on a
+# change, so it is structurally blind to every failure that arrives without one: a
+# dependency published inside this project's version bounds, a runner image bump, an
+# expired credential, a test that is flaky rather than broken.
+#
+# This repo has two specific reasons to want one. `data-lake` is checked out from its
+# **default branch**, not a pinned ref, so a commit there can break this suite with no
+# push here to notice it. And `DATA_LAKE_DEPLOY_KEY` is a credential that expires or
+# gets rotated — without a nightly, the first thing to discover that is whoever opens
+# the next PR.
+#
+# `cancel-in-progress: false` is deliberate and is asserted by the vendored
+# `test_ci_workflow_contract.py` — a scheduled run that cancels itself reports nothing
+# on exactly the night two runs overlap.
+
+on:
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  full-suite:
+    name: Full suite
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ibkr_trader
+    steps:
+      - name: Checkout ibkr_trader
+        uses: actions/checkout@v7
+        with:
+          path: ibkr_trader
+
+      - name: Checkout data-lake
+        uses: actions/checkout@v7
+        with:
+          repository: alexandrec90/data-lake
+          ssh-key: ${{ secrets.DATA_LAKE_DEPLOY_KEY }}
+          path: data-lake
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          working-directory: ibkr_trader
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Sync environment (locked, dev group + optional extras)
+        run: uv sync --frozen --extra ml --extra tracking --extra archive --extra research --extra sentiment --extra report
+
+      - name: Ruff lint
+        run: uv run ruff check src tests
+
+      - name: Ruff format
+        run: uv run ruff format --check src tests
+
+      - name: Mypy
+        run: uv run mypy src
+
+      - name: Pytest (with coverage floor)
+        run: uv run pytest -q --cov=ibkr_trader
+
+      - name: Vendored hook tests
+        run: uv run python -m pytest scripts/hooks/tests/ -q --tb=short
+
+  unlocked-toolchain:
+    # The half the locked run cannot see. `uv sync --frozen` pins every dev tool, so a
+    # ruff or mypy release that rejects this codebase stays invisible until Dependabot's
+    # weekly PR happens to land. Resolving the toolchain off-lock is what surfaces it on
+    # the night it ships instead.
+    #
+    # Deliberately not `continue-on-error`: a red night here is the signal, and a job
+    # that cannot fail is a job nobody reads.
+    name: Lint toolchain resolved off-lock
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ibkr_trader
+    steps:
+      - name: Checkout ibkr_trader
+        uses: actions/checkout@v7
+        with:
+          path: ibkr_trader
+
+      - name: Checkout data-lake
+        uses: actions/checkout@v7
+        with:
+          repository: alexandrec90/data-lake
+          ssh-key: ${{ secrets.DATA_LAKE_DEPLOY_KEY }}
+          path: data-lake
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          working-directory: ibkr_trader
+
+      - name: Resolve the toolchain without the lock
+        run: uv sync --upgrade
+
+      - name: Ruff lint
+        run: uv run ruff check src tests
+
+      - name: Ruff format
+        run: uv run ruff format --check src tests
+
+      - name: Mypy
+        run: uv run mypy src
