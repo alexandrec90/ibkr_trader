@@ -31,7 +31,7 @@ repos:
   # from, and a mismatch means the commit-time gate and the CI gate check against
   # different trees. `sync-devkit.py --pull` moves all three together.
   - repo: https://github.com/alexandrec90/devkit
-    rev: v0.8.0 # a tag, never a branch — one bad upstream commit must not redden this repo
+    rev: v0.9.0 # a tag, never a branch — one bad upstream commit must not redden this repo
     hooks:
       # Fails on a .devkit.toml the harness would otherwise ignore: unparseable TOML
       # (the loader falls back to neutral defaults rather than erroring), a path
