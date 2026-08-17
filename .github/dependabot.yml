@@ -18,6 +18,10 @@ updates:
     labels:
       - "dependencies"
       - "python"
+    # Without this the PRs land in no tab on github.com/pulls and are found only by
+    # opening this repo. It is per-entry, not global.
+    assignees:
+      - "alexandrec90"
     # Batch non-breaking bumps into one PR each to cut review noise; majors stay individual.
     groups:
       python-minor-patch:
@@ -35,3 +39,5 @@ updates:
     labels:
       - "dependencies"
       - "ci"
+    assignees:
+      - "alexandrec90"
