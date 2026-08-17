@@ -1,6 +1,5 @@
 {
   "permissions": {
-    "defaultMode": "bypassPermissions",
     "allow": [
       "Bash(pytest:*)",
       "Bash(ruff:*)",
@@ -80,8 +79,5 @@
         ]
       }
     ]
-  },
-  "effortLevel": "high",
-  "skipDangerousModePermissionPrompt": true,
-  "model": "opus"
+  }
 }
