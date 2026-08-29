@@ -13,7 +13,6 @@ scripts/docker-prune.py::pip_reclaim
 scripts/docker-prune.py::restart_docker_and_db
 scripts/docker-prune.py::run
 scripts/docker-prune.py::step
-scripts/hooks/codex-hook-adapter.py::failure_output
 scripts/hooks/codex-session-start.py::git_path
 scripts/hooks/enforce-capped-bash.py::block_message
 scripts/hooks/enforce-capped-bash.py::closes_group
@@ -29,7 +28,6 @@ scripts/hooks/enforce-capped-bash.py::split_top_level
 scripts/hooks/enforce-capped-bash.py::statements
 scripts/hooks/enforce-capped-bash.py::strip_prefixes
 scripts/hooks/enforce-capped-bash.py::strip_quoted
-scripts/hooks/harness_config.py::is_devkit_source
 scripts/hooks/session-sync.py::main
 scripts/hooks/session-sync.py::run_git
 scripts/ingest_fmp_tickers.py::load_tickers
