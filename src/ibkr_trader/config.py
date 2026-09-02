@@ -116,6 +116,12 @@ class Settings(BaseSettings):
     # Cold-data archive (docs/operations/remote-archive.md): intraday bars + scored raw payloads are
     # offloaded as Parquet to object storage to keep the local DB small. "s3" covers any
     # S3-compatible service (Cloudflare R2, Backblaze B2, MinIO); "local" is a plain directory.
+    #
+    # These defaults stay "none"/"archive" while .env.example ships local + the sibling lake's
+    # pooled tree: the relative path only resolves next to a data-lake checkout, and CI, the
+    # container image and a fresh clone have none. An install opts in through .env, where the
+    # path can be checked; a default that silently wrote to a wrong relative directory could
+    # not be. See docs/operations/remote-archive.md for the local-vs-R2 trade.
     archive_backend: Literal["none", "local", "s3"] = "none"
     archive_local_dir: str = "archive"
     archive_s3_bucket: str = ""
@@ -127,11 +133,12 @@ class Settings(BaseSettings):
     # Offload cadence and windows for the `serve` archive jobs. Both jobs no-op unless
     # archive_backend is configured, so these are inert on a default install.
     #
-    # archive_bars_older_than_days is the hot/cold boundary and the one knob that actually
-    # bounds local disk: intraday bars older than it leave Postgres for the bucket. 90 rather
-    # than a year because the local box has little disk and intraday history is exactly the
-    # bulk nothing in the hot path reads — the trainer and backtester use daily bars, which
-    # are never archived. Restore before training an intraday model (`archive restore-bars`).
+    # archive_bars_older_than_days is the hot/cold boundary: intraday bars older than it leave
+    # Postgres for the archive. It bounds the *database*; it only bounds the disk when the
+    # backend is remote, since a local archive keeps the bytes on the same drive. 90 rather
+    # than a year because intraday history is exactly the bulk nothing in the hot path reads —
+    # the trainer and backtester use daily bars, which are never archived. Restore before
+    # training an intraday model (`archive restore-bars`).
     archive_bars_older_than_days: int = 90
     archive_bars_hours: int = 24
     # Grace on fetched_at before a *scored* payload's raw blob is offloaded. Unlike pruning
