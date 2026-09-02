@@ -44,3 +44,6 @@ tws_settings/
 # OS / editor
 .DS_Store
 Thumbs.db
+
+# Cold-data archive when ARCHIVE_LOCAL_DIR is left at its bare default (config.py).
+/archive/
