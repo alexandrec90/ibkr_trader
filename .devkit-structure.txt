@@ -1,0 +1,159 @@
+# Structural findings the code already had when it adopted the gate.
+#
+# Debt, not configuration. This file SHRINKS on its own: a new key fails the gate, a
+# value that grew fails the gate, and a line the code no longer earns fails it too,
+# so fixing a finding forces its line out (`structure_check.py --tighten` does that).
+# Never add or raise a line to make new code pass; fix the code. `dependency::` is one
+# exception -- adding a package is a line here, so the PR diff shows it.
+#
+# `--record --reason "..."` is the other, and it is the deliberate hole. A module far
+# past `file_lines` cannot gain a line, so a bug whose fix belongs in one has nowhere
+# to go, and the split the finding asks for is a separate body of work. Recording says
+# so out loud: the reason is mandatory, counter rules (`suppressions`, `todos`,
+# `skipped_tests`, ...) are refused because those are always somebody giving up rather
+# than a module's size, and every move is logged below with what it moved and why.
+#
+# Regenerate only when adopting the gate: python scripts/hooks/structure_check.py --seed
+complexity::scripts/hooks/enforce-capped-bash.py::split_top_level = 29
+complexity::scripts/hooks/lint-fix.py::extract_paths = 16
+complexity::scripts/hooks/structure_check.py::_pyproject_dependencies = 26
+complexity::scripts/hooks/structure_check.py::resolve_python = 18
+complexity::scripts/hooks/structure_scan.py::mask_literals = 18
+complexity::scripts/hooks/structure_scan.py::scan_js = 19
+complexity::scripts/sync-devkit.py::main = 69
+complexity::src/ibkr_trader/backtest/engine.py::simulate = 24
+complexity::src/ibkr_trader/backtest/snapshot.py::build_snapshot_report = 16
+complexity::src/ibkr_trader/signals/dataset.py::build_dataset_from_panel = 23
+complexity::src/ibkr_trader/signals/features.py::_add_corporate_features = 19
+cycle::src/ibkr_trader/backtest/engine.py = 8
+definitions::scripts/hooks/harness_config.py = 32
+definitions::scripts/hooks/stop.py = 51
+definitions::scripts/hooks/structure_check.py = 42
+definitions::scripts/hooks/structure_scan.py = 31
+definitions::scripts/report-workflow-failure.py = 27
+definitions::scripts/sync-devkit.py = 44
+definitions::src/ibkr_trader/cli.py = 39
+definitions::src/ibkr_trader/scheduler.py = 24
+dependency::pyproject.toml::alembic = 1
+dependency::pyproject.toml::alphalens-reloaded = 1
+dependency::pyproject.toml::apscheduler = 1
+dependency::pyproject.toml::data-lake = 1
+dependency::pyproject.toml::ib-async = 1
+dependency::pyproject.toml::lightgbm = 1
+dependency::pyproject.toml::mlflow = 1
+dependency::pyproject.toml::mypy = 1
+dependency::pyproject.toml::numpy = 1
+dependency::pyproject.toml::optuna = 1
+dependency::pyproject.toml::pandas = 1
+dependency::pyproject.toml::pandera = 1
+dependency::pyproject.toml::plotly = 1
+dependency::pyproject.toml::polars = 1
+dependency::pyproject.toml::pre-commit = 1
+dependency::pyproject.toml::psycopg = 1
+dependency::pyproject.toml::pydantic = 1
+dependency::pyproject.toml::pydantic-settings = 1
+dependency::pyproject.toml::pytest = 1
+dependency::pyproject.toml::pytest-asyncio = 1
+dependency::pyproject.toml::pytest-cov = 1
+dependency::pyproject.toml::ruff = 1
+dependency::pyproject.toml::scikit-learn = 1
+dependency::pyproject.toml::sqlalchemy = 1
+dependency::pyproject.toml::tenacity = 1
+dependency::pyproject.toml::torch = 1
+dependency::pyproject.toml::transformers = 1
+dependency::pyproject.toml::typer = 1
+dependency::pyproject.toml::vadersentiment = 1
+file_lines::scripts/hooks/enforce-capped-bash.py = 629
+file_lines::scripts/hooks/harness_config.py = 655
+file_lines::scripts/hooks/stop.py = 1110
+file_lines::scripts/hooks/structure_check.py = 1042
+file_lines::scripts/hooks/structure_scan.py = 669
+file_lines::scripts/report-workflow-failure.py = 614
+file_lines::scripts/sync-devkit.py = 1417
+file_lines::src/ibkr_trader/backtest/engine.py = 748
+file_lines::src/ibkr_trader/cli.py = 1340
+file_lines::src/ibkr_trader/scheduler.py = 733
+file_lines::src/ibkr_trader/signals/train.py = 679
+function_lines::scripts/hooks/enforce-capped-bash.py::split_top_level = 96
+function_lines::scripts/sync-devkit.py::main = 246
+function_lines::src/ibkr_trader/backtest/engine.py::_run_with_session = 92
+function_lines::src/ibkr_trader/backtest/engine.py::simulate = 135
+function_lines::src/ibkr_trader/backtest/oos.py::run_oos_backtest = 100
+function_lines::src/ibkr_trader/backtest/snapshot.py::run_snapshots = 88
+function_lines::src/ibkr_trader/scheduler.py::build_scheduler = 114
+function_lines::src/ibkr_trader/signals/dataset.py::build_dataset_from_panel = 88
+function_lines::src/ibkr_trader/signals/train.py::select_lgbm_params_optuna = 109
+function_lines::src/ibkr_trader/signals/train.py::train_on_dataset = 130
+function_params::scripts/report-workflow-failure.py::apply = 7
+function_params::src/ibkr_trader/backtest/compare.py::compare_runs = 7
+function_params::src/ibkr_trader/backtest/engine.py::_execute = 9
+function_params::src/ibkr_trader/backtest/engine.py::_load_series = 7
+function_params::src/ibkr_trader/backtest/engine.py::_run_with_session = 10
+function_params::src/ibkr_trader/backtest/engine.py::run = 8
+function_params::src/ibkr_trader/backtest/engine.py::run_allocator = 10
+function_params::src/ibkr_trader/backtest/engine.py::simulate = 9
+function_params::src/ibkr_trader/backtest/oos.py::run_oos_backtest = 13
+function_params::src/ibkr_trader/cli.py::backtest_oos = 12
+function_params::src/ibkr_trader/cli.py::backtest_run = 10
+function_params::src/ibkr_trader/cli.py::ingest_news = 7
+function_params::src/ibkr_trader/cli.py::train_run = 13
+function_params::src/ibkr_trader/dashboard/data.py::run_backtest = 8
+function_params::src/ibkr_trader/signals/dataset.py::build_dataset = 8
+function_params::src/ibkr_trader/signals/dataset.py::build_dataset_from_panel = 9
+function_params::src/ibkr_trader/signals/train.py::train_from_db = 13
+function_params::src/ibkr_trader/signals/train.py::train_on_dataset = 12
+imports::src/ibkr_trader/cli.py = 90
+imports::src/ibkr_trader/scheduler.py = 31
+imports::src/ibkr_trader/signals/train.py = 34
+nesting_depth::scripts/hooks/harness_events.py::_main_checkout = 5
+nesting_depth::scripts/hooks/structure_check.py::strongly_connected = 5
+nesting_depth::scripts/hooks/structure_scan.py::_complexity = 5
+nesting_depth::scripts/hooks/structure_scan.py::_word_before = 5
+nesting_depth::scripts/hooks/structure_scan.py::mask_literals = 9
+nesting_depth::scripts/hooks/structure_scan.py::scan_python = 6
+orphan::src/ibkr_trader/db/adoption.py = 1
+orphan::src/ibkr_trader/execution/ibkr_broker.py = 1
+skipped_tests::scripts/hooks/tests/test_codex_translation.py = 2
+skipped_tests::scripts/hooks/tests/test_hook_execution_contract.py = 3
+skipped_tests::scripts/hooks/tests/test_lint_fix.py = 1
+skipped_tests::scripts/hooks/tests/test_repo_contract.py = 7
+skipped_tests::scripts/hooks/tests/test_session_start.py = 2
+skipped_tests::scripts/hooks/tests/test_stop.py = 2
+skipped_tests::scripts/hooks/tests/test_structure_check.py = 1
+skipped_tests::scripts/hooks/tests/test_structure_scan.py = 3
+skipped_tests::scripts/hooks/tests/test_sync_codex_hooks.py = 2
+skipped_tests::scripts/hooks/tests/test_untested_symbols.py = 1
+skipped_tests::tests/test_ml_predictor.py = 1
+suppressions::scripts/hooks/enforce-capped-bash.py = 2
+suppressions::scripts/hooks/harness_config.py = 1
+suppressions::scripts/hooks/harness_events.py = 1
+suppressions::scripts/hooks/invoke-capped.py = 1
+suppressions::scripts/hooks/lint-fix.py = 2
+suppressions::scripts/hooks/tests/test_sync_codex_hooks.py = 1
+suppressions::scripts/ingest-task.py = 1
+suppressions::scripts/log-wrap.py = 2
+suppressions::scripts/task_branch.py = 1
+suppressions::scripts/vnc-viewer.py = 1
+suppressions::src/ibkr_trader/backtest/factor_report.py = 1
+suppressions::src/ibkr_trader/backtest/snapshot.py = 1
+suppressions::src/ibkr_trader/db/trading_models.py = 1
+suppressions::src/ibkr_trader/scheduler.py = 1
+suppressions::src/ibkr_trader/signals/portfolio.py = 1
+suppressions::src/ibkr_trader/signals/predictor.py = 3
+suppressions::src/ibkr_trader/signals/tracking.py = 1
+suppressions::src/ibkr_trader/signals/train.py = 9
+suppressions::tests/test_dashboard_report.py = 3
+suppressions::tests/test_factor_report.py = 3
+suppressions::tests/test_oos.py = 1
+suppressions::tests/test_optuna_search.py = 3
+suppressions::tests/test_scheduler.py = 2
+suppressions::tests/test_timescaledb_migration.py = 1
+suppressions::tests/test_train.py = 6
+swallowed_errors::scripts/hooks/harness_events.py = 2
+swallowed_errors::scripts/ingest_fmp_tickers.py = 1
+swallowed_errors::scripts/vnc-viewer.py = 1
+swallowed_errors::src/ibkr_trader/scheduler.py = 9
+todos::src/ibkr_trader/cli.py = 1
+todos::src/ibkr_trader/execution/ibkr_broker.py = 4
+todos::src/ibkr_trader/execution/risk.py = 1
+todos::src/ibkr_trader/signals/predictor.py = 1
