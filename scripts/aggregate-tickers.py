@@ -23,8 +23,11 @@ def canonical(symbol: str) -> str:
     return symbol.strip().upper().removesuffix(".TO")
 
 
-def main() -> int:
-    workspace = pathlib.Path(__file__).resolve().parents[1]
+def main(workspace: pathlib.Path | None = None) -> int:
+    # Defaults to the repo root, which is the only thing the task ever passes. The
+    # parameter exists so a test can point the read and the write at a tmp_path instead
+    # of rewriting the real tickers.txt as a side effect of being tested.
+    workspace = workspace or pathlib.Path(__file__).resolve().parents[1]
     first_seen: dict[str, str] = {}  # canonical -> raw entry that claimed it
     collisions: list[str] = []
     for name in SOURCE_FILES:

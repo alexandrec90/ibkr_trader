@@ -5,7 +5,6 @@
 # forces its line out. Never add a line to make a new symbol pass; write the test.
 #
 # Regenerate only when adopting the gate: python scripts/hooks/untested_symbols.py --seed
-scripts/aggregate-tickers.py::canonical
 scripts/db-revision.py::write_artifact
 scripts/docker-prune.py::compact_vhdx
 scripts/docker-prune.py::free_gb
@@ -67,7 +66,6 @@ scripts/sync-codex-hooks.py::adapter_command
 scripts/sync-codex-hooks.py::is_redundant_handler
 scripts/sync-codex-hooks.py::port_handler
 scripts/sync-codex-hooks.py::root_expression
-scripts/sync-devkit.py::read_receipt
 scripts/sync-devkit.py::receipt_retired_present
 scripts/sync-devkit.py::remove_retired
 scripts/sync-devkit.py::retired_present
