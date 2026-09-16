@@ -47,3 +47,7 @@ Thumbs.db
 
 # Cold-data archive when ARCHIVE_LOCAL_DIR is left at its bare default (config.py).
 /archive/
+
+# `claude --worktree <name>` cuts a nested checkout here; git does not ignore a
+# linked worktree on its parent's behalf, so without this the repo reads as dirty.
+.claude/worktrees/
