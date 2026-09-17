@@ -89,6 +89,47 @@ def test_no_python_lives_under_dot_vscode():
     assert stray == [], f"scripts belong in scripts/, not .vscode/: {stray}"
 
 
+def test_ingest_task_resolves_defaults_and_runs_the_artifact_wrapper(monkeypatch):
+    script = load_script("ingest-task.py")
+    completed = SimpleNamespace(returncode=7)
+    calls = []
+    monkeypatch.setattr(
+        script.subprocess,
+        "run",
+        lambda command, **kwargs: calls.append((command, kwargs)) or completed,
+    )
+
+    mode, arg = script.parse_args(["fmp-price-one", "--arg", "  "])
+    assert mode == "fmp-price-one"
+    assert script.build_argv(mode, arg)[-5:] == [
+        "ingest",
+        "prices",
+        "NVDA",
+        "--source",
+        "fmp",
+    ]
+    assert script.main(["fmp-price-one"]) == 7
+    assert calls == [(script.build_argv("fmp-price-one", ""), {"cwd": script.REPO_ROOT})]
+
+
+def test_lint_all_main_runs_each_gate_for_changed_python(monkeypatch):
+    script = load_script("lint-all.py")
+    calls = []
+    monkeypatch.setattr(script, "changed_python_files", lambda: ["scripts/example.py"])
+    monkeypatch.setattr(
+        script,
+        "run_artifact",
+        lambda name, args: calls.append((name, args)) or 0,
+    )
+
+    assert script.main(["--changed"]) == 0
+    assert calls == [
+        ("lint", ["-m", "ruff", "check", "scripts/example.py"]),
+        ("format-check", ["-m", "ruff", "format", "--check", "scripts/example.py"]),
+        ("typecheck", ["-m", "mypy", "src"]),
+    ]
+
+
 def test_docker_prune_never_requests_volume_deletion(monkeypatch):
     script = load_script("docker-prune.py")
     commands = []
