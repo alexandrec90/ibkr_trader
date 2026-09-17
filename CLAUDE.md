@@ -28,6 +28,20 @@ The `data-lake` package must be checked out **beside** this repo (`../data-lake`
 editable path dependency, so `uv sync` fails without it:
 `git clone https://github.com/alexandrec90/data-lake.git ../data-lake`.
 
+**In a worktree, `../data-lake` resolves to `.worktrees/data-lake` and does not exist**, so
+`uv sync` and every `uv run` fail with `Distribution not found at:
+file:///…/.worktrees/data-lake` and leave the worktree's `.venv` empty. The fleet cuts a
+sibling `data-lake` worktree (`.worktrees/data-lake--<same-slug>/`) but nothing links it
+into place — do that first, from inside the worktree:
+
+```bash
+cmd /c mklink /J ..\data-lake ..\data-lake--<slug>   # Windows; a symlink elsewhere
+```
+
+Point it at the **data-lake worktree for the same branch family**, never at the main
+checkout. The main checkout silently re-resolves `uv.lock` — boto3 and ruff specifier
+bumps — and smuggles an unrelated lockfile diff into whatever branch you are on.
+
 ```bash
 uv sync                        # setup: create .venv, install locked deps + dev group
 uv sync --extra ml             # + ML training extras (lightgbm/scikit-learn)
