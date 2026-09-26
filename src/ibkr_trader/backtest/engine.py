@@ -687,7 +687,7 @@ def _load_series(
         source = _pick_source(session, instrument.id, bar_size, wts, start, end)
         if source is None:
             continue
-        rows = list(
+        rows: list[PriceBar] = list(
             session.scalars(
                 select(PriceBar)
                 .where(

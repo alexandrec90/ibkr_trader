@@ -7,6 +7,7 @@ place that applies CAD conversion, dividends, costs, eligibility, and portfolio 
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -126,10 +127,10 @@ def load_native_close_prices(
     start = dates.min().to_pydatetime()
     # Two calendar days per requested trading day comfortably spans weekends/holidays.
     end = (dates.max() + timedelta(days=max(periods) * 2)).to_pydatetime()
-    instruments = {
-        instrument.symbol: instrument
-        for instrument in session.scalars(select(Instrument).where(Instrument.symbol.in_(assets)))
-    }
+    found: Sequence[Instrument] = session.scalars(
+        select(Instrument).where(Instrument.symbol.in_(assets))
+    ).all()
+    instruments = {instrument.symbol: instrument for instrument in found}
     missing = sorted(set(assets) - set(instruments))
     if missing:
         raise ValueError(f"factor assets have no instruments: {', '.join(missing)}")
