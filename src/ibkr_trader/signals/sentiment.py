@@ -5,7 +5,7 @@ model downloading is an explicit CLI operation. A score unlocks raw-payload prun
 surviving title/summary/body permits later re-scoring with a better model.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any, Literal, Protocol
 
 from sqlalchemy import or_, select
@@ -73,7 +73,7 @@ def score_pending(
     for row_model, text_of in _SCORABLE:
         scored = 0
         while True:
-            rows = session.scalars(
+            rows: Sequence[Any] = session.scalars(
                 select(row_model).where(row_model.sentiment.is_(None)).limit(batch_size)
             ).all()
             if not rows:
@@ -107,7 +107,7 @@ def rescore(
         scored = 0
         while remaining is None or remaining > 0:
             take = batch_size if remaining is None else min(batch_size, remaining)
-            rows = session.scalars(
+            rows: Sequence[Any] = session.scalars(
                 select(row_model)
                 .where(
                     or_(
