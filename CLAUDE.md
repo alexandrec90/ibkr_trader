@@ -28,13 +28,17 @@ The `data-lake` package must be checked out **beside** this repo (`../data-lake`
 editable path dependency, so `uv sync` fails without it:
 `git clone https://github.com/alexandrec90/data-lake.git ../data-lake`.
 
-**In a worktree, `../data-lake` resolves inside the worktree tier and does not exist** —
+**In a worktree, `../data-lake` resolves inside the worktree tier** —
 `.claude/worktrees/data-lake` from a `claude --worktree` tree, `.worktrees/data-lake` from
-a box — so `uv sync` and every `uv run` fail with `Distribution not found at:
-file:///…/data-lake` and leave the worktree's `.venv` empty. **Nothing cuts a `data-lake`
-worktree for you**, not the fleet and not `agent-worktree.py`: cut one on the matching
-branch from the data-lake checkout, beside this worktree, then link it into place from
-inside the worktree:
+a box. devkit's global `post-checkout` hook (`worktree_env.link_path_sources`) cuts that
+path once per tier as a **detached** data-lake worktree at `origin/HEAD`, before its
+`uv sync`, so a fresh worktree builds against published data-lake. Every worktree of the
+tier shares that one tree. If it is missing anyway (`Distribution not found at:
+file:///…/data-lake`), cut it by hand from inside the worktree —
+`git -C ../../../../data-lake worktree add --detach "$PWD/../data-lake" origin/main` for a
+`claude --worktree` tree. A task that **edits** data-lake needs its own branch there
+instead: cut one from the data-lake checkout, beside this worktree, then link it into
+place from inside the worktree:
 
 ```bash
 cmd /c mklink /J ..\data-lake ..\data-lake--<slug>   # Windows; a symlink elsewhere
