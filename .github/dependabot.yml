@@ -1,10 +1,10 @@
 # Dependabot keeps dependencies current and surfaces security advisories via PRs.
 # Scope: Python libraries (pyproject.toml) + any GitHub Actions we add later.
 #
-# NOTE: our pyproject pins are floors (`>=`), and there is no lockfile, so version-update PRs
-# raise the *minimum* bound rather than pinning an exact upgrade. The real safety net is CI:
-# once a ruff/mypy/pytest workflow exists (TODO §5), these PRs get validated automatically —
-# that is what would have caught the numpy-vs-mypy version skew. Enable security alerts in the
+# NOTE: our pyproject pins are floors (`>=`) and uv.lock records what is tested. A floor says
+# what the code needs, so the Python entry uses `increase-if-necessary`: a bump the floor
+# already allows leaves pyproject alone. PR Gate validates every update PR, and its
+# `uv sync --locked` fails one whose lock no longer resolves. Enable security alerts in the
 # repo settings (Security → Code security) so advisories open PRs even between scheduled runs.
 version: 2
 updates:
@@ -15,6 +15,7 @@ updates:
       interval: "weekly"
       day: "monday"
     open-pull-requests-limit: 5
+    versioning-strategy: increase-if-necessary
     labels:
       - "dependencies"
       - "python"
