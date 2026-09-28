@@ -6,12 +6,13 @@
 # Never add or raise a line to make new code pass; fix the code. `dependency::` is one
 # exception -- adding a package is a line here, so the PR diff shows it.
 #
-# `--record --reason "..."` is the other, and it is the deliberate hole. A module far
-# past `file_lines` cannot gain a line, so a bug whose fix belongs in one has nowhere
-# to go, and the split the finding asks for is a separate body of work. Recording says
+# `--record --reason "..."` is the other, and it is the deliberate hole. A function far
+# past its limit cannot gain a line, so a bug whose fix belongs in one has nowhere to
+# go, and the refactor the finding asks for is a separate body of work. Recording says
 # so out loud: the reason is mandatory, counter rules (`suppressions`, `todos`,
 # `skipped_tests`, ...) are refused because those are always somebody giving up rather
-# than a module's size, and every move is logged below with what it moved and why.
+# than a unit's size, and every move is logged below with what it moved and why.
+# Module size -- `file_lines`, `imports`, `definitions` -- is advisory and never here.
 #
 # Regenerate only when adopting the gate: python scripts/hooks/structure_check.py --seed
 complexity::src/ibkr_trader/backtest/engine.py::simulate = 24
@@ -19,8 +20,6 @@ complexity::src/ibkr_trader/backtest/snapshot.py::build_snapshot_report = 16
 complexity::src/ibkr_trader/signals/dataset.py::build_dataset_from_panel = 23
 complexity::src/ibkr_trader/signals/features.py::_add_corporate_features = 19
 cycle::src/ibkr_trader/backtest/engine.py = 8
-definitions::src/ibkr_trader/cli.py = 39
-definitions::src/ibkr_trader/scheduler.py = 24
 dependency::pyproject.toml::alembic = 1
 dependency::pyproject.toml::alphalens-reloaded = 1
 dependency::pyproject.toml::apscheduler = 1
@@ -50,10 +49,6 @@ dependency::pyproject.toml::torch = 1
 dependency::pyproject.toml::transformers = 1
 dependency::pyproject.toml::typer = 1
 dependency::pyproject.toml::vadersentiment = 1
-file_lines::src/ibkr_trader/backtest/engine.py = 748
-file_lines::src/ibkr_trader/cli.py = 1340
-file_lines::src/ibkr_trader/scheduler.py = 733
-file_lines::src/ibkr_trader/signals/train.py = 679
 function_lines::src/ibkr_trader/backtest/engine.py::_run_with_session = 92
 function_lines::src/ibkr_trader/backtest/engine.py::simulate = 135
 function_lines::src/ibkr_trader/backtest/oos.py::run_oos_backtest = 100
@@ -79,9 +74,6 @@ function_params::src/ibkr_trader/signals/dataset.py::build_dataset = 8
 function_params::src/ibkr_trader/signals/dataset.py::build_dataset_from_panel = 9
 function_params::src/ibkr_trader/signals/train.py::train_from_db = 13
 function_params::src/ibkr_trader/signals/train.py::train_on_dataset = 12
-imports::src/ibkr_trader/cli.py = 90
-imports::src/ibkr_trader/scheduler.py = 31
-imports::src/ibkr_trader/signals/train.py = 34
 orphan::src/ibkr_trader/db/adoption.py = 1
 orphan::src/ibkr_trader/execution/ibkr_broker.py = 1
 skipped_tests::tests/test_ml_predictor.py = 1
