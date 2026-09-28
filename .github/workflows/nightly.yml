@@ -55,7 +55,7 @@ jobs:
           cache-dependency-glob: "uv.lock"
 
       - name: Sync environment (locked, dev group + optional extras)
-        run: uv sync --frozen --extra ml --extra tracking --extra archive --extra research --extra sentiment --extra report
+        run: uv sync --locked --extra ml --extra tracking --extra archive --extra research --extra sentiment --extra report
 
       - name: Ruff lint
         run: uv run ruff check src tests
@@ -73,7 +73,7 @@ jobs:
         run: uv run python -m pytest scripts/hooks/tests/ -q --tb=short
 
   unlocked-toolchain:
-    # The half the locked run cannot see. `uv sync --frozen` pins every dev tool, so a
+    # The half the locked run cannot see. `uv sync --locked` pins every dev tool, so a
     # ruff or mypy release that rejects this codebase stays invisible until Dependabot's
     # weekly PR happens to land. Resolving the toolchain off-lock is what surfaces it on
     # the night it ships instead.

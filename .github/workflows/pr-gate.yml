@@ -111,12 +111,14 @@ jobs:
           cache-dependency-glob: "uv.lock"
 
       - name: Sync environment (locked, dev group + optional extras)
-        # --frozen fails the build if uv.lock is out of date with pyproject.toml, so the
-        # committed lockfile is authoritative. Optional extras matter: their tests
-        # importorskip optional dependencies, so without the extras CI can silently skip them.
+        # --locked fails this step if uv.lock no longer resolves against pyproject.toml and
+        # the ../data-lake checkout above. --frozen never checked: when data-lake raised its
+        # pandas floor past what alphalens allows, the first `uv run` relocked and the gate
+        # reported "Ruff lint" red. Optional extras matter: their tests importorskip
+        # optional dependencies, so without the extras CI can silently skip them.
         # The dev group installs by default.
         # Python comes from .python-version (3.12); numpy's stubs need >= 3.12 to parse.
-        run: uv sync --frozen --extra ml --extra tracking --extra archive --extra research --extra sentiment --extra report
+        run: uv sync --locked --extra ml --extra tracking --extra archive --extra research --extra sentiment --extra report
 
       - name: Ruff lint
         run: uv run ruff check src tests

@@ -33,7 +33,11 @@ editable path dependency, so `uv sync` fails without it:
 a box. devkit's global `post-checkout` hook (`worktree_env.link_path_sources`) cuts that
 path once per tier as a **detached** data-lake worktree at `origin/HEAD`, before its
 `uv sync`, so a fresh worktree builds against published data-lake. Every worktree of the
-tier shares that one tree. If it is missing anyway (`Distribution not found at:
+tier shares that one tree, and each new worktree fetches data-lake and moves it to the
+new `origin/HEAD` -- unless it holds a branch or a tracked change, which the hook names
+and leaves. So a stale lock check there means no worktree was cut since data-lake moved:
+a `fetch` and a `checkout --detach origin/main` in `../data-lake` catch it up. If it
+is missing anyway (`Distribution not found at:
 file:///…/data-lake`), cut it by hand from inside the worktree —
 `git -C ../../../../data-lake worktree add --detach "$PWD/../data-lake" origin/main` for a
 `claude --worktree` tree. A task that **edits** data-lake needs its own branch there
