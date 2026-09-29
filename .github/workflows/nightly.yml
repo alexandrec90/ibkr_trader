@@ -6,8 +6,10 @@ name: Nightly
 # expired credential, a test that is flaky rather than broken.
 #
 # This repo has two specific reasons to want one. `data-lake` is checked out from its
-# **default branch**, not a pinned ref, so a commit there can break this suite with no
-# push here to notice it. And `DATA_LAKE_DEPLOY_KEY` is a credential that expires or
+# **default branch** here, while the PR gate pins it to the commit uv.lock was resolved
+# against, so this is the only run that sees a data-lake commit that stales the lock or
+# breaks this suite. A red "Sync environment" here means: move the PR gate's data-lake
+# `ref:` to data-lake's main, `uv lock`, and commit both. And `DATA_LAKE_DEPLOY_KEY` is a credential that expires or
 # gets rotated — without a nightly, the first thing to discover that is whoever opens
 # the next PR.
 #

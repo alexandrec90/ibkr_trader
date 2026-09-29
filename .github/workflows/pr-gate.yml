@@ -95,10 +95,18 @@ jobs:
         with:
           path: ibkr_trader
 
+      # Pinned to the data-lake commit uv.lock was resolved against, never its default
+      # branch. The lock records data-lake's own metadata -- its dev group included -- so
+      # every pyproject edit there (a devkit floor, a Dependabot ruff bump) left this gate
+      # red on main with no push here; it took three relocks in two days. Bumping data-lake
+      # is one commit: move this ref, run `uv lock`, commit both. The nightly still runs
+      # against data-lake's default branch, and is where that drift is meant to surface.
+      # tests/test_ci_data_lake_pin.py holds this ref to a full commit SHA.
       - name: Checkout data-lake
         uses: actions/checkout@v7
         with:
           repository: alexandrec90/data-lake
+          ref: 430536af65d96366d18dcbd6d460047a9411f3ed
           ssh-key: ${{ secrets.DATA_LAKE_DEPLOY_KEY }}
           path: data-lake
 
