@@ -102,6 +102,10 @@ Prefer `stop` over `down` so the `pgdata` volume and its schema survive.
   `data_lake.configure(...)`, called from the CLI's root callback and `build_scheduler()`.
   Changing a connector means editing `../data-lake` and committing **there** — the editable
   install means the change is live here immediately, with no reinstall and no lockfile bump.
+  **CI is different:** the PR gate checks data-lake out at the commit pinned by `ref:` in
+  `.github/workflows/pr-gate.yml`, because `uv.lock` records data-lake's pyproject. A change
+  here that needs a newer data-lake moves that `ref:` and runs `uv lock` in the same commit;
+  a red nightly sync is the prompt to do so.
 - `src/ibkr_trader/scheduler.py` — the APScheduler wiring behind `serve`. **A split
   candidate, deliberately not split yet** — read this before proposing to move it:
   - Six of its eight jobs are pure data-lake ingestion (`reddit_poll`,
