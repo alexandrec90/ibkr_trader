@@ -5,9 +5,13 @@
 # forces its line out. Never add a line to make a new symbol pass; write the test.
 #
 # Regenerate only when adopting the gate: python scripts/hooks/untested_symbols.py --seed
+scripts/backtest-task.py::main
+scripts/db-revision.py::parse_args
+scripts/db-revision.py::python_exe
 scripts/db-revision.py::write_artifact
 scripts/docker-prune.py::compact_vhdx
 scripts/docker-prune.py::free_gb
+scripts/docker-prune.py::main
 scripts/docker-prune.py::pip_reclaim
 scripts/docker-prune.py::restart_docker_and_db
 scripts/docker-prune.py::run
@@ -27,9 +31,9 @@ scripts/hooks/enforce-capped-bash.py::split_top_level
 scripts/hooks/enforce-capped-bash.py::statements
 scripts/hooks/enforce-capped-bash.py::strip_prefixes
 scripts/hooks/enforce-capped-bash.py::strip_quoted
-scripts/hooks/session-sync.py::main
 scripts/hooks/session-sync.py::run_git
 scripts/ingest_fmp_tickers.py::load_tickers
+scripts/ingest_fmp_tickers.py::parse_args
 scripts/lint-all.py::changed_python_files
 scripts/lint-all.py::run_artifact
 scripts/log-wrap.py::strip_ansi
@@ -43,6 +47,7 @@ scripts/merge-dependabot-prs.py::merge_pr
 scripts/merge-dependabot-prs.py::open_prs
 scripts/merge-dependabot-prs.py::prs_for_branch
 scripts/merge-dependabot-prs.py::verdict
+scripts/reorder-todo.py::main
 scripts/reorder-todo.py::parse_blocks
 scripts/report-workflow-failure.py::api_workflow_states
 scripts/report-workflow-failure.py::apply
@@ -57,6 +62,7 @@ scripts/report-workflow-failure.py::run_env
 scripts/report-workflow-failure.py::run_facts
 scripts/report-workflow-failure.py::stopped_body
 scripts/report-workflow-failure.py::sweep
+scripts/run-tests.py::main
 scripts/ship.py::backoff_delays
 scripts/ship.py::current_branch
 scripts/snapshot-monthly.py::Step
@@ -68,6 +74,7 @@ scripts/sync-codex-hooks.py::root_expression
 scripts/sync-devkit.py::receipt_retired_present
 scripts/sync-devkit.py::remove_retired
 scripts/sync-devkit.py::retired_present
+scripts/task-artifact-runner.py::parse_args
 scripts/vnc-viewer.py::fetch_auth_file
 src/ibkr_trader/accounts.py::AccountTaxProfile
 src/ibkr_trader/backtest/engine.py::BacktestResult
