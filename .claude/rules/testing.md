@@ -1,5 +1,5 @@
 ---
-description: IBKR-specific testing policy for safety gates, layer boundaries, and the full local gate
+description: IBKR-specific testing policy for safety gates, layer boundaries, and what to run locally
 paths:
   - src/**/*.py
   - tests/**/*.py
@@ -20,11 +20,14 @@ the additions and exceptions required by IBKR Trader.
    (`stable_hash`) must have explicit tests for both the allowed and the refused/violating
    paths. A change to these files without a corresponding test change is a red flag — stop and
    add the test.
-2. **Run the full gate before declaring work done.** This intentionally overrides devkit's
-   targeted-local-test default: this repository's suite is self-contained and uses in-memory
-   SQLite, so the full local gate is the appropriate completion check:
-   `pytest && ruff check src tests && ruff format --check src tests && mypy src`.
-   Report failures verbatim; never claim green without running it.
+2. **Run the tests for what you touched; the gate is CI's.** No exception to
+   `.claude/rules/session-scope.md` here. This rule used to make a bare `pytest` "the full
+   local gate", and it is not one: it collects `tests/` only, never the vendored
+   `scripts/hooks/tests/` or the ratchets (`scripts/hooks/untested_symbols.py`,
+   `scripts/hooks/structure_check.py`). PR #74 was called green on it and went red on a
+   ratchet. So run `uv run pytest <the test files for your change>`, `ruff check` and
+   `ruff format --check` over the files you changed, and `mypy src` when you touched `src/`.
+   Report failures verbatim, and call what you ran by its name, never "the gate".
 3. **Keep the IBKR coverage floor current.** CI runs `pytest --cov=ibkr_trader` against the
    `fail_under` floor in `pyproject.toml` (`[tool.coverage.report]`). When total coverage grows,
    raise the floor to just below the new number. Check locally with `pytest --cov=ibkr_trader`

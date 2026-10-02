@@ -186,8 +186,8 @@ pull managed.
 
 ## Conventions
 
-- **IBKR-specific testing policy:** safety-gate coverage, layer-specific test strategy, and this
-  repo's full local completion gate live in [.claude/rules/testing.md](.claude/rules/testing.md).
+- **IBKR-specific testing policy:** safety-gate coverage, layer-specific test strategy, and what
+  to run locally live in [.claude/rules/testing.md](.claude/rules/testing.md).
   It is this repo's own rule and layers *on top of* the vendored engineering policy above.
 - SQLAlchemy 2.0 typed style (`Mapped[...]`), UTC timestamps everywhere.
 - Skeleton stubs raise `NotImplementedError` with a `TODO(skeleton)` comment describing the
