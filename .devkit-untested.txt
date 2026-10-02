@@ -30,7 +30,6 @@ scripts/hooks/enforce-capped-bash.py::strip_quoted
 scripts/hooks/session-sync.py::main
 scripts/hooks/session-sync.py::run_git
 scripts/ingest_fmp_tickers.py::load_tickers
-scripts/ingest_fmp_tickers.py::make_connector
 scripts/lint-all.py::changed_python_files
 scripts/lint-all.py::run_artifact
 scripts/log-wrap.py::strip_ansi
