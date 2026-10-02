@@ -14,6 +14,8 @@ from __future__ import annotations
 import argparse
 import pathlib
 
+from ibkr_trader.lake import configure_lake
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
@@ -33,14 +35,14 @@ def parse_args() -> argparse.Namespace:
 
 def make_connector(source: str):
     if source == "yahoo":
-        from ibkr_trader.ingestion.market.yahoo import YahooConnector
+        from data_lake.ingestion.market.yahoo import YahooConnector
 
         return YahooConnector()
     if source == "yahoo-fundamentals":
-        from ibkr_trader.ingestion.market.yahoo_fundamentals import YahooFundamentalsConnector
+        from data_lake.ingestion.market.yahoo_fundamentals import YahooFundamentalsConnector
 
         return YahooFundamentalsConnector()
-    from ibkr_trader.ingestion.market.fmp import FmpConnector
+    from data_lake.ingestion.market.fmp import FmpConnector
 
     return FmpConnector()
 
@@ -63,6 +65,9 @@ def main() -> int:
         print(f"no tickers found in {ticker_path}")
         return 1
 
+    # The connectors take settings and sessions from data_lake.configure(), which the CLI's
+    # root callback does for every subcommand -- this script calls them directly.
+    configure_lake()
     connector = make_connector(args.source)
     unit = "rows" if args.source == "yahoo-fundamentals" else "bars"
     failures: list[str] = []

@@ -213,6 +213,46 @@ def test_ingest_ticker_helper_continues_after_a_symbol_failure(monkeypatch, tmp_
     assert "failed_tickers: AAPL" in output
 
 
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("fmp", "data_lake.ingestion.market.fmp.FmpConnector"),
+        ("yahoo", "data_lake.ingestion.market.yahoo.YahooConnector"),
+        (
+            "yahoo-fundamentals",
+            "data_lake.ingestion.market.yahoo_fundamentals.YahooFundamentalsConnector",
+        ),
+    ],
+)
+def test_ingest_ticker_helper_builds_the_data_lake_connector(source, expected):
+    # Unstubbed on purpose: the test above replaces make_connector, which is how this script
+    # kept importing `ibkr_trader.ingestion` for months after ingestion moved to data-lake.
+    script = load_script("ingest_fmp_tickers.py")
+
+    connector = script.make_connector(source)
+
+    cls = type(connector)
+    assert f"{cls.__module__}.{cls.__qualname__}" == expected
+
+
+def test_ingest_ticker_helper_wires_the_lake_before_fetching(monkeypatch, tmp_path):
+    # The connectors read settings and sessions off data_lake.configure(); the CLI callback
+    # does that for every subcommand, but this script calls the connectors directly.
+    script = load_script("ingest_fmp_tickers.py")
+    (tmp_path / "tickers.txt").write_text("AAPL\n", encoding="utf-8")
+    events: list[str] = []
+    connector = SimpleNamespace(fetch=lambda *, symbol: events.append(f"fetch {symbol}") or 1)
+    monkeypatch.setattr(
+        script, "parse_args", lambda: argparse.Namespace(tickers="tickers.txt", source="fmp")
+    )
+    monkeypatch.setattr(script, "configure_lake", lambda: events.append("configure"))
+    monkeypatch.setattr(script, "make_connector", lambda _source: connector)
+    monkeypatch.setattr(script.pathlib.Path, "resolve", lambda _self: tmp_path / "scripts" / "x")
+
+    assert script.main() == 0
+    assert events == ["configure", "fetch AAPL"]
+
+
 def test_vnc_viewer_removes_auth_file_after_viewer_exits(monkeypatch, tmp_path):
     script = load_script("vnc-viewer.py")
     auth_file = tmp_path / "auth"
