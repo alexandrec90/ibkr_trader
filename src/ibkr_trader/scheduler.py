@@ -78,6 +78,26 @@ def poll_reddit() -> int:
     return count
 
 
+#: The reddit job's recorded result while its credentials are unset: it lands in the health
+#: table's result column, so the gap stays visible without failing the check every 30 minutes.
+REDDIT_UNCONFIGURED = "skipped: REDDIT_CLIENT_ID/SECRET not set (see .env.example)"
+
+
+def poll_reddit_job(settings: Settings | None = None) -> int | str:
+    """Poll reddit, or skip while no credentials are configured, as newsapi skips without its
+    mapping file. Run unconfigured, the connector raised on every poll and held
+    `ibkr-trader health` red over a source nobody had set up yet.
+
+    Defaults to `get_settings()`, the object `configure_lake` hands the connector, so the
+    check reads the same credentials the poll would use.
+    """
+    settings = settings or get_settings()
+    if not (settings.reddit_client_id and settings.reddit_client_secret):
+        logger.info("reddit poll %s", REDDIT_UNCONFIGURED)
+        return REDDIT_UNCONFIGURED
+    return poll_reddit()
+
+
 def poll_trends(keywords: list[str]) -> int:
     if not keywords:
         logger.info("trends poll skipped: no trends_keywords configured")
@@ -642,7 +662,7 @@ def build_scheduler(
             **extra,
         )
 
-    register("reddit_poll", "reddit", poll_reddit, seconds=settings.poll_reddit_minutes * 60)
+    register("reddit_poll", "reddit", poll_reddit_job, seconds=settings.poll_reddit_minutes * 60)
     register(
         "finnhub_news_poll",
         "finnhub_news",

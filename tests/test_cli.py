@@ -1340,11 +1340,31 @@ def test_health_shows_a_job_that_succeeds_without_ingesting(tmp_path):
 
 
 def test_health_flags_a_job_that_never_ran(tmp_path):
+    import json
+    from datetime import UTC, datetime, timedelta
+
     artifact = _health_artifact(tmp_path, {"newsapi": {"interval": 43200}})
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
+    overdue = datetime.now(UTC) - timedelta(days=3)
+    payload["jobs"]["newsapi"]["scheduled_since"] = overdue.isoformat()
+    artifact.write_text(json.dumps(payload), encoding="utf-8")
     result = runner.invoke(cli.app, ["health", "--artifact", str(artifact)])
 
     assert result.exit_code == 1
     assert "never-run" in result.output
+
+
+def test_health_passes_a_job_that_has_not_been_due_yet(tmp_path):
+    """A daily job a few hours after `serve` started has had no chance to run; failing the
+    check on it is what sent devkit's fix pass at ibkr_trader on 2026-10-03."""
+    artifact = _health_artifact(
+        tmp_path,
+        {"prices": {"interval": 86400, "ok": True}, "archive_bars": {"interval": 86400}},
+    )
+    result = runner.invoke(cli.app, ["health", "--artifact", str(artifact)])
+
+    assert result.exit_code == 0, _all_output(result)
+    assert "pending" in result.output
 
 
 def test_health_reports_a_missing_artifact_clearly(tmp_path):

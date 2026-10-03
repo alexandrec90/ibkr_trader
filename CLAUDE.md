@@ -128,7 +128,8 @@ Prefer `stop` over `down` so the `pgdata` volume and its schema survive.
     exception so one dead source cannot stop the rest, and APScheduler then logs the run as
     "executed successfully" — which hid a six-day outage (a stopped database) in July 2026.
     Every run therefore records to `job_health`, which writes `logs/scheduler-health.json`;
-    `ibkr-trader health` reads it and exits non-zero on a failing, stale or never-run job.
+    `ibkr-trader health` reads it and exits non-zero on a failing, stale or never-run job;
+    one not yet due long enough to judge is `pending` and passes.
     **Anything added to `_guard` must keep that artifact written on the failure path too.**
   - **The same trap one level down:** the polls catch per-symbol errors so one dead ticker
     cannot abort a run, which means a *systemic* failure reads as an empty result. A database

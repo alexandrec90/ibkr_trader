@@ -145,6 +145,40 @@ def test_poll_reddit_returns_connector_count(monkeypatch):
     assert scheduler.poll_reddit() == 12
 
 
+def test_poll_reddit_job_skips_without_credentials(monkeypatch):
+    """43 runs of `RuntimeError: REDDIT_CLIENT_ID/SECRET not set` kept `ibkr-trader health`
+    red, and with it devkit's collector tray, over a source nobody had configured. An
+    unconfigured source is a skip, like newsapi with no mapping file -- said in the result."""
+    from data_lake.ingestion.social.reddit import RedditConnector
+
+    monkeypatch.setattr(RedditConnector, "fetch", lambda self, **kw: pytest.fail("fetched"))
+    for client_id, secret in (("", ""), ("id", ""), ("", "secret")):
+        settings = SimpleNamespace(reddit_client_id=client_id, reddit_client_secret=secret)
+        assert scheduler.poll_reddit_job(settings) == scheduler.REDDIT_UNCONFIGURED
+    # Registered bare, it reads the settings `configure_lake` hands the connector.
+    monkeypatch.setattr(scheduler, "get_settings", lambda: settings)
+    assert scheduler.poll_reddit_job() == scheduler.REDDIT_UNCONFIGURED
+
+
+def test_poll_reddit_job_polls_once_configured(monkeypatch):
+    from data_lake.ingestion.social.reddit import RedditConnector
+
+    monkeypatch.setattr(RedditConnector, "fetch", lambda self, **kw: 7)
+    settings = SimpleNamespace(reddit_client_id="id", reddit_client_secret="secret")
+    assert scheduler.poll_reddit_job(settings) == 7
+
+
+def test_an_unconfigured_reddit_run_is_recorded_as_a_success_with_its_reason():
+    job_health.reset()
+    settings = SimpleNamespace(reddit_client_id="", reddit_client_secret="")
+    scheduler._guard(lambda: scheduler.poll_reddit_job(settings), "reddit", artifact_path="")()
+
+    entry = job_health.snapshot()["jobs"]["reddit"]
+    assert entry["consecutive_failures"] == 0
+    assert entry["last_result"] == scheduler.REDDIT_UNCONFIGURED
+    assert entry["last_wrote"] is None
+
+
 def test_poll_trends_noops_without_keywords():
     assert scheduler.poll_trends([]) == 0
 
