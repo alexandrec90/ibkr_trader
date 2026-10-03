@@ -137,8 +137,6 @@ src/ibkr_trader/signals/eligibility.py::ScreenResult
 src/ibkr_trader/signals/features.py::extract_tickers
 src/ibkr_trader/signals/features.py::load_corporate_inputs
 src/ibkr_trader/signals/portfolio.py::register
-src/ibkr_trader/signals/predictor.py::MomentumBaseline
-src/ibkr_trader/signals/predictor.py::register
 src/ibkr_trader/signals/schemas.py::format_schema_errors
 src/ibkr_trader/signals/sentiment.py::SentimentScorer
 src/ibkr_trader/signals/sentiment.py::VaderScorer
