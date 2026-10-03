@@ -1,0 +1,19 @@
+# The build context is the PARENT directory (see docker-compose.yml), so without this file
+# every sibling checkout -- worktrees, .venvs, node_modules, data-lake's Parquet archive --
+# is sent to the builder, and `COPY data-lake` bakes ~2 GB of it into the image. BuildKit
+# reads `<Dockerfile>.dockerignore` from beside the Dockerfile in place of a context-root
+# `.dockerignore`, which a parent directory shared by every project cannot carry.
+#
+# Allowlist: exclude everything, then re-include exactly what the Dockerfile COPYs. A new
+# COPY source has to be added here too, or the build fails with "not found".
+*
+!data-lake/pyproject.toml
+!data-lake/README.md
+!data-lake/src
+!ibkr_trader/pyproject.toml
+!ibkr_trader/uv.lock
+!ibkr_trader/README.md
+!ibkr_trader/src
+!ibkr_trader/alembic.ini
+!ibkr_trader/migrations
+**/__pycache__
