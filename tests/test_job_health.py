@@ -222,9 +222,44 @@ def test_load_artifact_rejects_a_non_object(tmp_path):
         job_health.load_artifact(target)
 
 
-def test_status_for_reports_never_run_before_a_first_success():
+def test_status_for_reports_never_run_once_a_job_is_overdue_for_its_first_success():
     job_health.record_schedule("newsapi", 3600)
-    assert job_health.status_for(job_health.snapshot()["jobs"]["newsapi"]) == "never-run"
+    entry = job_health.snapshot()["jobs"]["newsapi"]
+    later = datetime.now(UTC) + timedelta(hours=3)
+    assert job_health.status_for(entry, now=later) == "never-run"
+
+
+def test_status_for_reports_never_run_when_nothing_says_when_it_was_scheduled():
+    """An artifact written before ``scheduled_since`` existed has no clock to be pending by."""
+    assert job_health.status_for({"interval_seconds": 3600, "last_success": None}) == "never-run"
+    assert job_health.status_for({"scheduled_since": datetime.now(UTC).isoformat()}) == "never-run"
+
+
+def test_status_for_a_job_not_yet_due_is_pending_not_never_run():
+    """ibkr_trader's collector check on 2026-10-03: `serve` up 22 hours, and four daily jobs
+    (archive_bars, archive_raw, prune, trends) that interval-fire a day after start read as
+    never-run -- a red check about jobs that had not yet been due once."""
+    job_health.record_schedule("archive_bars", 86400)
+    entry = job_health.snapshot()["jobs"]["archive_bars"]
+    later = datetime.now(UTC) + timedelta(hours=22)
+    assert job_health.status_for(entry, now=later) == "pending"
+    assert "pending" in job_health.HEALTHY and "never-run" not in job_health.HEALTHY
+
+
+def test_record_schedule_keeps_the_first_scheduled_since_across_restarts(tmp_path):
+    """A restart re-registers every job. Restarting the clock with it would let a job whose
+    process restarts more often than its interval stay `pending` forever without running."""
+    job_health.record_schedule("trends", 86400)
+    first = job_health.snapshot()["jobs"]["trends"]["scheduled_since"]
+    artifact = tmp_path / "health.json"
+    job_health.write_artifact(artifact)
+
+    job_health.reset()
+    job_health.seed_from_artifact(artifact)
+    job_health.record_schedule("trends", 86400)
+
+    assert first is not None
+    assert job_health.snapshot()["jobs"]["trends"]["scheduled_since"] == first
 
 
 def test_status_for_reports_failing_while_the_streak_is_open():

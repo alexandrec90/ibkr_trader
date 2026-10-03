@@ -39,6 +39,11 @@ DEFAULT_ARTIFACT = "logs/scheduler-health.json"
 #: and a half intervals means a single missed run is not yet an alarm, but two are.
 STALE_INTERVAL_FACTOR = 2.5
 
+#: The statuses ``ibkr-trader health`` passes. ``pending`` is a job that has not succeeded yet
+#: but has not been due for long enough to be judged: interval jobs first fire one interval
+#: after start, so a daily job read on the first day of `serve` would otherwise be red.
+HEALTHY = frozenset({"ok", "pending"})
+
 _lock = threading.Lock()
 _registry: dict[str, dict[str, Any]] = {}
 
@@ -47,6 +52,8 @@ def _blank(job: str) -> dict[str, Any]:
     return {
         "job": job,
         "interval_seconds": None,
+        # When the job was first scheduled, kept across restarts: the clock `pending` runs on.
+        "scheduled_since": None,
         "runs": 0,
         "failures": 0,
         "consecutive_failures": 0,
@@ -92,9 +99,17 @@ def _now() -> str:
 
 
 def record_schedule(job: str, interval_seconds: float) -> None:
-    """Declare a job's cadence, so staleness can be judged against what it promised."""
+    """Declare a job's cadence, so staleness can be judged against what it promised.
+
+    The first declaration also starts ``scheduled_since``; a later one (every restart, after
+    ``seed_from_artifact``) leaves it alone, or a process restarted more often than a job's
+    interval would keep that job ``pending`` forever without it ever running.
+    """
     with _lock:
-        _entry(job)["interval_seconds"] = interval_seconds
+        entry = _entry(job)
+        entry["interval_seconds"] = interval_seconds
+        if not entry["scheduled_since"]:
+            entry["scheduled_since"] = _now()
 
 
 def record_success(job: str, result: object = None) -> None:
@@ -214,19 +229,27 @@ def load_artifact(path: str | os.PathLike[str] = DEFAULT_ARTIFACT) -> dict[str, 
 
 
 def status_for(entry: dict[str, Any], *, now: datetime | None = None) -> str:
-    """Classify one job's entry: ``ok``, ``failing``, ``stale`` or ``never-run``.
+    """Classify one job's entry: ``ok``, ``pending``, ``failing``, ``stale`` or ``never-run``.
 
     ``failing`` outranks ``stale`` because a job that is erroring right now is the more
-    actionable fact — staleness is usually its consequence.
+    actionable fact — staleness is usually its consequence. A job with no success yet is
+    ``pending`` for as long as one with a success would be ``ok``, counted from when it was
+    first scheduled, and ``never-run`` after that or when nothing says when that was.
     """
     if entry.get("consecutive_failures"):
         return "failing"
+    interval = entry.get("interval_seconds")
+    moment = now or datetime.now(UTC)
     last_success = entry.get("last_success")
     if not last_success:
+        since = entry.get("scheduled_since")
+        if interval and since and _age(since, moment) <= interval * STALE_INTERVAL_FACTOR:
+            return "pending"
         return "never-run"
-    interval = entry.get("interval_seconds")
     if not interval:
         return "ok"
-    moment = now or datetime.now(UTC)
-    age = (moment - datetime.fromisoformat(last_success)).total_seconds()
-    return "stale" if age > interval * STALE_INTERVAL_FACTOR else "ok"
+    return "stale" if _age(last_success, moment) > interval * STALE_INTERVAL_FACTOR else "ok"
+
+
+def _age(stamp: str, moment: datetime) -> float:
+    return (moment - datetime.fromisoformat(stamp)).total_seconds()

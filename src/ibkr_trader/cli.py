@@ -1272,7 +1272,8 @@ def health(
     Reads the artifact `serve` writes after every job run. Exits 1 if any job is failing, stale
     or has never run, so it doubles as a check: a scheduler whose jobs all error still logs
     "executed successfully" per run, which is precisely how a dead pipeline went unnoticed for
-    six days. Use --ignore for a job that is known-broken and being tracked elsewhere.
+    six days. A job not yet due long enough to judge is `pending`, which passes. Use --ignore
+    for a job that is known-broken and being tracked elsewhere.
 
     Read the "last wrote" column separately from "last success": a poll whose provider answers
     200 OK with an empty list succeeds forever while ingesting nothing, and only that column
@@ -1320,10 +1321,11 @@ def health(
     unhealthy: list[str] = []
     for name, entry in sorted(jobs.items()):
         status = job_health.status_for(entry, now=now)
-        if status != "ok" and name not in ignored:
+        healthy = status in job_health.HEALTHY
+        if not healthy and name not in ignored:
             unhealthy.append(name)
         detail = entry.get("last_error") or entry.get("last_result") or ""
-        mark = " (ignored)" if name in ignored and status != "ok" else ""
+        mark = " (ignored)" if name in ignored and not healthy else ""
         typer.echo(
             f"{name:<18}{status + mark:<20}{stamp(entry.get('last_success')):<21}"
             f"{stamp(entry.get('last_wrote')):<21}"
