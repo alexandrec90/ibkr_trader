@@ -93,6 +93,22 @@ def test_health_artifact_survives_a_container_rebuild():
     assert "applogs:/app/logs" in compose["services"]["app"]["volumes"]
 
 
+def test_the_image_installs_the_archive_extra_serve_needs():
+    """`serve` registers the archive jobs unconditionally and the `social` poll reads
+    social-scraper's export back through the archive store, so with ARCHIVE_BACKEND=s3 the
+    image needs boto3 and pyarrow. A bare `uv sync --no-dev` left them out, and `social`
+    failed every run with "the s3 archive backend needs the archive extra".
+    """
+    dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    syncs = [
+        line for line in dockerfile.splitlines() if line.startswith("RUN") and "uv sync" in line
+    ]
+
+    assert syncs, "the Dockerfile no longer installs with uv sync"
+    for line in syncs:
+        assert "--extra archive" in line or "--all-extras" in line, line
+
+
 def test_db_only_teardown_leaves_the_profiled_services_alone():
     assert docker_down.compose_argv(()) == ["docker", "compose", "down"]
 

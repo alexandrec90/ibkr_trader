@@ -18,9 +18,11 @@ COPY data-lake /data-lake
 
 # Layer-friendly install: resolve deps from the lockfile first (no project code yet), so
 # dependency layers stay cached across source-only changes.
+# `--extra archive` (boto3 + pyarrow): `serve` runs the archive jobs and the `social` poll,
+# which reads social-scraper's export back through the archive store.
 COPY ibkr_trader/pyproject.toml ibkr_trader/uv.lock ibkr_trader/README.md ./
 COPY ibkr_trader/src ./src
-RUN uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev --extra archive
 
 COPY ibkr_trader/alembic.ini ./
 COPY ibkr_trader/migrations ./migrations
