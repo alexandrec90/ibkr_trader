@@ -44,12 +44,9 @@ class Settings(BaseSettings):
     finnhub_key: str = ""
     alpha_vantage_key: str = ""
     fmp_key: str = ""
-    reddit_client_id: str = ""
-    reddit_client_secret: str = ""
-    reddit_user_agent: str = "ibkr-trader/0.1"
 
-    # Ingestion defaults
-    subreddits: list[str] = ["wallstreetbets", "investing", "stocks", "CanadianInvestor"]
+    # Ingestion defaults. Social posts (Reddit, X) need no credentials here: social-scraper
+    # collects them and exports to the archive, which the `social` poll reads back.
     # Google Trends search terms (brand/company names, not tickers). Empty => trends poll no-ops.
     trends_keywords: list[str] = []
     # Preferred over trends_keywords when the file exists: 'TICKER,search term' lines tying
@@ -58,7 +55,7 @@ class Settings(BaseSettings):
 
     # `serve` scheduler cadence — periodic ingestion + raw pruning. All opt-in via `serve`;
     # nothing here runs unless the long-running process is started.
-    poll_reddit_minutes: int = 30
+    poll_social_minutes: int = 30
     poll_finnhub_news_hours: int = 6
     poll_trends_hours: int = 24
     prune_raw_hours: int = 24

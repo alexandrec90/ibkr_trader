@@ -112,7 +112,6 @@ src/ibkr_trader/cli.py::ingest_fundamentals
 src/ibkr_trader/cli.py::ingest_fx
 src/ibkr_trader/cli.py::ingest_news
 src/ibkr_trader/cli.py::ingest_prices
-src/ibkr_trader/cli.py::ingest_reddit
 src/ibkr_trader/cli.py::ingest_trends
 src/ibkr_trader/cli.py::score_sentiment_command
 src/ibkr_trader/cli.py::sentiment_download

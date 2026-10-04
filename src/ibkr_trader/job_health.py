@@ -25,6 +25,7 @@ import os
 import tempfile
 import threading
 import traceback
+from collections.abc import Collection
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -152,6 +153,23 @@ def snapshot() -> dict[str, Any]:
             "written_at": _now(),
             "jobs": {job: dict(entry) for job, entry in _registry.items()},
         }
+
+
+def forget_unscheduled(scheduled: Collection[str]) -> list[str]:
+    """Drop every job not in ``scheduled``; returns the names dropped, sorted.
+
+    ``seed_from_artifact`` restores every job the previous process recorded, including one
+    this build no longer registers (renamed, or retired). Nothing runs it again, so it keeps
+    its old ``interval_seconds`` and reads ``stale`` forever. Call this once every current
+    job has been declared.
+    """
+    with _lock:
+        gone = sorted(job for job in _registry if job not in scheduled)
+        for job in gone:
+            del _registry[job]
+    if gone:
+        logger.info("job health: dropped jobs no longer scheduled: %s", ", ".join(gone))
+    return gone
 
 
 def reset() -> None:

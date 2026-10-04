@@ -214,6 +214,30 @@ def test_seed_from_artifact_survives_a_jobs_field_of_the_wrong_shape(tmp_path):
     assert job_health.seed_from_artifact(artifact) is False
 
 
+def test_forget_unscheduled_drops_only_jobs_outside_the_schedule():
+    job_health.record_schedule("reddit", 1800)
+    job_health.record_schedule("social", 1800)
+    job_health.record_success("prices", 3)
+
+    assert job_health.forget_unscheduled({"social", "prices"}) == ["reddit"]
+    assert set(job_health.snapshot()["jobs"]) == {"social", "prices"}
+
+
+def test_forget_unscheduled_keeps_everything_when_all_are_scheduled():
+    job_health.record_success("prices", 3)
+
+    assert job_health.forget_unscheduled(["prices", "never-recorded"]) == []
+    assert set(job_health.snapshot()["jobs"]) == {"prices"}
+
+
+def test_forget_unscheduled_with_an_empty_schedule_clears_the_registry():
+    job_health.record_success("prices", 3)
+    job_health.record_failure("trends", RuntimeError("down"))
+
+    assert job_health.forget_unscheduled(()) == ["prices", "trends"]
+    assert job_health.snapshot()["jobs"] == {}
+
+
 def test_load_artifact_rejects_a_non_object(tmp_path):
     target = tmp_path / "health.json"
     target.write_text("[1, 2]", encoding="utf-8")

@@ -15,7 +15,7 @@ def _settings(**overrides):
         newsapi_max_requests=90,
         scheduler_health_file="",
         db_wait_seconds=120.0,
-        poll_reddit_minutes=30,
+        poll_social_minutes=30,
         poll_finnhub_news_hours=6,
         poll_trends_hours=24,
         prune_raw_hours=24,
@@ -45,7 +45,7 @@ def test_build_scheduler_registers_all_jobs_with_configured_intervals():
     sched = scheduler.build_scheduler(settings=_settings())
     jobs = {job.id: job for job in sched.get_jobs()}
     assert set(jobs) == {
-        "reddit_poll",
+        "social_poll",
         "finnhub_news_poll",
         "newsapi_poll",
         "trends_poll",
@@ -56,7 +56,7 @@ def test_build_scheduler_registers_all_jobs_with_configured_intervals():
         "archive_bars",
         "archive_raw",
     }
-    assert jobs["reddit_poll"].trigger.interval == timedelta(minutes=30)
+    assert jobs["social_poll"].trigger.interval == timedelta(minutes=30)
     assert jobs["finnhub_news_poll"].trigger.interval == timedelta(hours=6)
     assert jobs["newsapi_poll"].trigger.interval == timedelta(hours=12)
     assert jobs["trends_poll"].trigger.interval == timedelta(hours=24)
@@ -112,7 +112,7 @@ def test_build_scheduler_declares_each_job_cadence_for_staleness_checks():
 
     recorded = job_health.snapshot()["jobs"]
     assert recorded["prices"]["interval_seconds"] == 24 * 3600
-    assert recorded["reddit"]["interval_seconds"] == 30 * 60
+    assert recorded["social"]["interval_seconds"] == 30 * 60
     assert recorded["newsapi"]["interval_seconds"] == 12 * 3600
 
 
@@ -132,50 +132,80 @@ def test_build_scheduler_restores_history_from_a_previous_run(tmp_path):
     assert entry["interval_seconds"] == 24 * 3600  # and the current cadence still wins
 
 
+def test_build_scheduler_drops_a_job_it_no_longer_registers(tmp_path):
+    """`reddit` became `social` when PRAW was retired. Seeded from the old artifact and never
+    run again, the `reddit` entry would read stale forever and hold `health` red."""
+    artifact = tmp_path / "health.json"
+    job_health.reset()
+    job_health.record_schedule("reddit", 30 * 60)
+    job_health.record_failure("reddit", RuntimeError("REDDIT_CLIENT_ID/SECRET not set"))
+    job_health.record_success("prices", 1)
+    job_health.write_artifact(artifact)
+    job_health.reset()
+
+    scheduler.build_scheduler(settings=_settings(scheduler_health_file=str(artifact)))
+
+    assert "reddit" not in job_health.snapshot()["jobs"]
+    assert "reddit" not in job_health.load_artifact(artifact)["jobs"]
+    assert job_health.snapshot()["jobs"]["prices"]["last_success"] is not None
+
+
 def test_build_scheduler_honours_overridden_cadence():
-    sched = scheduler.build_scheduler(settings=_settings(poll_reddit_minutes=5))
-    job = {j.id: j for j in sched.get_jobs()}["reddit_poll"]
+    sched = scheduler.build_scheduler(settings=_settings(poll_social_minutes=5))
+    job = {j.id: j for j in sched.get_jobs()}["social_poll"]
     assert job.trigger.interval == timedelta(minutes=5)
 
 
-def test_poll_reddit_returns_connector_count(monkeypatch):
-    from data_lake.ingestion.social.reddit import RedditConnector
+def test_poll_social_returns_connector_count(monkeypatch):
+    from data_lake.ingestion.social.social_scraper import SocialScraperConnector
 
-    monkeypatch.setattr(RedditConnector, "fetch", lambda self, **kw: 12)
-    assert scheduler.poll_reddit() == 12
+    monkeypatch.setattr(SocialScraperConnector, "fetch", lambda self, **kw: 12)
+    assert scheduler.poll_social() == 12
 
 
-def test_poll_reddit_job_skips_without_credentials(monkeypatch):
+def test_poll_social_lets_a_missing_export_fail_the_job(monkeypatch):
+    """No export in the archive is the connector's error, not a 0 that reads as quiet."""
+    from data_lake.ingestion.social import social_scraper
+
+    def boom(self, **kwargs):
+        raise social_scraper.SocialScraperDatasetMissing("no 'social_scraper_posts' manifest")
+
+    monkeypatch.setattr(social_scraper.SocialScraperConnector, "fetch", boom)
+    with pytest.raises(social_scraper.SocialScraperDatasetMissing):
+        scheduler.poll_social()
+
+
+def test_poll_social_job_skips_without_an_archive_backend(monkeypatch):
     """43 runs of `RuntimeError: REDDIT_CLIENT_ID/SECRET not set` kept `ibkr-trader health`
-    red, and with it devkit's collector tray, over a source nobody had configured. An
-    unconfigured source is a skip, like newsapi with no mapping file -- said in the result."""
-    from data_lake.ingestion.social.reddit import RedditConnector
+    red, and with it devkit's collector tray, over a source nobody had configured. Its
+    replacement reads the archive, so with no backend it is a skip, like the archive jobs --
+    said in the result."""
+    from data_lake.ingestion.social.social_scraper import SocialScraperConnector
 
-    monkeypatch.setattr(RedditConnector, "fetch", lambda self, **kw: pytest.fail("fetched"))
-    for client_id, secret in (("", ""), ("id", ""), ("", "secret")):
-        settings = SimpleNamespace(reddit_client_id=client_id, reddit_client_secret=secret)
-        assert scheduler.poll_reddit_job(settings) == scheduler.REDDIT_UNCONFIGURED
+    monkeypatch.setattr(SocialScraperConnector, "fetch", lambda self, **kw: pytest.fail("fetched"))
+    settings = SimpleNamespace(archive_backend="none")
+    assert scheduler.poll_social_job(settings) == scheduler.SOCIAL_UNCONFIGURED
     # Registered bare, it reads the settings `configure_lake` hands the connector.
     monkeypatch.setattr(scheduler, "get_settings", lambda: settings)
-    assert scheduler.poll_reddit_job() == scheduler.REDDIT_UNCONFIGURED
+    assert scheduler.poll_social_job() == scheduler.SOCIAL_UNCONFIGURED
 
 
-def test_poll_reddit_job_polls_once_configured(monkeypatch):
-    from data_lake.ingestion.social.reddit import RedditConnector
+@pytest.mark.parametrize("backend", ["local", "s3"])
+def test_poll_social_job_polls_once_an_archive_is_configured(monkeypatch, backend):
+    from data_lake.ingestion.social.social_scraper import SocialScraperConnector
 
-    monkeypatch.setattr(RedditConnector, "fetch", lambda self, **kw: 7)
-    settings = SimpleNamespace(reddit_client_id="id", reddit_client_secret="secret")
-    assert scheduler.poll_reddit_job(settings) == 7
+    monkeypatch.setattr(SocialScraperConnector, "fetch", lambda self, **kw: 7)
+    assert scheduler.poll_social_job(SimpleNamespace(archive_backend=backend)) == 7
 
 
-def test_an_unconfigured_reddit_run_is_recorded_as_a_success_with_its_reason():
+def test_an_unconfigured_social_run_is_recorded_as_a_success_with_its_reason():
     job_health.reset()
-    settings = SimpleNamespace(reddit_client_id="", reddit_client_secret="")
-    scheduler._guard(lambda: scheduler.poll_reddit_job(settings), "reddit", artifact_path="")()
+    settings = SimpleNamespace(archive_backend="none")
+    scheduler._guard(lambda: scheduler.poll_social_job(settings), "social", artifact_path="")()
 
-    entry = job_health.snapshot()["jobs"]["reddit"]
+    entry = job_health.snapshot()["jobs"]["social"]
     assert entry["consecutive_failures"] == 0
-    assert entry["last_result"] == scheduler.REDDIT_UNCONFIGURED
+    assert entry["last_result"] == scheduler.SOCIAL_UNCONFIGURED
     assert entry["last_wrote"] is None
 
 

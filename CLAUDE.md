@@ -108,7 +108,7 @@ Prefer `stop` over `down` so the `pgdata` volume and its schema survive.
   a red nightly sync is the prompt to do so.
 - `src/ibkr_trader/scheduler.py` — the APScheduler wiring behind `serve`. **A split
   candidate, deliberately not split yet** — read this before proposing to move it:
-  - Six of its eight jobs are pure data-lake ingestion (`reddit_poll`,
+  - Six of its eight jobs are pure data-lake ingestion (`social_poll`,
     `finnhub_news_poll`, `newsapi_poll`, `finnhub_backfill`, `trends_poll`, `prices_poll`),
     each importing straight from `data_lake.ingestion.*`. Those are the movable part.
   - Two are **not** and are what block a wholesale move: `sentiment_score` calls
