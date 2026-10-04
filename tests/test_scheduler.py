@@ -91,7 +91,7 @@ def test_archive_jobs_do_not_fire_on_startup():
     sched = scheduler.build_scheduler(settings=_settings(archive_backend="local"))
     jobs = {job.id: job for job in sched.get_jobs()}
     # On an unstarted scheduler only a job built with an explicit next_run_time carries the
-    # attribute at all — which is precisely what `start_now=True` sets.
+    # attribute at all — which is precisely what `first_run="now"` sets.
     assert getattr(jobs["archive_bars"], "next_run_time", None) is None
     assert getattr(jobs["archive_raw"], "next_run_time", None) is None
 

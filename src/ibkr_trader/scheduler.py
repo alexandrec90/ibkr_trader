@@ -17,8 +17,10 @@ outage (the database was stopped; every run logged "executed successfully" anywa
 import logging
 import time
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Literal
 
 from apscheduler.schedulers.blocking import BlockingScheduler
 from sqlalchemy import func, select, text
@@ -657,6 +659,44 @@ def _resume_time(label: str, seconds: float) -> datetime:
     return max(now, datetime.fromisoformat(stamp) + timedelta(seconds=seconds))
 
 
+@dataclass(frozen=True)
+class _Registrar:
+    """Adds guarded interval jobs to one scheduler, reporting into one health artifact."""
+
+    scheduler: BlockingScheduler
+    artifact_path: str
+
+    def __call__(
+        self,
+        job_id: str,
+        label: str,
+        job: Callable[[], object],
+        *,
+        seconds: float,
+        first_run: Literal["interval", "now", "resume"] = "interval",
+    ) -> None:
+        """Add one guarded interval job, and tell ``job_health`` what cadence to expect.
+
+        ``first_run``: ``"interval"`` fires one interval after this process started, ``"now"``
+        also fires at startup, and ``"resume"`` fires one interval after the job's last
+        recorded success (now when overdue or never run) -- for a cadence longer than the gap
+        between redeploys, which would otherwise never fire.
+        """
+        job_health.record_schedule(label, seconds)
+        extra = {}
+        if first_run == "now":
+            extra = {"next_run_time": datetime.now(UTC)}
+        elif first_run == "resume":
+            extra = {"next_run_time": _resume_time(label, seconds)}
+        self.scheduler.add_job(
+            _guard(job, label, scheduler=self.scheduler, artifact_path=self.artifact_path),
+            "interval",
+            seconds=seconds,
+            id=job_id,
+            **extra,
+        )
+
+
 def build_scheduler(
     settings: Settings | None = None,
     scheduler: BlockingScheduler | None = None,
@@ -676,34 +716,7 @@ def build_scheduler(
     # cadence afterwards.
     job_health.seed_from_artifact(artifact_path)
 
-    def register(
-        job_id: str,
-        label: str,
-        job: Callable[[], object],
-        *,
-        seconds: float,
-        start_now: bool = False,
-        resume: bool = False,
-    ) -> None:
-        """Add one guarded interval job, and tell ``job_health`` what cadence to expect.
-
-        ``resume`` first fires the job one interval after its last recorded success (now when
-        overdue or never run) instead of one interval after this process started -- for a
-        cadence longer than the gap between redeploys, which would otherwise never fire.
-        """
-        job_health.record_schedule(label, seconds)
-        extra = {}
-        if start_now:
-            extra = {"next_run_time": datetime.now(UTC)}
-        elif resume:
-            extra = {"next_run_time": _resume_time(label, seconds)}
-        scheduler.add_job(
-            _guard(job, label, scheduler=scheduler, artifact_path=artifact_path),
-            "interval",
-            seconds=seconds,
-            id=job_id,
-            **extra,
-        )
+    register = _Registrar(scheduler, artifact_path)
 
     register("reddit_poll", "reddit", poll_reddit_job, seconds=settings.poll_reddit_minutes * 60)
     register(
@@ -745,7 +758,7 @@ def build_scheduler(
         seconds=settings.finnhub_backfill_hours * 3600,
         # Interval jobs first fire one interval after start; the backfill also fires on startup
         # (free-tier history rolls off daily, and a completed backfill makes this near-free).
-        start_now=True,
+        first_run="now",
     )
     register(
         "sentiment_score",
@@ -760,16 +773,16 @@ def build_scheduler(
         seconds=settings.poll_prices_hours * 3600,
         # Also fires on startup: bars go stale whenever the machine was off, and the
         # incremental fetch makes an already-current run nearly free.
-        start_now=True,
+        first_run="now",
     )
     register(
         "fundamentals_poll",
         "fundamentals",
         poll_yahoo_fundamentals,
         seconds=settings.poll_fundamentals_hours * 3600,
-        resume=True,
+        first_run="resume",
     )
-    # Cold-storage offload. Deliberately *not* start_now: a first run against an undrained
+    # Cold-storage offload. Deliberately *not* first_run="now": a first run against an undrained
     # backlog reads the whole batch into memory in one transaction (measured ~1.1 GB RSS and
     # ~2 h for 280 k payloads), which is not something to fire while the process is also
     # coming up. Drain the backlog once from the CLI, then let the daily cadence keep pace —
