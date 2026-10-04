@@ -106,7 +106,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: alexandrec90/data-lake
-          ref: 430536af65d96366d18dcbd6d460047a9411f3ed
+          ref: c14c6bef2a83741492107e8b2df157aebea95f34
           ssh-key: ${{ secrets.DATA_LAKE_DEPLOY_KEY }}
           path: data-lake
 

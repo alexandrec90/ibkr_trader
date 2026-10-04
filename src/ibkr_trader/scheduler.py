@@ -70,32 +70,40 @@ def _read_universe_file(path: str) -> list[str]:
         return []
 
 
-def poll_reddit() -> int:
-    from data_lake.ingestion.social.reddit import RedditConnector
+def poll_social() -> int:
+    """Load Reddit and X posts from social-scraper's archive export into ``social_posts``.
 
-    count = RedditConnector().fetch()
-    logger.info("reddit poll upserted %d posts", count)
+    Replaced the PRAW poll, which needed a Reddit API key the owner cannot obtain.
+    social-scraper collects the posts keylessly and exports them to the pooled archive;
+    the connector reads them back through the configured archive backend, and raises when
+    that archive holds no export at all rather than returning a 0 that reads as quiet.
+    """
+    from data_lake.ingestion.social.social_scraper import SocialScraperConnector
+
+    count = SocialScraperConnector().fetch()
+    logger.info("social poll upserted %d posts", count)
     return count
 
 
-#: The reddit job's recorded result while its credentials are unset: it lands in the health
-#: table's result column, so the gap stays visible without failing the check every 30 minutes.
-REDDIT_UNCONFIGURED = "skipped: REDDIT_CLIENT_ID/SECRET not set (see .env.example)"
+#: The social job's recorded result while no archive backend is configured: it lands in the
+#: health table's result column, so the gap stays visible without failing the check every
+#: 30 minutes.
+SOCIAL_UNCONFIGURED = "skipped: archive_backend is 'none' (social posts load from the archive)"
 
 
-def poll_reddit_job(settings: Settings | None = None) -> int | str:
-    """Poll reddit, or skip while no credentials are configured, as newsapi skips without its
-    mapping file. Run unconfigured, the connector raised on every poll and held
-    `ibkr-trader health` red over a source nobody had set up yet.
+def poll_social_job(settings: Settings | None = None) -> int | str:
+    """Poll social posts, or skip while no archive backend is configured, as the archive jobs
+    do. With ``none`` the connector raises "no archive backend configured" on every poll and
+    would hold `ibkr-trader health` red over a source nobody had set up yet.
 
     Defaults to `get_settings()`, the object `configure_lake` hands the connector, so the
-    check reads the same credentials the poll would use.
+    check reads the same backend the poll would use.
     """
     settings = settings or get_settings()
-    if not (settings.reddit_client_id and settings.reddit_client_secret):
-        logger.info("reddit poll %s", REDDIT_UNCONFIGURED)
-        return REDDIT_UNCONFIGURED
-    return poll_reddit()
+    if settings.archive_backend == "none":
+        logger.info("social poll %s", SOCIAL_UNCONFIGURED)
+        return SOCIAL_UNCONFIGURED
+    return poll_social()
 
 
 def poll_trends(keywords: list[str]) -> int:
@@ -624,6 +632,29 @@ def wait_for_database(
             return True
 
 
+def _register_archive_jobs(register: Callable[..., None], settings: Settings) -> None:
+    """Cold-storage offload, through `build_scheduler`'s ``register``.
+
+    Deliberately *not* start_now: a first run against an undrained backlog reads the whole
+    batch into memory in one transaction (measured ~1.1 GB RSS and ~2 h for 280 k payloads),
+    which is not something to fire while the process is also coming up. Drain the backlog
+    once from the CLI, then let the daily cadence keep pace — each subsequent run only has a
+    day of new rows to move. See remote-archive.md.
+    """
+    register(
+        "archive_bars",
+        "archive_bars",
+        lambda: run_archive_bars(settings),
+        seconds=settings.archive_bars_hours * 3600,
+    )
+    register(
+        "archive_raw",
+        "archive_raw",
+        lambda: run_archive_raw(settings),
+        seconds=settings.archive_raw_hours * 3600,
+    )
+
+
 def build_scheduler(
     settings: Settings | None = None,
     scheduler: BlockingScheduler | None = None,
@@ -642,6 +673,7 @@ def build_scheduler(
     # ingested, and a registry that starts empty reports every job as never-run for a full
     # cadence afterwards.
     job_health.seed_from_artifact(artifact_path)
+    scheduled: set[str] = set()
 
     def register(
         job_id: str,
@@ -653,6 +685,7 @@ def build_scheduler(
     ) -> None:
         """Add one guarded interval job, and tell ``job_health`` what cadence to expect."""
         job_health.record_schedule(label, seconds)
+        scheduled.add(label)
         extra = {"next_run_time": datetime.now(UTC)} if start_now else {}
         scheduler.add_job(
             _guard(job, label, scheduler=scheduler, artifact_path=artifact_path),
@@ -662,7 +695,7 @@ def build_scheduler(
             **extra,
         )
 
-    register("reddit_poll", "reddit", poll_reddit_job, seconds=settings.poll_reddit_minutes * 60)
+    register("social_poll", "social", poll_social_job, seconds=settings.poll_social_minutes * 60)
     register(
         "finnhub_news_poll",
         "finnhub_news",
@@ -719,23 +752,10 @@ def build_scheduler(
         # incremental fetch makes an already-current run nearly free.
         start_now=True,
     )
-    # Cold-storage offload. Deliberately *not* start_now: a first run against an undrained
-    # backlog reads the whole batch into memory in one transaction (measured ~1.1 GB RSS and
-    # ~2 h for 280 k payloads), which is not something to fire while the process is also
-    # coming up. Drain the backlog once from the CLI, then let the daily cadence keep pace —
-    # each subsequent run only has a day of new rows to move. See remote-archive.md.
-    register(
-        "archive_bars",
-        "archive_bars",
-        lambda: run_archive_bars(settings),
-        seconds=settings.archive_bars_hours * 3600,
-    )
-    register(
-        "archive_raw",
-        "archive_raw",
-        lambda: run_archive_raw(settings),
-        seconds=settings.archive_raw_hours * 3600,
-    )
+    _register_archive_jobs(register, settings)
+    # A job this build no longer registers (renamed or retired) would keep its seeded
+    # interval and read `stale` forever, holding `ibkr-trader health` red.
+    job_health.forget_unscheduled(scheduled)
     job_health.write_artifact(artifact_path)
     return scheduler
 

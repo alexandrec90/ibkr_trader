@@ -254,12 +254,17 @@ def ingest_finnhub_backfill(
     typer.echo(f"upserted {count} articles")
 
 
-@ingest_app.command("reddit")
-def ingest_reddit(limit: int = 100):
-    from data_lake.ingestion.social.reddit import RedditConnector
+@ingest_app.command("social")
+def ingest_social(
+    platform: list[str] = typer.Option(
+        [], help="limit the load to a platform, e.g. reddit or x (repeatable; default: all)"
+    ),
+):
+    """Load Reddit/X posts from social-scraper's archive export (needs ARCHIVE_BACKEND)."""
+    from data_lake.ingestion.social.social_scraper import SocialScraperConnector
 
     try:
-        count = RedditConnector().fetch(limit=limit)
+        count = SocialScraperConnector().fetch(platforms=platform or None)
     except (RuntimeError, ValueError) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1) from None
@@ -1245,7 +1250,7 @@ def report(
 def serve():
     """Long-running mode: APScheduler jobs for periodic ingestion, scoring and raw pruning.
 
-    Polls Reddit / Finnhub news / NewsAPI / Google Trends on the cadence in Settings, backfills
+    Polls social posts / Finnhub news / NewsAPI / Google Trends on the cadence in Settings, backfills
     Finnhub news history to the free-tier floor, scores unscored rows, and drops the ``raw``
     blob on rows already sentiment-scored. No trading loop — that stays out until backtests +
     paper validation justify it. Blocks; Ctrl-C to stop.

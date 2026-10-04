@@ -407,6 +407,52 @@ def test_ingest_finnhub_news_reports_count(monkeypatch):
     assert "upserted 7 articles" in result.output
 
 
+def test_ingest_social_loads_every_platform_by_default(monkeypatch):
+    from data_lake.ingestion.social import social_scraper
+
+    seen = {}
+    monkeypatch.setattr(
+        social_scraper.SocialScraperConnector,
+        "fetch",
+        lambda self, **kw: seen.update(kw) or 9,
+    )
+    result = runner.invoke(cli.app, ["ingest", "social"])
+    assert result.exit_code == 0
+    assert "upserted 9 posts" in result.output
+    assert seen == {"platforms": None}
+
+
+def test_ingest_social_narrows_to_the_platforms_given(monkeypatch):
+    from data_lake.ingestion.social import social_scraper
+
+    seen = {}
+    monkeypatch.setattr(
+        social_scraper.SocialScraperConnector,
+        "fetch",
+        lambda self, **kw: seen.update(kw) or 0,
+    )
+    result = runner.invoke(cli.app, ["ingest", "social", "--platform", "reddit", "--platform", "x"])
+    assert result.exit_code == 0
+    assert seen == {"platforms": ["reddit", "x"]}
+
+
+def test_ingest_social_reports_a_missing_export_cleanly(monkeypatch):
+    """No export in the archive must exit 1 with the connector's reason, not a traceback."""
+    from data_lake.ingestion.social import social_scraper
+
+    def boom(self, **kwargs):
+        raise social_scraper.SocialScraperDatasetMissing("no 'social_scraper_posts' manifest")
+
+    monkeypatch.setattr(social_scraper.SocialScraperConnector, "fetch", boom)
+    result = runner.invoke(cli.app, ["ingest", "social"])
+    assert result.exit_code == 1
+    assert "social_scraper_posts" in result.output
+    # Called directly too: the exit is the command's own, not something Typer adds.
+    with pytest.raises(typer.Exit) as exited:
+        cli.ingest_social(platform=["reddit"])
+    assert exited.value.exit_code == 1
+
+
 def test_ingest_finnhub_backfill_delegates_to_scheduler_helper(monkeypatch):
     import ibkr_trader.scheduler as scheduler
 

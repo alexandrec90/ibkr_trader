@@ -112,6 +112,30 @@ def test_ingest_task_resolves_defaults_and_runs_the_artifact_wrapper(monkeypatch
     assert calls == [(script.build_argv("fmp-price-one", ""), {"cwd": script.REPO_ROOT})]
 
 
+def _cli_modes() -> list[str]:
+    script = load_script("ingest-task.py")
+    return sorted(mode for mode, (_, argv, _) in script.MODES.items() if argv[:2] == script.CLI)
+
+
+@pytest.mark.parametrize("mode", _cli_modes())
+def test_every_cli_ingest_mode_parses_against_the_real_cli(mode):
+    """The `reddit` mode ran `ingest reddit --limit` after data-lake retired that connector:
+    a mode table nothing checks fails only when someone picks it. Parse each mode's argv
+    with the real Typer app so a removed command or option fails here. The trailing
+    `--help` is eager, so nothing runs, but click still rejects an unknown command or
+    option while parsing, before it gets there."""
+    from typer.testing import CliRunner
+
+    from ibkr_trader import cli
+
+    script = load_script("ingest-task.py")
+    argv = script.build_argv(mode, "")
+    # Everything after the runner's `--` and the `-m ibkr_trader.cli` it hands python.
+    args = argv[argv.index("--") + 1 + len(script.CLI) :]
+    result = CliRunner().invoke(cli.app, [*args, "--help"])
+    assert result.exit_code == 0, f"mode {mode!r} ({' '.join(args)}): {result.output}"
+
+
 def test_lint_all_main_runs_each_gate_for_changed_python(monkeypatch):
     script = load_script("lint-all.py")
     calls = []

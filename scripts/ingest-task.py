@@ -86,10 +86,10 @@ MODES: dict[str, tuple[str, list[str], str]] = {
         [*CLI, "ingest", "news", "--mapping-file", "news-keywords.txt"],
         "",
     ),
-    "reddit": (
-        "ingest-reddit",
-        [*CLI, "ingest", "reddit", "--limit", "{arg}"],
-        "100",
+    "social": (
+        "ingest-social",
+        [*CLI, "ingest", "social"],
+        "",
     ),
     "trends-one": (
         "ingest-google-trends",

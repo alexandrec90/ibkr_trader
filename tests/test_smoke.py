@@ -17,7 +17,7 @@ def test_package_imports():
     import data_lake
     import data_lake.ingestion.market.ibkr_historical
     import data_lake.ingestion.news.newsapi
-    import data_lake.ingestion.social.reddit
+    import data_lake.ingestion.social.social_scraper
 
     import ibkr_trader
     import ibkr_trader.backtest.engine
