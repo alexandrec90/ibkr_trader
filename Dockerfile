@@ -20,7 +20,9 @@ COPY data-lake /data-lake
 # dependency layers stay cached across source-only changes.
 COPY ibkr_trader/pyproject.toml ibkr_trader/uv.lock ibkr_trader/README.md ./
 COPY ibkr_trader/src ./src
-RUN uv sync --frozen --no-dev
+# The `archive` extra is not optional here: `serve`'s social poll reads social-scraper's
+# export through the archive store, and the s3 backend imports boto3 from it.
+RUN uv sync --frozen --no-dev --extra archive
 
 COPY ibkr_trader/alembic.ini ./
 COPY ibkr_trader/migrations ./migrations

@@ -93,6 +93,21 @@ def test_health_artifact_survives_a_container_rebuild():
     assert "applogs:/app/logs" in compose["services"]["app"]["volumes"]
 
 
+def test_app_image_installs_the_archive_extra():
+    """The scheduler's `social_poll` reads social-scraper's export through the archive store,
+    and the s3 backend imports boto3 from the `archive` extra. An image synced without it
+    failed that job on every run with "the s3 archive backend needs the archive extra"
+    (October 2026), leaving `social_posts` empty while every other poll stayed green.
+    """
+    dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    sync_lines = [
+        line for line in dockerfile.splitlines() if line.startswith("RUN") and "uv sync" in line
+    ]
+
+    assert sync_lines, "Dockerfile no longer runs uv sync"
+    assert all("--extra archive" in line for line in sync_lines)
+
+
 def test_db_only_teardown_leaves_the_profiled_services_alone():
     assert docker_down.compose_argv(()) == ["docker", "compose", "down"]
 
