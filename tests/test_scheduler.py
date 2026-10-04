@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -29,6 +30,7 @@ def _settings(**overrides):
         score_sentiment_minutes=60,
         poll_prices_hours=24,
         fx_pairs=["USDCAD"],
+        poll_fundamentals_hours=168,
         trends_keywords=[],
         trends_mapping_file="",
         archive_backend="none",
@@ -53,6 +55,7 @@ def test_build_scheduler_registers_all_jobs_with_configured_intervals():
         "finnhub_backfill",
         "sentiment_score",
         "prices_poll",
+        "fundamentals_poll",
         "archive_bars",
         "archive_raw",
     }
@@ -65,6 +68,7 @@ def test_build_scheduler_registers_all_jobs_with_configured_intervals():
     assert jobs["sentiment_score"].trigger.interval == timedelta(minutes=60)
     assert jobs["prices_poll"].trigger.interval == timedelta(hours=24)
     assert jobs["prices_poll"].next_run_time is not None  # bars catch up on startup
+    assert jobs["fundamentals_poll"].trigger.interval == timedelta(hours=168)
     assert jobs["archive_bars"].trigger.interval == timedelta(hours=24)
     assert jobs["archive_raw"].trigger.interval == timedelta(hours=24)
 
@@ -130,6 +134,49 @@ def test_build_scheduler_restores_history_from_a_previous_run(tmp_path):
     assert entry["last_success"] is not None
     assert entry["last_wrote"] is not None
     assert entry["interval_seconds"] == 24 * 3600  # and the current cadence still wins
+
+
+def test_fundamentals_poll_fires_at_once_when_it_has_never_succeeded():
+    job_health.reset()
+    before = datetime.now(UTC)
+    sched = scheduler.build_scheduler(settings=_settings())
+    job = {j.id: j for j in sched.get_jobs()}["fundamentals_poll"]
+    assert before <= job.next_run_time <= datetime.now(UTC)
+
+
+def test_fundamentals_poll_resumes_from_its_last_success_across_a_restart(tmp_path):
+    """A redeploy must not push a weekly job back a full week (it would never fire)."""
+    artifact = tmp_path / "health.json"
+    job_health.reset()
+    job_health.record_success("fundamentals", 1200)
+    job_health.write_artifact(artifact)
+    last = datetime.fromisoformat(job_health.snapshot()["jobs"]["fundamentals"]["last_success"])
+    job_health.reset()
+
+    sched = scheduler.build_scheduler(settings=_settings(scheduler_health_file=str(artifact)))
+
+    job = {j.id: j for j in sched.get_jobs()}["fundamentals_poll"]
+    assert job.next_run_time == last + timedelta(hours=168)
+
+
+def test_fundamentals_poll_catches_up_when_overdue(tmp_path):
+    artifact = tmp_path / "health.json"
+    artifact.write_text(
+        json.dumps(
+            {
+                "written_at": "2026-01-01T00:00:00+00:00",
+                "jobs": {"fundamentals": {"last_success": "2026-01-01T00:00:00+00:00"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    job_health.reset()
+    before = datetime.now(UTC)
+
+    sched = scheduler.build_scheduler(settings=_settings(scheduler_health_file=str(artifact)))
+
+    job = {j.id: j for j in sched.get_jobs()}["fundamentals_poll"]
+    assert before <= job.next_run_time <= datetime.now(UTC)
 
 
 def test_build_scheduler_honours_overridden_cadence():
@@ -588,6 +635,46 @@ def test_poll_yahoo_prices_refreshes_each_tracked_symbol(monkeypatch):
 
     assert scheduler.poll_yahoo_prices() == 3
     assert fetched == ["AAPL", "XEQT.TO"]
+
+
+def test_poll_yahoo_fundamentals_refreshes_each_tracked_symbol(monkeypatch):
+    from data_lake.ingestion.market.yahoo_fundamentals import YahooFundamentalsConnector
+
+    monkeypatch.setattr(scheduler, "get_session", _sqlite_session_scope())
+    monkeypatch.setattr(
+        "data_lake.ingestion.market.yahoo_common.tracked_yahoo_symbols",
+        lambda session: ["AAPL", "XEQT.TO"],
+    )
+    fetched: list[str] = []
+
+    def fake_fetch(self, symbol="", **kwargs):
+        fetched.append(symbol)
+        if symbol == "AAPL":
+            raise RuntimeError("yahoo hiccup")  # must be skipped, not fatal
+        return 7
+
+    monkeypatch.setattr(YahooFundamentalsConnector, "fetch", fake_fetch)
+
+    assert scheduler.poll_yahoo_fundamentals() == 7
+    assert fetched == ["AAPL", "XEQT.TO"]
+
+
+def test_poll_yahoo_fundamentals_fails_when_every_symbol_failed(monkeypatch):
+    from data_lake.ingestion.market.yahoo_fundamentals import YahooFundamentalsConnector
+
+    monkeypatch.setattr(scheduler, "get_session", _sqlite_session_scope())
+    monkeypatch.setattr(
+        "data_lake.ingestion.market.yahoo_common.tracked_yahoo_symbols",
+        lambda session: ["AAPL", "MSFT"],
+    )
+
+    def dead_db(self, symbol="", **kwargs):
+        raise _operational_error()
+
+    monkeypatch.setattr(YahooFundamentalsConnector, "fetch", dead_db)
+
+    with pytest.raises(OperationalError):
+        scheduler.poll_yahoo_fundamentals()
 
 
 def test_poll_fx_starts_from_newest_stored_bar(monkeypatch):

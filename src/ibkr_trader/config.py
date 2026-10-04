@@ -86,6 +86,10 @@ class Settings(BaseSettings):
     # pairs from FMP. Runs at startup too, so bars catch up after the machine was off.
     poll_prices_hours: int = 24
     fx_pairs: list[str] = ["USDCAD"]
+    # Yahoo corporate data (dividends, shares, earnings dates, statements) for the same
+    # instruments. Weekly: statements are quarterly, a run is ~20 s per stock, and the job
+    # resumes from its last success, so redeploys neither skip nor repeat it.
+    poll_fundamentals_hours: int = 168
     # NewsAPI batch poll. Free tier is ~100 requests/day with articles delayed 24 h, so a 12 h
     # cadence is the useful maximum: the per-symbol freshness skip means a second daily run
     # costs almost nothing, while the budget keeps one run from eating the day's quota.

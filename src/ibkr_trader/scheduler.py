@@ -348,20 +348,15 @@ def backfill_finnhub_news(
     return count
 
 
-def poll_yahoo_prices() -> int:
-    """Incremental Yahoo daily-bar refresh for every instrument Yahoo already tracks.
+def _refresh_tracked_yahoo(connector, label: str, unit: str) -> int:
+    """Run ``connector.fetch`` for every instrument Yahoo already tracks; return the total.
 
-    The connector fetches only bars newer than the newest stored one (returning 0 without a
-    request when already current) and throttles itself, so a machine that was off for days
-    simply catches up on the next run and a same-day rerun is nearly free. A failing symbol
-    is logged and skipped.
+    A failing symbol is logged and skipped; only a run where *every* symbol failed raises.
     """
-    from data_lake.ingestion.market.yahoo import YahooConnector
     from data_lake.ingestion.market.yahoo_common import tracked_yahoo_symbols
 
     with get_session() as session:
         symbols = tracked_yahoo_symbols(session)
-    connector = YahooConnector()
     total = 0
     failures = 0
     last_error: BaseException | None = None
@@ -371,15 +366,43 @@ def poll_yahoo_prices() -> int:
         except Exception as exc:
             failures += 1
             last_error = exc
-            logger.exception("price poll failed for %s", symbol)
+            logger.exception("%s failed for %s", label, symbol)
     logger.info(
-        "price poll upserted %d bars across %d symbols (%d failed)",
+        "%s upserted %d %s across %d symbols (%d failed)",
+        label,
         total,
+        unit,
         len(symbols),
         failures,
     )
-    _fail_if_every_item_failed("price poll", len(symbols), failures, last_error)
+    _fail_if_every_item_failed(label, len(symbols), failures, last_error)
     return total
+
+
+def poll_yahoo_prices() -> int:
+    """Incremental Yahoo daily-bar refresh for every instrument Yahoo already tracks.
+
+    The connector fetches only bars newer than the newest stored one (returning 0 without a
+    request when already current) and throttles itself, so a machine that was off for days
+    simply catches up on the next run and a same-day rerun is nearly free. A failing symbol
+    is logged and skipped.
+    """
+    from data_lake.ingestion.market.yahoo import YahooConnector
+
+    return _refresh_tracked_yahoo(YahooConnector(), "price poll", "bars")
+
+
+def poll_yahoo_fundamentals() -> int:
+    """Yahoo corporate-data refresh (dividends, share counts, earnings dates, statements) for
+    the same instruments the price poll tracks.
+
+    Yahoo serves only ~4-5 annual / ~5-7 quarterly statement periods, so the stored history
+    is snapshot-forward: a period that rolls off before a run fetches it is gone for good.
+    A run is ~10 throttled calls per stock (~20 s), so this is a weekly job, not a daily one.
+    """
+    from data_lake.ingestion.market.yahoo_fundamentals import YahooFundamentalsConnector
+
+    return _refresh_tracked_yahoo(YahooFundamentalsConnector(), "fundamentals poll", "rows")
 
 
 #: Overlap fetched before the newest stored FX bar — re-upserts are idempotent, and the small
@@ -624,6 +647,16 @@ def wait_for_database(
             return True
 
 
+def _resume_time(label: str, seconds: float) -> datetime:
+    """One interval after ``label``'s last recorded success, or now when that is past or the
+    job has never succeeded. Reads the registry ``seed_from_artifact`` restored."""
+    now = datetime.now(UTC)
+    stamp = job_health.snapshot()["jobs"].get(label, {}).get("last_success")
+    if not stamp:
+        return now
+    return max(now, datetime.fromisoformat(stamp) + timedelta(seconds=seconds))
+
+
 def build_scheduler(
     settings: Settings | None = None,
     scheduler: BlockingScheduler | None = None,
@@ -650,10 +683,20 @@ def build_scheduler(
         *,
         seconds: float,
         start_now: bool = False,
+        resume: bool = False,
     ) -> None:
-        """Add one guarded interval job, and tell ``job_health`` what cadence to expect."""
+        """Add one guarded interval job, and tell ``job_health`` what cadence to expect.
+
+        ``resume`` first fires the job one interval after its last recorded success (now when
+        overdue or never run) instead of one interval after this process started -- for a
+        cadence longer than the gap between redeploys, which would otherwise never fire.
+        """
         job_health.record_schedule(label, seconds)
-        extra = {"next_run_time": datetime.now(UTC)} if start_now else {}
+        extra = {}
+        if start_now:
+            extra = {"next_run_time": datetime.now(UTC)}
+        elif resume:
+            extra = {"next_run_time": _resume_time(label, seconds)}
         scheduler.add_job(
             _guard(job, label, scheduler=scheduler, artifact_path=artifact_path),
             "interval",
@@ -718,6 +761,13 @@ def build_scheduler(
         # Also fires on startup: bars go stale whenever the machine was off, and the
         # incremental fetch makes an already-current run nearly free.
         start_now=True,
+    )
+    register(
+        "fundamentals_poll",
+        "fundamentals",
+        poll_yahoo_fundamentals,
+        seconds=settings.poll_fundamentals_hours * 3600,
+        resume=True,
     )
     # Cold-storage offload. Deliberately *not* start_now: a first run against an undrained
     # backlog reads the whole batch into memory in one transaction (measured ~1.1 GB RSS and
