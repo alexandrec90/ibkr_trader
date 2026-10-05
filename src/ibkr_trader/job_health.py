@@ -26,7 +26,7 @@ import tempfile
 import threading
 import traceback
 from collections.abc import Collection
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -111,6 +111,30 @@ def record_schedule(job: str, interval_seconds: float) -> None:
         entry["interval_seconds"] = interval_seconds
         if not entry["scheduled_since"]:
             entry["scheduled_since"] = _now()
+
+
+def next_due(job: str) -> datetime | None:
+    """When ``job`` is next owed a run, counted from its record rather than from process start.
+
+    One interval after its last run (any outcome), or after ``scheduled_since`` if it has never
+    run; ``None`` when the record cannot say. An APScheduler interval job left to itself first
+    fires one interval after the process starts, so every restart pushed each job's next run a
+    full interval out. ibkr_trader's `newsapi` (12 h) on 2026-10-05: last success 11:17 the
+    day before, a restart at 12:30, next run due 00:30 -- stale for half a day by a cadence it
+    had kept.
+    """
+    with _lock:
+        entry = _registry.get(job)
+        if not entry:
+            return None
+        interval = entry["interval_seconds"]
+        anchor = entry["last_run"] or entry["scheduled_since"]
+    if not interval or not anchor:
+        return None
+    try:
+        return datetime.fromisoformat(anchor) + timedelta(seconds=interval)
+    except (TypeError, ValueError):
+        return None
 
 
 def record_success(job: str, result: object = None) -> None:
