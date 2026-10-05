@@ -99,7 +99,8 @@ jobs:
       # branch. The lock records data-lake's own metadata -- its dev group included -- so
       # every pyproject edit there (a devkit floor, a Dependabot ruff bump) left this gate
       # red on main with no push here; it took three relocks in two days. Bumping data-lake
-      # is one commit: move this ref, run `uv lock`, commit both. The nightly still runs
+      # is one commit: move this ref, re-provision (CLAUDE.md, so a worktree's shared
+      # ../data-lake follows it), run `uv lock`, commit both. The nightly still runs
       # against data-lake's default branch, and is where that drift is meant to surface.
       # tests/test_ci_data_lake_pin.py holds this ref to a full commit SHA.
       - name: Checkout data-lake
