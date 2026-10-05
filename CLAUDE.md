@@ -31,12 +31,17 @@ editable path dependency, so `uv sync` fails without it:
 **In a worktree, `../data-lake` resolves inside the worktree tier** —
 `.claude/worktrees/data-lake` from a `claude --worktree` tree, `.worktrees/data-lake` from
 a box. devkit's global `post-checkout` hook (`worktree_env.link_path_sources`) cuts that
-path once per tier as a **detached** data-lake worktree at `origin/HEAD`, before its
-`uv sync`, so a fresh worktree builds against published data-lake. Every worktree of the
-tier shares that one tree, and each new worktree fetches data-lake and moves it to the
-new `origin/HEAD` -- unless it holds a branch or a tracked change, which the hook names
-and leaves. So a stale lock check there means no worktree was cut since data-lake moved:
-a `fetch` and a `checkout --detach origin/main` in `../data-lake` catch it up. If it
+path once per tier as a **detached** data-lake worktree at the commit the PR gate's
+data-lake `ref:` pins (`.github/workflows/pr-gate.yml`), before its `uv sync`, so a
+fresh worktree builds against what the gate builds against -- **not** data-lake's
+`origin/HEAD`, which only the nightly checks out. Every worktree of the tier shares that
+one tree, and each new worktree fetches data-lake and moves it to the pin its own
+checkout reads -- unless it holds a branch or a tracked change, which the hook names and
+leaves. **Bumping the pin therefore moves the tree only when told to:** edit the `ref:`,
+then run `python "$DEVKIT_DIR/scripts/worktree.py" provision .` from the worktree, which
+re-reads the pin and moves the shared tree before its `uv sync`; `uv lock` then sees the
+new data-lake. To reproduce a nightly's drift, pin `ref:` to data-lake's `origin/main`
+SHA first, the bump the nightly asks for anyway. If it
 is missing anyway (`Distribution not found at:
 file:///…/data-lake`), cut it by hand from inside the worktree —
 `git -C ../../../../data-lake worktree add --detach "$PWD/../data-lake" origin/main` for a
