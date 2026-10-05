@@ -84,12 +84,69 @@ def test_archive_jobs_are_registered_even_when_the_backend_is_off():
 def test_archive_jobs_do_not_fire_on_startup():
     """A first run against an undrained backlog is heavy (one transaction, whole batch in
     memory); it must not land while the process is still coming up."""
+    job_health.reset()
+    before = datetime.now(UTC)
     sched = scheduler.build_scheduler(settings=_settings(archive_backend="local"))
     jobs = {job.id: job for job in sched.get_jobs()}
-    # On an unstarted scheduler only a job built with an explicit next_run_time carries the
-    # attribute at all — which is precisely what `start_now=True` sets.
-    assert getattr(jobs["archive_bars"], "next_run_time", None) is None
-    assert getattr(jobs["archive_raw"], "next_run_time", None) is None
+    # Never run before, so each waits one full interval, exactly as an unseeded job always has.
+    assert jobs["archive_bars"].next_run_time >= before + timedelta(hours=24)
+    assert jobs["archive_raw"].next_run_time >= before + timedelta(hours=24)
+
+
+def test_a_restart_does_not_push_a_job_a_full_interval_out(tmp_path):
+    """ibkr_trader's collector check on 2026-10-05: `newsapi` (12 h) last succeeded at 11:17,
+    `serve` restarted at 12:30 and scheduled its next run for 00:30 -- one interval after the
+    restart, not after the run -- so `health` read it stale on a cadence it had kept. A job
+    that is due resumes on its own clock."""
+    artifact = tmp_path / "health.json"
+    job_health.reset()
+    job_health.record_schedule("newsapi", 12 * 3600)
+    job_health.record_success("newsapi", 2318)
+    job_health.write_artifact(artifact)
+    last_run = datetime.fromisoformat(job_health.snapshot()["jobs"]["newsapi"]["last_run"])
+    job_health.reset()
+
+    sched = scheduler.build_scheduler(settings=_settings(scheduler_health_file=str(artifact)))
+    newsapi = {job.id: job for job in sched.get_jobs()}["newsapi_poll"]
+
+    assert newsapi.next_run_time == last_run + timedelta(hours=12)
+
+
+def test_a_job_the_restart_made_overdue_catches_up_shortly_after_start():
+    job_health.reset()
+    job_health.record_schedule("newsapi", 12 * 3600)
+    job_health.record_success("newsapi", 1)
+    now = datetime.now(UTC) + timedelta(hours=30)
+
+    first = scheduler._first_run("newsapi", now=now)
+
+    assert first == now + timedelta(seconds=scheduler.CATCH_UP_DELAY_SECONDS)
+
+
+def test_a_start_now_job_fires_at_once_whatever_its_record_says():
+    job_health.reset()
+    job_health.record_schedule("prices", 24 * 3600)
+    job_health.record_success("prices", 1)
+    now = datetime.now(UTC)
+
+    assert scheduler._first_run("prices", start_now=True, now=now) == now
+
+
+def test_first_run_without_a_record_still_waits_out_the_catch_up_delay():
+    job_health.reset()
+    now = datetime.now(UTC)
+
+    first = scheduler._first_run("unknown", now=now)
+
+    assert first == now + timedelta(seconds=scheduler.CATCH_UP_DELAY_SECONDS)
+
+
+def test_a_run_missed_while_the_host_slept_still_fires_once_on_wake():
+    """APScheduler's default one-second grace would skip it and wait a whole interval more."""
+    sched = scheduler.build_scheduler(settings=_settings())
+    for job in sched.get_jobs():
+        assert job.misfire_grace_time is None, job.id
+        assert job.coalesce is True, job.id
 
 
 def test_backfill_job_also_fires_on_startup():

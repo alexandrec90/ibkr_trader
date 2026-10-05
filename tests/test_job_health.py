@@ -286,6 +286,52 @@ def test_record_schedule_keeps_the_first_scheduled_since_across_restarts(tmp_pat
     assert job_health.snapshot()["jobs"]["trends"]["scheduled_since"] == first
 
 
+def test_next_due_counts_from_the_last_run_of_either_outcome():
+    job_health.record_schedule("newsapi", 3600)
+    job_health.record_failure("newsapi", RuntimeError("429"))
+    last_run = datetime.fromisoformat(job_health.snapshot()["jobs"]["newsapi"]["last_run"])
+
+    assert job_health.next_due("newsapi") == last_run + timedelta(hours=1)
+
+
+def test_next_due_for_a_job_never_run_counts_from_when_it_was_scheduled():
+    job_health.record_schedule("trends", 86400)
+    since = datetime.fromisoformat(job_health.snapshot()["jobs"]["trends"]["scheduled_since"])
+
+    assert job_health.next_due("trends") == since + timedelta(days=1)
+
+
+def test_next_due_survives_a_restart(tmp_path):
+    job_health.record_schedule("newsapi", 3600)
+    job_health.record_success("newsapi", 5)
+    expected = job_health.next_due("newsapi")
+    artifact = tmp_path / "health.json"
+    job_health.write_artifact(artifact)
+
+    job_health.reset()
+    job_health.seed_from_artifact(artifact)
+    job_health.record_schedule("newsapi", 3600)
+
+    assert job_health.next_due("newsapi") == expected
+
+
+def test_next_due_is_none_when_the_record_cannot_say():
+    assert job_health.next_due("unknown") is None
+    job_health.record_success("adhoc", 1)  # ran, but no cadence was ever declared
+    assert job_health.next_due("adhoc") is None
+
+
+def test_next_due_ignores_a_malformed_stamp(tmp_path):
+    artifact = tmp_path / "health.json"
+    artifact.write_text(
+        json.dumps({"jobs": {"newsapi": {"interval_seconds": 3600, "last_run": "yesterday"}}}),
+        encoding="utf-8",
+    )
+    job_health.seed_from_artifact(artifact)
+
+    assert job_health.next_due("newsapi") is None
+
+
 def test_status_for_reports_failing_while_the_streak_is_open():
     job_health.record_success("reddit")
     job_health.record_failure("reddit", RuntimeError("no credentials"))

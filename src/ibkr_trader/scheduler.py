@@ -41,6 +41,12 @@ TRANSIENT_ERRORS: tuple[type[BaseException], ...] = (OperationalError, Interface
 #: database usually recovers within seconds, and a longer outage should not spin.
 RETRY_DELAYS_SECONDS: tuple[int, ...] = (300, 900, 3600)
 
+#: How long after start a job that came back overdue waits before its catch-up run. A restart
+#: no longer resets a job's cadence (``job_health.next_due``), so a long outage leaves several
+#: overdue at once; this keeps the heavy ones (archiving an undrained backlog) out of the
+#: process's first seconds. ``start_now`` jobs are exempt by definition.
+CATCH_UP_DELAY_SECONDS = 300
+
 
 def _fail_if_every_item_failed(
     label: str, attempted: int, failures: int, last_error: BaseException | None
@@ -655,6 +661,45 @@ def _register_archive_jobs(register: Callable[..., None], settings: Settings) ->
     )
 
 
+def _first_run(label: str, *, start_now: bool = False, now: datetime | None = None) -> datetime:
+    """When a freshly registered job should first fire: its cadence carries over a restart.
+
+    ``start_now`` jobs fire at once. Every other job fires when its record says it is next due
+    (``job_health.next_due``), no sooner than ``CATCH_UP_DELAY_SECONDS`` from now -- so a job
+    never run before still waits one interval, and one the restart made overdue catches up.
+    """
+    moment = now or datetime.now(UTC)
+    if start_now:
+        return moment
+    earliest = moment + timedelta(seconds=CATCH_UP_DELAY_SECONDS)
+    due = job_health.next_due(label)
+    return earliest if due is None else max(due, earliest)
+
+
+def _add_interval_job(
+    scheduler: BlockingScheduler,
+    job: Callable[[], None],
+    job_id: str,
+    seconds: float,
+    first_run: datetime,
+) -> None:
+    """Add ``job`` on an interval, first firing at ``first_run``.
+
+    A run missed while the host slept fires once on wake, not a full interval later:
+    APScheduler's default grace is one second, so a desktop that sleeps through a 12 h job's
+    slot would otherwise skip it and leave it stale.
+    """
+    scheduler.add_job(
+        job,
+        "interval",
+        seconds=seconds,
+        id=job_id,
+        next_run_time=first_run,
+        misfire_grace_time=None,
+        coalesce=True,
+    )
+
+
 def build_scheduler(
     settings: Settings | None = None,
     scheduler: BlockingScheduler | None = None,
@@ -686,13 +731,9 @@ def build_scheduler(
         """Add one guarded interval job, and tell ``job_health`` what cadence to expect."""
         job_health.record_schedule(label, seconds)
         scheduled.add(label)
-        extra = {"next_run_time": datetime.now(UTC)} if start_now else {}
-        scheduler.add_job(
-            _guard(job, label, scheduler=scheduler, artifact_path=artifact_path),
-            "interval",
-            seconds=seconds,
-            id=job_id,
-            **extra,
+        guarded = _guard(job, label, scheduler=scheduler, artifact_path=artifact_path)
+        _add_interval_job(
+            scheduler, guarded, job_id, seconds, _first_run(label, start_now=start_now)
         )
 
     register("social_poll", "social", poll_social_job, seconds=settings.poll_social_minutes * 60)
@@ -733,7 +774,7 @@ def build_scheduler(
             request_spacing_seconds=settings.finnhub_request_spacing_seconds,
         ),
         seconds=settings.finnhub_backfill_hours * 3600,
-        # Interval jobs first fire one interval after start; the backfill also fires on startup
+        # A job first fires one interval after its last run; the backfill also fires on startup
         # (free-tier history rolls off daily, and a completed backfill makes this near-free).
         start_now=True,
     )
