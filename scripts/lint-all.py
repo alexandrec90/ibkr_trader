@@ -22,8 +22,8 @@ ROOT = Path(__file__).resolve().parent.parent
 RUNNER = ROOT / "scripts" / "task-artifact-runner.py"
 
 
-def changed_python_files() -> list[str]:
-    """Return modified and untracked Python paths that still exist."""
+def changed_paths() -> list[str]:
+    """Return modified and untracked paths that still exist, of every file type."""
     commands = (
         ["git", "diff", "--name-only", "HEAD"],
         ["git", "ls-files", "--others", "--exclude-standard"],
@@ -33,7 +33,23 @@ def changed_python_files() -> list[str]:
         result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, check=False)
         if result.returncode == 0:
             paths.update(result.stdout.splitlines())
-    return sorted(path for path in paths if path.endswith(".py") and (ROOT / path).is_file())
+    return sorted(path for path in paths if (ROOT / path).is_file())
+
+
+def nothing_to_do(changed: list[str]) -> int:
+    """Report a `--changed` run with no Python to lint, naming what went unlinted.
+
+    A bare "nothing to do" over a diff of `CLAUDE.md` and two workflow files read as
+    those files having been checked (devkit afd00d21): the names say they were not, and
+    that they are the commit hooks' and CI's to check.
+    """
+    if not changed:
+        print("lint-all: no changed files; nothing to do")
+        return 0
+    shown = ", ".join(changed[:5]) + (", ..." if len(changed) > 5 else "")
+    print(f"lint-all: no linter here covers the {len(changed)} changed file(s) ({shown});")
+    print("  only Python is linted here, so nothing to do")
+    return 0
 
 
 def run_artifact(name: str, module_args: list[str]) -> int:
@@ -56,10 +72,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-secrets", action="store_true", help="compatibility no-op")
     args = parser.parse_args(argv)
 
-    targets = changed_python_files() if args.changed else ["src", "tests", "scripts"]
-    if args.changed and not targets:
-        print("lint-all: no changed Python files; nothing to do")
-        return 0
+    targets = ["src", "tests", "scripts"]
+    if args.changed:
+        changed = changed_paths()
+        targets = [path for path in changed if path.endswith(".py")]
+        if not targets:
+            return nothing_to_do(changed)
 
     failures = 0
     failures += bool(run_artifact("lint", ["-m", "ruff", "check", *targets]))

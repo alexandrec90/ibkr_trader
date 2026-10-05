@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -139,7 +140,7 @@ def test_every_cli_ingest_mode_parses_against_the_real_cli(mode):
 def test_lint_all_main_runs_each_gate_for_changed_python(monkeypatch):
     script = load_script("lint-all.py")
     calls = []
-    monkeypatch.setattr(script, "changed_python_files", lambda: ["scripts/example.py"])
+    monkeypatch.setattr(script, "changed_paths", lambda: ["CLAUDE.md", "scripts/example.py"])
     monkeypatch.setattr(
         script,
         "run_artifact",
@@ -152,6 +153,43 @@ def test_lint_all_main_runs_each_gate_for_changed_python(monkeypatch):
         ("format-check", ["-m", "ruff", "format", "--check", "scripts/example.py"]),
         ("typecheck", ["-m", "mypy", "src"]),
     ]
+
+
+def test_lint_all_names_the_changed_files_it_has_no_linter_for(monkeypatch, capsys):
+    """devkit afd00d21: a diff of CLAUDE.md and two workflows printed "no changed Python
+    files; nothing to do", which a fixer read as those files having been checked."""
+    script = load_script("lint-all.py")
+    changed = ["CLAUDE.md", ".github/workflows/pr-gate.yml", ".github/workflows/nightly.yml"]
+    monkeypatch.setattr(script, "changed_paths", lambda: changed)
+    monkeypatch.setattr(script, "run_artifact", lambda name, args: pytest.fail("ran a linter"))
+
+    assert script.main(["--changed"]) == 0
+    out = capsys.readouterr().out
+    assert "3 changed file(s)" in out and ".github/workflows/pr-gate.yml" in out
+    assert "only Python is linted here" in out
+
+
+def test_lint_all_nothing_to_do_shows_five_names_and_says_a_clean_tree_is_clean(capsys):
+    script = load_script("lint-all.py")
+    assert script.nothing_to_do([f"docs/{n}.md" for n in range(7)]) == 0
+    out = capsys.readouterr().out
+    assert "7 changed file(s)" in out and "docs/4.md, ..." in out and "docs/5.md" not in out
+    assert script.nothing_to_do([]) == 0
+    assert "no changed files; nothing to do" in capsys.readouterr().out
+
+
+def test_changed_paths_takes_every_file_type_in_the_diff(tmp_path, monkeypatch):
+    script = load_script("lint-all.py")
+    for name in ("a.py", "CLAUDE.md"):
+        (tmp_path / name).write_text("x\n", encoding="utf-8")
+    answers = {"diff": "a.py\ngone.py\n", "ls-files": "CLAUDE.md\n"}
+
+    def fake_run(command, **kwargs):
+        return subprocess.CompletedProcess(command, 0, answers[command[1]], "")
+
+    monkeypatch.setattr(script, "ROOT", tmp_path)
+    monkeypatch.setattr(script.subprocess, "run", fake_run)
+    assert script.changed_paths() == ["CLAUDE.md", "a.py"], "a deleted path is dropped"
 
 
 def test_docker_prune_never_requests_volume_deletion(monkeypatch):
