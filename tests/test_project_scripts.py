@@ -97,7 +97,8 @@ def test_the_image_installs_the_archive_extra_serve_needs():
     """`serve` registers the archive jobs unconditionally and the `social` poll reads
     social-scraper's export back through the archive store, so with ARCHIVE_BACKEND=s3 the
     image needs boto3 and pyarrow. A bare `uv sync --no-dev` left them out, and `social`
-    failed every run with "the s3 archive backend needs the archive extra".
+    failed every run with "the s3 archive backend needs the archive extra" (October 2026),
+    leaving `social_posts` empty while every other poll stayed green.
     """
     dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
     syncs = [
