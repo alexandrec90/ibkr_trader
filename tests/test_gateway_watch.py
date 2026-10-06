@@ -285,6 +285,28 @@ def test_send_ntfy_swallows_a_network_error():
     assert send_ntfy("https://ntfy.sh", "t", "Title", "Body", opener=opener) is False
 
 
+def test_send_ntfy_swallows_a_malformed_reply():
+    import http.client
+
+    def opener(request, timeout):
+        raise http.client.BadStatusLine("garbage")
+
+    assert send_ntfy("https://ntfy.sh", "t", "Title", "Body", opener=opener) is False
+
+
+def test_send_ntfy_swallows_a_bad_server_url():
+    # The real urlopen, which refuses a URL with no scheme before touching the network.
+    assert send_ntfy("ntfy.sh", "t", "Title", "Body") is False
+
+
+def test_send_ntfy_lets_a_programming_error_propagate():
+    def opener(request, timeout):
+        raise TypeError("bug in the caller")
+
+    with pytest.raises(TypeError):
+        send_ntfy("https://ntfy.sh", "t", "Title", "Body", opener=opener)
+
+
 # --- watch_from_settings -------------------------------------------------------------------
 
 

@@ -17,6 +17,7 @@ credentials -- only "not logged in" and the error type.
 from __future__ import annotations
 
 import asyncio
+import http.client
 import logging
 import urllib.request
 from collections.abc import Callable
@@ -92,18 +93,20 @@ def send_ntfy(
     if not topic:
         logger.warning("gateway alert not sent: NTFY_TOPIC is not set (%s)", title)
         return False
-    request = urllib.request.Request(
-        f"{server.rstrip('/')}/{topic}",
-        data=message.encode("utf-8"),
-        headers={"Title": title, "Priority": priority, "Tags": "warning"},
-        method="POST",
-    )
     try:
+        request = urllib.request.Request(
+            f"{server.rstrip('/')}/{topic}",
+            data=message.encode("utf-8"),
+            headers={"Title": title, "Priority": priority, "Tags": "warning"},
+            method="POST",
+        )
         response = opener(request, timeout=10)
         close = getattr(response, "close", None)
         if close is not None:
             close()
-    except Exception:
+    # URLError, HTTPError and timeouts are all OSError; a malformed reply is an HTTPException;
+    # a bad NTFY_SERVER URL is a ValueError. Anything else is a bug and should propagate.
+    except (OSError, http.client.HTTPException, ValueError):
         logger.exception("gateway alert could not be sent to ntfy")
         return False
     return True

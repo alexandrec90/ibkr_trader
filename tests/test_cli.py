@@ -1464,3 +1464,18 @@ def test_notify_test_reports_a_send_failure(monkeypatch):
     result = runner.invoke(cli.app, ["notify-test"])
     assert result.exit_code == 1
     assert "could not reach" in _all_output(result)
+
+
+def test_notify_test_sends_at_default_priority_not_the_alert_one(monkeypatch, capsys):
+    from ibkr_trader import gateway_watch
+
+    _patch_settings(monkeypatch, ntfy_topic="topic-x")
+    priorities = []
+    monkeypatch.setattr(
+        gateway_watch,
+        "send_ntfy",
+        lambda *args, priority: priorities.append(priority) or True,
+    )
+    cli.notify_test()
+    assert priorities == ["default"]
+    assert "check your phone" in capsys.readouterr().out
