@@ -97,6 +97,46 @@ optimized by construction. Provided today:
 - `ScoreAllocator` — adapter that turns any registered `Predictor` into an allocator, so a
   trained model (or a future sentiment model) plugs straight in without engine changes.
 
+### Buy-and-hold strategies (no fundamentals, recent data first)
+
+Four registered allocators plus one built on demand, all in
+[`signals/portfolio.py`](../src/ibkr_trader/signals/portfolio.py). They share one discipline:
+long-only, equal-weighted, and a **rank buffer**: an incumbent keeps its seat while it stays
+inside `top n × hold_buffer`, instead of being swapped the moment it slips out of the top `n`.
+The buffer is what turns a ranking into a buy-and-hold book. Stock strategies never hold a
+fund (`BROAD_ETF_SYMBOLS` mirrors `tickers-etfs.txt`, because `instruments.asset_class` is not
+populated by ingestion yet).
+
+| Strategy | What it holds | Review | Typical friction (2010+) |
+|---|---|---|---|
+| `couch_potato` | Fixed XEQT-like mix: 25% XIC / 45% SPY / 25% EFA / 5% EEM. The reference every other strategy is scored against. | yearly | ~1 trade/yr |
+| `core_satellite` | 70% couch-potato core + five `recent_momentum` stocks at 6% each. | 6 months | ~13–20 trades/yr, ~2.5 y hold |
+| `recent_momentum` | 12 stocks with the strongest **recency-weighted** trailing-year return (last quarter 50%, prior quarter 30%, prior half-year 20%) divided by 60-day volatility; skipped if >20% off the 52-week high; kept while in the top 48. | 6 months | ~22–30 trades/yr, ~1.2 y hold |
+| `steady_compounders` | 15 of the calmest stocks still rising: low risk (60% last-60-day vol, 40% one-year downside deviation), up over the year, one-year drawdown shallower than 30%. | 6 months | ~16–22 trades/yr, ~1.9 y hold |
+| `mood_tilt` (built by the lab, not registered) | `recent_momentum` with each score scaled by `1 + 0.25 × z` of recent public mood, and names below z = −1.5 dropped. Mood = news + social sentiment, exponentially decayed (30-day half-life, 90-day window), z-scored across names; see [`signals/mood.py`](../src/ibkr_trader/signals/mood.py). Identical to `recent_momentum` until a real cross-section of mood data exists, so the two compare directly. | 6 months | same as `recent_momentum` |
+
+Review cadences and buffers were set to keep trading near or below two dozen trades a year
+(the CRA frequency factor). They were **not** tuned for return. A looser trend filter showed a
+far better last year, and that is exactly the one-year noise not to fit to.
+
+### The strategy lab: how to judge them
+
+`ibkr-trader backtest lab` ([`backtest/lab.py`](../src/ibkr_trader/backtest/lab.py)) runs every
+strategy through the same engine over **fresh-start windows** ending today: since 2010, the
+last 5, 3 and 1 years. Each window is "if I had opened the account then", not a slice of one
+long run. The verdict is each strategy's CAGR edge over `couch_potato`, averaged with weights
+**1y 40% / 3y 30% / 5y 20% / since-2010 10%**, so a strategy that only won in a world that is
+gone does not top the board. It writes `lab-report.html`
+([`dashboard/lab_report.py`](../src/ibkr_trader/dashboard/lab_report.py)) with the verdict,
+CAGR per window, growth-of-100 and drawdown curves (one window at a time), calendar-year
+returns, friction (trades/yr and implied average holding period), a TFSA-vs-RRSP tax-drag
+table, and each strategy's day-one book. The lab screen is stricter than the default: price
+≥ $5, ≥ $2M/day traded, two years listed.
+
+Short windows carry less survivorship bias than long ones (the universe is today's
+survivors), which is one more reason the recent windows weigh most. One year of news means
+two semi-annual `mood_tilt` decisions: a hypothesis to forward-shadow, not evidence.
+
 ## Simulation realism ([`backtest/engine.py`](../src/ibkr_trader/backtest/engine.py))
 
 - **No look-ahead:** decide at close(t), fill at **open(t+1)**; eligibility/features use bars ≤ t.
@@ -117,6 +157,8 @@ optimized by construction. Provided today:
 ibkr-trader backtest run --strategy ml_lt_ridge --account tfsa \
     --universe-file tickers.txt --start 2008-06-02 --eval-start 2010-01-04 --end 2030-01-01
 ibkr-trader backtest compare --sort-by calmar        # leaderboard
+ibkr-trader backtest lab --account tfsa  # all buy-and-hold strategies, recency-weighted,
+                                         # → lab-report.html (needs the [report] extra)
 ibkr-trader report       # static HTML report: leaderboard + equity/drawdown charts, opens in
                          # the browser; no server stays resident (needs the [report] extra:
                          # uv sync --extra report)

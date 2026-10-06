@@ -227,8 +227,11 @@ def _execute(
     cost_model: RegisteredAccountCostModel,
     config: RegisteredStrategyConfig,
     budget_left: int,
-) -> tuple[float, int, float, float]:
-    """Trade toward ``targets`` at ``day``'s open. Returns (cash, trades_done, cost_cad, fx_cad).
+) -> tuple[float, int, float, float, float]:
+    """Trade toward ``targets`` at ``day``'s open.
+
+    Returns (cash, trades_done, cost_cad, fx_cad, sold_cad) — ``sold_cad`` is the CAD notional
+    sold, which the turnover / holding-period metrics are built from.
 
     Respects the rebalance band (skip small drifts) and the per-account annual trade budget
     (sells first to raise cash, then buys; when the budget is spent, remaining names are held).
@@ -237,7 +240,7 @@ def _execute(
     """
     value = _portfolio_value(cash, positions, universe, fx, day, use_open=True)
     if value <= 0:
-        return cash, 0, 0.0, 0.0
+        return cash, 0, 0.0, 0.0, 0.0
 
     # price/weight snapshot at the open, only for names tradable today
     priced: dict[int, float] = {}
@@ -262,6 +265,7 @@ def _execute(
     trades_done = 0
     total_cost = 0.0
     net_fx_crossing = 0.0  # signed CAD value of non-CAD trades (buys +, sells -)
+    sold_cad = 0.0
     for iid, delta_shares in deltas:
         if budget_left - trades_done <= 0:
             break
@@ -273,12 +277,32 @@ def _execute(
             positions.pop(iid, None)
         trades_done += 1
         total_cost += cost
+        sold_cad += max(0.0, -delta_shares) * price_cad
         if universe[iid].currency.upper() != "CAD":
             net_fx_crossing += delta_shares * price_cad
 
     fx_cost = cost_model.fx_conversion_cost(net_fx_crossing)
     cash -= fx_cost
-    return cash, trades_done, total_cost, fx_cost
+    return cash, trades_done, total_cost, fx_cost, sold_cad
+
+
+def _run_params(config: RegisteredStrategyConfig, allocator: Allocator) -> dict:
+    """What a run is pinned to in ``backtest_runs.params`` — the fair-comparison identity."""
+    params = {
+        "account": config.account.value,
+        "model_version": allocator.version,
+        "feature_set_version": FEATURE_SET_VERSION,
+        "horizon": "long_term",
+        "annual_trade_budget": config.annual_trade_budget,
+        "rebalance_band": config.rebalance_band,
+        "rebalance_months": config.rebalance_months,
+        "start_capital": config.start_capital,
+        "benchmark": config.benchmark_symbol,
+        "min_history_days": config.eligibility.min_history_days,
+    }
+    if config.eval_start is not None:  # only pinned when set, so unset runs are unchanged
+        params["eval_start"] = config.eval_start.isoformat()
+    return params
 
 
 def simulate(
@@ -323,6 +347,7 @@ def simulate(
     total_cost = 0.0
     total_tax = 0.0
     total_fx = 0.0
+    total_sold = 0.0
     trades_by_year: dict[int, int] = {}
     last_rebalance_month = -1
 
@@ -332,13 +357,14 @@ def simulate(
             year = day.year
             spent = trades_by_year.get(year, 0)
             budget_left = max(0, config.annual_trade_budget - spent)
-            cash, done, cost, fx_cost = _execute(
+            cash, done, cost, fx_cost, sold = _execute(
                 pending, positions, cash, universe, fx, day, cost_model, config, budget_left
             )
             trades_by_year[year] = spent + done
             total_trades += done
             total_cost += cost
             total_fx += fx_cost
+            total_sold += sold
             pending = None
 
         # 2. dividend withholding drag on US-domiciled holdings, charged daily
@@ -386,29 +412,14 @@ def simulate(
             "costs_cad": total_cost,
             "tax_cad": total_tax,
             "fx_cost_cad": total_fx,
+            **metrics_mod.holding_stats(total_sold, equity),
         }
     )
-    start_dt = datetime.combine(calendar[0], datetime.min.time(), tzinfo=UTC)
-    end_dt = datetime.combine(calendar[-1], datetime.min.time(), tzinfo=UTC)
-    params = {
-        "account": config.account.value,
-        "model_version": allocator.version,
-        "feature_set_version": FEATURE_SET_VERSION,
-        "horizon": "long_term",
-        "annual_trade_budget": config.annual_trade_budget,
-        "rebalance_band": config.rebalance_band,
-        "rebalance_months": config.rebalance_months,
-        "start_capital": config.start_capital,
-        "benchmark": config.benchmark_symbol,
-        "min_history_days": config.eligibility.min_history_days,
-    }
-    if config.eval_start is not None:  # only pinned when set, so unset runs are unchanged
-        params["eval_start"] = config.eval_start.isoformat()
     return BacktestResult(
         strategy=strategy_name or allocator.name,
-        params=params,
-        start=start_dt,
-        end=end_dt,
+        params=_run_params(config, allocator),
+        start=datetime.combine(calendar[0], datetime.min.time(), tzinfo=UTC),
+        end=datetime.combine(calendar[-1], datetime.min.time(), tzinfo=UTC),
         equity_curve=equity_curve,
         metrics=summary,
         trades=total_trades,

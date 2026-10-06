@@ -501,6 +501,121 @@ def backtest_run(
     _print_backtest_result(result, account_type.value)
 
 
+@backtest_app.command("lab")
+def backtest_lab(
+    universe_file: str = typer.Option("tickers.txt", help="one symbol per line"),
+    account: str = typer.Option(
+        "",
+        help="rrsp|tfsa|fhsa|lira|nonreg (default: config); the report also re-runs the "
+        "longest window in a contrasting account (RRSP, or TFSA for RRSP/LIRA) for the tax drag",
+    ),
+    full_start: str = typer.Option(
+        "2010-01-04", help="first decision date of the longest window YYYY-MM-DD"
+    ),
+    mood: bool = typer.Option(
+        True, "--mood/--no-mood", help="include the news/social-mood strategy"
+    ),
+    output: Path = typer.Option(Path("lab-report.html"), "--output", "-o"),
+    open_browser: bool = typer.Option(True, "--open/--no-open"),
+):
+    """Compare the registered-account strategies over fresh-start windows weighted to recent
+    data (since --full-start, last 5y/3y/1y) and write a static HTML report with charts.
+
+    Read-only on the database (nothing persisted). Needs the [report] extra.
+    """
+    import importlib.util
+    import webbrowser
+    from datetime import date
+
+    if importlib.util.find_spec("plotly") is None:
+        typer.echo("error: plotly is not installed — run `uv sync --extra report`", err=True)
+        raise typer.Exit(code=1)
+    lab_settings, full_start_date = _lab_settings(account, full_start)
+
+    from ibkr_trader.backtest import lab
+    from ibkr_trader.config import get_settings
+    from ibkr_trader.dashboard.lab_report import build_lab_report
+    from ibkr_trader.db.session import get_session
+    from ibkr_trader.signals.mood import load_mood_panel
+
+    symbols = _read_universe(universe_file, "")
+    typer.echo(f"loading {len(symbols)} symbols from the database...")
+    with get_session() as session:
+        inputs = lab.load_lab_inputs(session, symbols, full_start_date, date.today())
+        model = get_settings().sentiment_model
+        panel = load_mood_panel(session, model=model) if mood else None
+    if not inputs.universe:
+        typer.echo("error: no daily bars for that universe — ingest prices first", err=True)
+        raise typer.Exit(code=1)
+    calendar_end = max(day for series in inputs.universe.values() for day in series.dates)
+    windows = lab.recent_windows(calendar_end, full_start_date)
+    specs = lab.default_specs(panel)
+    typer.echo(f"running {len(windows)} windows x {len(specs)} strategies...")
+    result = lab.run_lab(inputs, specs, windows, lab_settings)
+    result.mood_start = panel.first_day() if panel is not None else None
+    output.write_text(build_lab_report(result), encoding="utf-8")
+    typer.echo(_format_lab_verdict(result))
+    typer.echo(f"wrote {output}")
+    if open_browser:
+        webbrowser.open(output.resolve().as_uri())
+
+
+def _lab_settings(account: str, full_start: str):
+    """Validate the lab's --account / --full-start into ``(LabSettings, full_start_date)``.
+
+    Costs, trade budget and benchmark come from Settings like ``backtest run``; the compare
+    account is the contrasting withholding regime — RRSP, or TFSA when the account is
+    already treaty-exempt (RRSP/LIRA).
+    """
+    from dataclasses import replace
+    from datetime import datetime
+
+    from ibkr_trader.accounts import AccountType, get_profile
+    from ibkr_trader.backtest import lab
+    from ibkr_trader.backtest.costs import RegisteredAccountCostModel
+    from ibkr_trader.backtest.engine import RegisteredStrategyConfig
+    from ibkr_trader.config import get_settings
+
+    settings = get_settings()
+    try:
+        account_type = AccountType((account or settings.default_account).lower())
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from None
+    try:
+        start = datetime.strptime(full_start, "%Y-%m-%d").date()
+    except ValueError:
+        raise typer.BadParameter("--full-start must be YYYY-MM-DD") from None
+    profile = get_profile(account_type)
+    exempt = profile.registered and profile.effective_us_withholding() == 0.0
+    compare = AccountType.TFSA if exempt else AccountType.RRSP
+    lab_settings = lab.LabSettings(
+        account=account_type,
+        compare_account=None if compare == account_type else compare,
+        cost_model=RegisteredAccountCostModel(
+            churn_penalty_bps=settings.churn_penalty_bps,
+            fx_conversion_bps=settings.fx_conversion_bps,
+            assumed_us_dividend_yield=settings.us_dividend_yield_assumption,
+        ),
+        base_config=replace(
+            RegisteredStrategyConfig(eligibility=lab.LAB_ELIGIBILITY),
+            annual_trade_budget=settings.annual_trade_budget,
+            benchmark_symbol=settings.benchmark_symbol,
+        ),
+    )
+    return lab_settings, start
+
+
+def _format_lab_verdict(result) -> str:
+    """Terminal summary: the recency-weighted verdict, best first."""
+    from ibkr_trader.backtest.lab import recency_scores
+
+    labels = {spec.name: spec.label for spec in result.specs}
+    lines = [f"\nRecency-weighted CAGR edge over the couch potato ({result.account.upper()}):"]
+    for name, score in sorted(recency_scores(result).items(), key=lambda kv: -kv[1]):
+        lines.append(f"  {labels[name]:<28} {score * 100:+6.1f} pts/yr")
+    return "\n".join(lines)
+
+
 def _print_backtest_result(result, account: str) -> None:
     m = result.metrics
     window = f"{result.start:%Y-%m-%d}→{result.end:%Y-%m-%d}"

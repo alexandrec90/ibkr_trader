@@ -80,6 +80,21 @@ those horizons mature). Automating this cadence in `serve` is a follow-up, not p
       as ordinary instruments whose daily bars stop at their final trading date.
 - [ ] Fundamental solvency screen (market cap, distress/default) once fundamentals are ingested;
       precise per-security dividend cashflows to replace the yield-based withholding drag.
+- [x] ~~*Registered-account buy-and-hold strategies + strategy lab*~~ [2026-10-05] —
+      `couch_potato`, `core_satellite`, `recent_momentum`, `steady_compounders` (registered)
+      and `mood_tilt` (news/social sentiment tilt, built by the lab). `backtest lab` runs them
+      over fresh-start windows (since 2010, 5y, 3y, 1y) and scores them by recency-weighted
+      CAGR edge over the couch potato → `lab-report.html`. Engine now reports
+      `sell_turnover` / `avg_holding_years`. See
+      [registered-account-strategy.md](docs/registered-account-strategy.md#buy-and-hold-strategies-no-fundamentals-recent-data-first).
+- [ ] Forward-shadow `mood_tilt`: it is unregistered (needs the mood panel), so the monthly
+      `snapshot run --all` skips it. One year of news gives it two decisions; snapshots are
+      how it earns real evidence.
+- [ ] Populate `instruments.asset_class` at ingestion (data-lake) so `is_fund` stops relying
+      on the `BROAD_ETF_SYMBOLS` mirror of `tickers-etfs.txt`.
+- [ ] TFSA asset location: the couch potato holds US-listed SPY/EFA/EEM for history depth;
+      in a real TFSA a CAD-listed all-in-one (XEQT) avoids most of the US withholding layer.
+      The withholding model doesn't capture the second (foreign→US) layer on EFA/EEM.
 
 ## 4 · IBKR paper trading
 

@@ -31,6 +31,7 @@ artifacts/
 models/
 mlruns/
 reports/
+lab-report.html
 *.parquet
 *.csv
 !tests/fixtures/*.csv
