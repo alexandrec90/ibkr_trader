@@ -36,6 +36,10 @@ def _settings(**overrides):
         archive_bars_hours=24,
         archive_raw_min_age_days=30,
         archive_raw_hours=24,
+        # Off by default here: build_scheduler only registers jobs, and these tests must never
+        # be one refactor away from a real socket.
+        gateway_watch_enabled=False,
+        gateway_check_minutes=5,
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -55,6 +59,7 @@ def test_build_scheduler_registers_all_jobs_with_configured_intervals():
         "prices_poll",
         "archive_bars",
         "archive_raw",
+        "gateway_watch",
     }
     assert jobs["social_poll"].trigger.interval == timedelta(minutes=30)
     assert jobs["finnhub_news_poll"].trigger.interval == timedelta(hours=6)
@@ -205,6 +210,33 @@ def test_build_scheduler_drops_a_job_it_no_longer_registers(tmp_path):
     assert "reddit" not in job_health.snapshot()["jobs"]
     assert "reddit" not in job_health.load_artifact(artifact)["jobs"]
     assert job_health.snapshot()["jobs"]["prices"]["last_success"] is not None
+
+
+def test_gateway_watch_fires_on_startup_on_its_own_cadence():
+    """A login waiting for approval should reach the owner minutes after `serve` starts."""
+    sched = scheduler.build_scheduler(settings=_settings(gateway_check_minutes=7))
+    job = {j.id: j for j in sched.get_jobs()}["gateway_watch"]
+    assert job.trigger.interval == timedelta(minutes=7)
+    assert job.next_run_time is not None
+    assert job_health.snapshot()["jobs"]["gateway"]["interval_seconds"] == 7 * 60
+
+
+def test_gateway_watch_switched_off_is_a_recorded_skip():
+    job = scheduler.gateway_watch_job(_settings(gateway_watch_enabled=False))
+    assert job() == scheduler.GATEWAY_WATCH_OFF
+
+
+def test_gateway_watch_switched_on_is_the_settings_wired_watch(monkeypatch):
+    from ibkr_trader import gateway_watch
+
+    sentinel = object()
+    seen = []
+    monkeypatch.setattr(
+        gateway_watch, "watch_from_settings", lambda settings: seen.append(settings) or sentinel
+    )
+    settings = _settings(gateway_watch_enabled=True)
+    assert scheduler.gateway_watch_job(settings) is sentinel
+    assert seen == [settings]
 
 
 def test_build_scheduler_honours_overridden_cadence():

@@ -528,6 +528,24 @@ def run_archive_raw(settings: Settings) -> dict[str, int]:
     return {"payloads_archived": result.rows_archived}
 
 
+#: The gateway job's recorded result when the watch is switched off, so `health` shows why it
+#: never probes instead of failing every five minutes against a gateway nobody started.
+GATEWAY_WATCH_OFF = "skipped: GATEWAY_WATCH_ENABLED is false"
+
+
+def gateway_watch_job(settings: Settings) -> Callable[[], object]:
+    """The ``gateway`` job: a stateful ``GatewayWatch``, or a no-op while switched off.
+
+    Registered unconditionally, like the archive jobs, so switching it off never leaves a
+    seeded health entry reading stale forever.
+    """
+    if not settings.gateway_watch_enabled:
+        return lambda: GATEWAY_WATCH_OFF
+    from ibkr_trader.gateway_watch import watch_from_settings
+
+    return watch_from_settings(settings)
+
+
 def _schedule_retry(
     scheduler: BlockingScheduler | None,
     wrapped: Callable[[], None],
@@ -794,6 +812,14 @@ def build_scheduler(
         start_now=True,
     )
     _register_archive_jobs(register, settings)
+    register(
+        "gateway_watch",
+        "gateway",
+        gateway_watch_job(settings),
+        seconds=settings.gateway_check_minutes * 60,
+        # A login that needs approval should reach the owner within minutes of `serve` starting.
+        start_now=True,
+    )
     # A job this build no longer registers (renamed or retired) would keep its seeded
     # interval and read `stale` forever, holding `ibkr-trader health` red.
     job_health.forget_unscheduled(scheduled)
