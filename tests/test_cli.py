@@ -1428,3 +1428,54 @@ def test_health_json_output_is_machine_readable(tmp_path):
 
     assert result.exit_code == 0, _all_output(result)
     assert json.loads(result.output)["jobs"]["prices"]["last_success"]
+
+
+# --- notify-test ----------------------------------------------------------------------------
+
+
+def test_notify_test_refuses_without_a_topic(monkeypatch):
+    _patch_settings(monkeypatch, ntfy_topic="")
+    result = runner.invoke(cli.app, ["notify-test"])
+    assert result.exit_code == 1
+    assert "NTFY_TOPIC is not set" in _all_output(result)
+
+
+def test_notify_test_sends_one_push_to_the_configured_topic(monkeypatch):
+    from ibkr_trader import gateway_watch
+
+    _patch_settings(monkeypatch, ntfy_topic="topic-x", ntfy_server="https://example.test")
+    sent = []
+    monkeypatch.setattr(
+        gateway_watch,
+        "send_ntfy",
+        lambda server, topic, title, message, priority: sent.append((server, topic)) or True,
+    )
+    result = runner.invoke(cli.app, ["notify-test"])
+    assert result.exit_code == 0, _all_output(result)
+    assert sent == [("https://example.test", "topic-x")]
+    assert "check your phone" in result.output
+
+
+def test_notify_test_reports_a_send_failure(monkeypatch):
+    from ibkr_trader import gateway_watch
+
+    _patch_settings(monkeypatch, ntfy_topic="topic-x")
+    monkeypatch.setattr(gateway_watch, "send_ntfy", lambda *args, **kwargs: False)
+    result = runner.invoke(cli.app, ["notify-test"])
+    assert result.exit_code == 1
+    assert "could not reach" in _all_output(result)
+
+
+def test_notify_test_sends_at_default_priority_not_the_alert_one(monkeypatch, capsys):
+    from ibkr_trader import gateway_watch
+
+    _patch_settings(monkeypatch, ntfy_topic="topic-x")
+    priorities = []
+    monkeypatch.setattr(
+        gateway_watch,
+        "send_ntfy",
+        lambda *args, priority: priorities.append(priority) or True,
+    )
+    cli.notify_test()
+    assert priorities == ["default"]
+    assert "check your phone" in capsys.readouterr().out

@@ -1264,6 +1264,29 @@ def serve():
     run_scheduler()
 
 
+@app.command("notify-test")
+def notify_test():
+    """Send one test push through ntfy, to confirm gateway login alerts reach your phone."""
+    from ibkr_trader.config import get_settings
+    from ibkr_trader.gateway_watch import send_ntfy
+
+    settings = get_settings()
+    if not settings.ntfy_topic:
+        typer.echo("NTFY_TOPIC is not set in .env; gateway alerts cannot be sent.", err=True)
+        raise typer.Exit(code=1)
+    sent = send_ntfy(
+        settings.ntfy_server,
+        settings.ntfy_topic,
+        "ibkr-trader test",
+        "Gateway login alerts will arrive here.",
+        priority="default",
+    )
+    if not sent:
+        typer.echo(f"FAILED: could not reach {settings.ntfy_server} (see log)", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(f"sent to {settings.ntfy_server}; check your phone")
+
+
 @app.command()
 def health(
     artifact: str = typer.Option("", help="health artifact path (default: from Settings)"),
