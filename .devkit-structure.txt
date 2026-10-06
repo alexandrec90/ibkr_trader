@@ -15,7 +15,7 @@
 # Module size -- `file_lines`, `imports`, `definitions` -- is advisory and never here.
 #
 # Regenerate only when adopting the gate: python scripts/hooks/structure_check.py --seed
-complexity::src/ibkr_trader/backtest/engine.py::simulate = 24
+complexity::src/ibkr_trader/backtest/engine.py::simulate = 23
 complexity::src/ibkr_trader/backtest/snapshot.py::build_snapshot_report = 16
 complexity::src/ibkr_trader/signals/dataset.py::build_dataset_from_panel = 23
 complexity::src/ibkr_trader/signals/features.py::_add_corporate_features = 19
@@ -50,7 +50,7 @@ dependency::pyproject.toml::transformers = 1
 dependency::pyproject.toml::typer = 1
 dependency::pyproject.toml::vadersentiment = 1
 function_lines::src/ibkr_trader/backtest/engine.py::_run_with_session = 92
-function_lines::src/ibkr_trader/backtest/engine.py::simulate = 135
+function_lines::src/ibkr_trader/backtest/engine.py::simulate = 122
 function_lines::src/ibkr_trader/backtest/oos.py::run_oos_backtest = 100
 function_lines::src/ibkr_trader/backtest/snapshot.py::run_snapshots = 88
 function_lines::src/ibkr_trader/scheduler.py::build_scheduler = 86

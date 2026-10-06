@@ -53,6 +53,22 @@ def total_return(equity: np.ndarray) -> float:
     return float(equity[-1] / equity[0] - 1)
 
 
+def holding_stats(sold_notional: float, equity: np.ndarray) -> dict:
+    """Turnover and implied average holding period — the "how often do I trade" evidence.
+
+    ``sell_turnover`` is the CAD notional sold per year as a fraction of average equity.
+    Sells, not buys, so the initial deployment of cash doesn't read as churn. The implied
+    average holding period is its reciprocal; a book that never sold reports the window
+    length (a lower bound: everything was held at least that long).
+    """
+    if len(equity) == 0 or float(np.mean(equity)) <= 0:
+        return {"sell_turnover": 0.0, "avg_holding_years": 0.0}
+    years = max(len(equity) / TRADING_DAYS, 1e-9)
+    turnover = sold_notional / float(np.mean(equity)) / years
+    holding = 1.0 / turnover if turnover > 0 else years
+    return {"sell_turnover": turnover, "avg_holding_years": min(holding, 99.0)}
+
+
 def summarize(equity: np.ndarray) -> dict:
     """Standard metric bundle for one equity curve. Keys are stable — the leaderboard and
     ``backtest compare`` read them straight out of ``backtest_runs.metrics``."""

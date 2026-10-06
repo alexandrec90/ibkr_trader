@@ -19,7 +19,7 @@ engine computes features (from bars ≤ t, no look-ahead) and hands them in.
 
 import abc
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import date
 
 from ibkr_trader.signals.eligibility import Candidate
@@ -28,6 +28,8 @@ from ibkr_trader.signals.predictor import Predictor, get_predictor
 # feature dicts are keyed by instrument_id; values are per-instrument feature maps
 Features = dict[int, dict[str, float]]
 Weights = dict[int, float]
+#: (symbols, decision day) -> {symbol: mood z-score}, symbols lacking coverage omitted.
+MoodLookup = Callable[[list[str], date], dict[str, float]]
 
 
 def normalize_weights(scores: dict[int, float], *, max_names: int, max_weight: float) -> Weights:
@@ -199,6 +201,268 @@ class ScoreAllocator(Allocator):
             if score > 0 and math.isfinite(score):
                 scores[candidate.instrument_id] = score
         return normalize_weights(scores, max_names=self.max_names, max_weight=self.max_weight)
+
+
+# ---------------------------------------------------------------------------------------------
+# Registered-account buy-and-hold strategies (docs/registered-account-strategy.md §Strategies).
+#
+# Shared discipline: long-only, equal-weighted (so drift, not re-weighting, is what triggers a
+# trade), and a *rank buffer* — an incumbent is kept while it stays inside the top
+# ``n × hold_buffer`` instead of being swapped the moment it slips out of the top ``n``. That
+# buffer is what turns a ranking into a buy-and-hold book. Signals lean on the most recent
+# quarter of price action rather than fundamentals (none are ingested, and the owner's view is
+# that recent behaviour matters more than it used to).
+# ---------------------------------------------------------------------------------------------
+
+#: The broad-market ETFs in the curated universe — a mirror of ``tickers-etfs.txt`` (a test
+#: keeps the two equal). ``instruments.asset_class`` is not populated by ingestion yet, so the
+#: stock-picking strategies use this to tell a fund from a company.
+BROAD_ETF_SYMBOLS: frozenset[str] = frozenset(
+    "XEQT VEQT XGRO VGRO XBAL VBAL XIC XIU VCN VFV ZSP XUU XBB ZAG XSP XAW "
+    "SPY VTI VOO QQQ IWM EFA EEM AGG".split()
+)
+
+#: An all-equity, XEQT-like mix (~25% Canada / 45% US / 25% developed ex-NA / 5% emerging)
+#: built from ETFs with history back to 2003, so the do-nothing reference spans every window.
+COUCH_POTATO_MIX: dict[str, float] = {"XIC": 0.25, "SPY": 0.45, "EFA": 0.25, "EEM": 0.05}
+
+#: Weights on the latest quarter, the quarter before it, and the half-year before that. The
+#: whole trailing year still votes, but per unit of time the latest quarter counts 5x the
+#: oldest half-year.
+RECENCY_WEIGHTS: tuple[float, float, float] = (0.5, 0.3, 0.2)
+
+
+def is_fund(candidate: Candidate) -> bool:
+    """True for an ETF/fund rather than an operating company."""
+    return (candidate.asset_class or "").upper() == "ETF" or (
+        candidate.symbol.upper() in BROAD_ETF_SYMBOLS
+    )
+
+
+def recency_momentum(feats: dict[str, float]) -> float | None:
+    """Recency-weighted trailing-year return: last quarter, prior quarter, prior half-year.
+
+    Decomposes the 3/6/12-month total returns into non-overlapping legs and weights them by
+    ``RECENCY_WEIGHTS``. None when any of the three returns is missing (young listing).
+    """
+    r3, r6, r12 = feats.get("return_3m"), feats.get("return_6m"), feats.get("return_12m")
+    if r3 is None or r6 is None or r12 is None or r3 <= -1 or r6 <= -1:
+        return None
+    last_quarter = r3
+    prior_quarter = (1 + r6) / (1 + r3) - 1
+    prior_half = (1 + r12) / (1 + r6) - 1
+    w1, w2, w3 = RECENCY_WEIGHTS
+    return w1 * last_quarter + w2 * prior_quarter + w3 * prior_half
+
+
+def select_with_buffer(
+    scores: dict[int, float], held: set[int], *, n: int, hold_buffer: float
+) -> list[int]:
+    """Top ``n`` by score, but incumbents ranked inside ``n × hold_buffer`` keep their seat.
+
+    Deterministic (ties broken by instrument_id). Incumbents are seated first, best-ranked
+    first, then the remaining seats go to the best newcomers.
+    """
+    ranked = sorted(scores, key=lambda iid: (-scores[iid], iid))
+    keep_depth = max(n, int(n * hold_buffer))
+    picks = [iid for iid in ranked[:keep_depth] if iid in held][:n]
+    for iid in ranked:
+        if len(picks) >= n:
+            break
+        if iid not in picks:
+            picks.append(iid)
+    return picks
+
+
+class BufferedStockAllocator(Allocator):
+    """Equal-weight top-``n`` stock picker with a rank buffer. Subclasses supply ``score``.
+
+    Remembers what it chose last time (per instance), which is how the buffer knows the
+    incumbents. A fresh instance starts with an empty book — build one per simulation.
+    """
+
+    max_names = 12
+    hold_buffer = 2.0
+
+    def __init__(self) -> None:
+        self._held: set[int] = set()
+
+    def score(self, candidate: Candidate, feats: dict[str, float]) -> float | None:
+        raise NotImplementedError
+
+    def scores(self, candidates: Sequence[Candidate], features: Features) -> dict[int, float]:
+        """Positive, finite scores for the eligible operating companies (funds skipped)."""
+        out: dict[int, float] = {}
+        for candidate in candidates:
+            if is_fund(candidate):
+                continue
+            value = self.score(candidate, features.get(candidate.instrument_id, {}))
+            if value is not None and value > 0 and math.isfinite(value):
+                out[candidate.instrument_id] = value
+        return out
+
+    def pick(self, scores: dict[int, float], n: int) -> list[int]:
+        picks = select_with_buffer(scores, self._held, n=n, hold_buffer=self.hold_buffer)
+        self._held = set(picks)
+        return picks
+
+    def allocate(self, candidates: Sequence[Candidate], features: Features) -> Weights:
+        picks = self.pick(self.scores(candidates, features), self.max_names)
+        if not picks:
+            return {}
+        weight = min(self.max_weight, 1.0 / len(picks))
+        return {iid: weight for iid in picks}
+
+
+@register
+class RecentMomentumAllocator(BufferedStockAllocator):
+    """Stocks in a strong, *recent*, orderly uptrend — held until they clearly fade.
+
+    Score = recency-weighted momentum (``recency_momentum``) divided by the last 60 days'
+    volatility, so a steady climb beats a jagged one. A name more than 20% below its 52-week
+    high is skipped: the trend is broken, whatever the trailing year says. The wide buffer
+    (an incumbent keeps its seat while inside the top 48) is what holds turnover to roughly
+    two dozen trades a year at a semi-annual review — tuned for turnover, not for return.
+    """
+
+    name = "recent_momentum"
+    version = "1"
+    max_names = 12
+    max_weight = 0.12
+    hold_buffer = 4.0
+    max_off_high = -0.20
+
+    def score(self, candidate: Candidate, feats: dict[str, float]) -> float | None:
+        momentum = recency_momentum(feats)
+        vol = feats.get("volatility_60d")
+        off_high = feats.get("pct_off_52w_high")
+        if momentum is None or not vol or vol <= 0:
+            return None
+        if off_high is not None and off_high < self.max_off_high:
+            return None
+        return momentum / vol
+
+
+@register
+class SteadyCompoundersAllocator(BufferedStockAllocator):
+    """The calmest stocks that are still compounding — a defensive, sleep-at-night book.
+
+    Without fundamentals, "quality" is proxied by price behaviour: rank by low risk, where
+    risk leans on the recent past (60% last-60-day volatility, 40% one-year downside
+    deviation). Only names up over the year and with a one-year drawdown shallower than 30%
+    qualify, so "calm because it is slowly dying" is screened out.
+    """
+
+    name = "steady_compounders"
+    version = "1"
+    max_names = 15
+    max_weight = 0.10
+    max_drawdown_floor = -0.30
+
+    def score(self, candidate: Candidate, feats: dict[str, float]) -> float | None:
+        r12 = feats.get("return_12m")
+        drawdown = feats.get("max_drawdown_252d")
+        vol = feats.get("volatility_60d")
+        downside = feats.get("downside_deviation_252d")
+        if r12 is None or r12 <= 0 or drawdown is None or drawdown < self.max_drawdown_floor:
+            return None
+        if vol is None or downside is None:
+            return None
+        risk = 0.6 * vol + 0.4 * downside
+        return 1.0 / risk if risk > 0 else None
+
+
+def _fixed_mix(candidates: Sequence[Candidate], mix: dict[str, float]) -> Weights:
+    """``mix`` (symbol → weight) over the eligible candidates, renormalized over those present."""
+    present = {c.symbol.upper(): c.instrument_id for c in candidates}
+    available_mix = {sym: w for sym, w in mix.items() if sym in present}
+    total = sum(available_mix.values())
+    if total <= 0:
+        return {}
+    return {present[sym]: w / total for sym, w in available_mix.items()}
+
+
+@register
+class CouchPotatoAllocator(Allocator):
+    """The do-nothing reference: a fixed XEQT-like ETF mix (``COUCH_POTATO_MIX``).
+
+    If a sleeve's ETF is not yet eligible, the others are scaled up to stay fully invested.
+    """
+
+    name = "couch_potato"
+    version = "1"
+    max_weight = 1.0
+
+    def allocate(self, candidates: Sequence[Candidate], features: Features) -> Weights:
+        return _fixed_mix(candidates, COUCH_POTATO_MIX)
+
+
+@register
+class CoreSatelliteAllocator(Allocator):
+    """70% couch-potato core, 30% in five ``recent_momentum`` stocks (6% each).
+
+    The core keeps the account diversified and nearly turnover-free; the satellite is where
+    stock selection gets a bounded say. If the core ETFs are unavailable the satellite still
+    only gets its 30% — the rest waits in cash rather than concentrating.
+    """
+
+    name = "core_satellite"
+    version = "1"
+    core_share = 0.70
+    satellite_names = 5
+
+    def __init__(self) -> None:
+        self._satellite = RecentMomentumAllocator()
+
+    def allocate(self, candidates: Sequence[Candidate], features: Features) -> Weights:
+        core = _fixed_mix(candidates, COUCH_POTATO_MIX)
+        weights = {iid: w * self.core_share for iid, w in core.items()}
+        scores = self._satellite.scores(candidates, features)
+        picks = self._satellite.pick(scores, self.satellite_names)
+        each = (1.0 - self.core_share) / self.satellite_names
+        for iid in picks:
+            weights[iid] = weights.get(iid, 0.0) + each
+        return weights
+
+
+class MoodTiltAllocator(RecentMomentumAllocator):
+    """``recent_momentum`` tilted by recent public mood (news + social sentiment).
+
+    ``mood`` is a pure ``MoodLookup`` supplied at build time (see ``signals.mood``), consulted
+    with the date the engine passes to ``asof``. Each
+    name's momentum score is scaled by ``1 + tilt × z`` (z clipped to ±2), and a name whose
+    mood is worse than ``exclude_below`` standard deviations is dropped. Names with too little
+    coverage are neutral (z = 0), so before any news exists this *is* ``recent_momentum`` —
+    which makes the two directly comparable. Not registered: it needs the mood panel.
+    """
+
+    name = "mood_tilt"
+    version = "1"
+    tilt = 0.25
+    exclude_below = -1.5
+
+    def __init__(self, mood: MoodLookup) -> None:
+        super().__init__()
+        self._mood = mood
+        self._day: date | None = None
+        self._z: dict[str, float] = {}
+
+    def asof(self, day: date) -> None:
+        self._day = day
+
+    def allocate(self, candidates: Sequence[Candidate], features: Features) -> Weights:
+        symbols = [c.symbol.upper() for c in candidates if not is_fund(c)]
+        self._z = self._mood(symbols, self._day) if self._day is not None else {}
+        return super().allocate(candidates, features)
+
+    def score(self, candidate: Candidate, feats: dict[str, float]) -> float | None:
+        base = super().score(candidate, feats)
+        if base is None:
+            return None
+        z = self._z.get(candidate.symbol.upper(), 0.0)
+        if z < self.exclude_below:
+            return None
+        return base * (1.0 + self.tilt * max(-2.0, min(2.0, z)))
 
 
 @register

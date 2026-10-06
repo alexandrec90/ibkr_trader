@@ -476,3 +476,63 @@ def test_utc_timestamps_canonicalizes_zoneinfo_and_guards_naive():
     assert str(frame["ts"].dtype) == "datetime64[us, UTC]" or str(frame["ts"].dtype).endswith(
         "UTC]"
     )
+
+
+class _SwitchAllocator(Allocator):
+    """All-in on instrument 1 at the first decision, all-in on 2 at every later one."""
+
+    name = "switch_test"
+    version = "1"
+
+    def __init__(self):
+        self.calls = 0
+
+    def allocate(self, candidates: Sequence[Candidate], features: dict) -> Weights:
+        self.calls += 1
+        return {1: 1.0} if self.calls == 1 else {2: 1.0}
+
+
+def test_sell_turnover_counts_sells_not_the_initial_buy():
+    import pytest
+
+    cal = _calendar(70)  # three calendar months → three monthly decisions
+    universe = {
+        1: _series(1, "AAA", "CAD", cal, closes=[100.0] * 70),
+        2: _series(2, "BBB", "CAD", cal, closes=[100.0] * 70),
+    }
+    switched = simulate(
+        universe, cal, _SwitchAllocator(), cost_model=CHEAP, config=_config()
+    ).metrics
+    years = 70 / 252
+    # one full exit of ~100k over a ~100k book
+    assert switched["sell_turnover"] == pytest.approx(1.0 / years, rel=1e-6)
+    assert switched["avg_holding_years"] == pytest.approx(years, rel=1e-6)
+
+    held = simulate(
+        universe, cal, FixedAllocator({1: 1.0}), cost_model=CHEAP, config=_config()
+    ).metrics
+    assert held["sell_turnover"] == 0.0  # buying in is deployment, not churn
+    assert held["avg_holding_years"] == pytest.approx(years)
+
+
+def test_run_params_pins_eval_start_only_when_set():
+    from ibkr_trader.backtest.engine import _run_params
+
+    params = _run_params(_config(account=AccountType.TFSA), FixedAllocator({}))
+    assert params["account"] == "tfsa" and params["model_version"] == "1"
+    assert params["horizon"] == "long_term"
+    assert "eval_start" not in params
+    config = _config()
+    config.eval_start = date(2021, 3, 1)
+    assert _run_params(config, FixedAllocator({}))["eval_start"] == "2021-03-01"
+
+
+def test_holding_stats_edge_cases():
+    import numpy as np
+
+    from ibkr_trader.backtest.metrics import holding_stats
+
+    assert holding_stats(10.0, np.asarray([])) == {"sell_turnover": 0.0, "avg_holding_years": 0.0}
+    assert holding_stats(10.0, np.asarray([0.0, 0.0]))["sell_turnover"] == 0.0
+    tiny = holding_stats(1e-9, np.full(252, 100.0))
+    assert tiny["avg_holding_years"] == 99.0  # capped, not astronomically large
