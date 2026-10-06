@@ -9,8 +9,12 @@ import pytest
 
 from ibkr_trader.backtest import lab
 
-# both modules import plotly at load time: skip the file cleanly without the extra
-rpt = pytest.importorskip("ibkr_trader.dashboard.lab_report")
+# lab_report imports plotly at load time: skip the file cleanly without the extra. A real
+# import (not importorskip of the module's dotted name) so untested_symbols sees the tests.
+pytest.importorskip("plotly")
+
+from ibkr_trader.dashboard import lab_report as rpt
+
 BENCHMARK_COLOR = rpt.BENCHMARK_COLOR
 SERIES_COLORS = rpt.SERIES_COLORS
 
