@@ -109,6 +109,17 @@ class Settings(BaseSettings):
     # firing the startup jobs. See scheduler.wait_for_database and job_health.
     scheduler_health_file: str = "logs/scheduler-health.json"
     db_wait_seconds: float = 120.0
+    # Gateway login watch (serve job, see gateway_watch.py): a read-only probe of the IB Gateway
+    # that pushes a phone notification through ntfy when the login needs a human. The client ID
+    # must differ from IBKR_CLIENT_ID, or the probe would kick the trading connection off.
+    gateway_watch_enabled: bool = True
+    gateway_check_minutes: int = 5
+    gateway_check_client_id: int = 99
+    gateway_alert_after_failures: int = 2
+    gateway_alert_repeat_hours: float = 2.0
+    ntfy_server: str = "https://ntfy.sh"
+    # Anyone who knows the topic can read the alerts: make it long and random, keep it in .env.
+    ntfy_topic: str = ""
 
     # Registered-account long-term strategy defaults.
     # These are env-overridable deployment defaults; a backtest run pins its own values into

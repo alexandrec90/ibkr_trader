@@ -596,6 +596,24 @@ def run_archive_raw(settings: Settings) -> dict[str, int]:
     return {"payloads_archived": result.rows_archived}
 
 
+#: The gateway job's recorded result when the watch is switched off, so `health` shows why it
+#: never probes instead of failing every five minutes against a gateway nobody started.
+GATEWAY_WATCH_OFF = "skipped: GATEWAY_WATCH_ENABLED is false"
+
+
+def gateway_watch_job(settings: Settings) -> Callable[[], object]:
+    """The ``gateway`` job: a stateful ``GatewayWatch``, or a no-op while switched off.
+
+    Registered unconditionally, like the archive jobs, so switching it off never leaves a
+    seeded health entry reading stale forever.
+    """
+    if not settings.gateway_watch_enabled:
+        return lambda: GATEWAY_WATCH_OFF
+    from ibkr_trader.gateway_watch import watch_from_settings
+
+    return watch_from_settings(settings)
+
+
 def _schedule_retry(
     scheduler: BlockingScheduler | None,
     wrapped: Callable[[], None],
@@ -758,6 +776,42 @@ def _register_archive_jobs(register: Callable[..., None], settings: Settings) ->
     )
 
 
+def _register_finnhub_backfill(register: Callable[..., None], settings: Settings) -> None:
+    """The Finnhub history backfill, through `build_scheduler`'s ``register``.
+
+    A job first fires one interval after its last run; the backfill also fires on startup
+    (free-tier history rolls off daily, and a completed backfill makes this near-free).
+    """
+    register(
+        "finnhub_backfill",
+        "finnhub_backfill",
+        lambda: backfill_finnhub_news(
+            settings.news_universe_file,
+            backfill_days=settings.finnhub_backfill_days,
+            chunk_days=settings.finnhub_backfill_chunk_days,
+            max_requests=settings.finnhub_backfill_max_requests,
+            request_spacing_seconds=settings.finnhub_request_spacing_seconds,
+        ),
+        seconds=settings.finnhub_backfill_hours * 3600,
+        start_now=True,
+    )
+
+
+def _register_gateway_job(register: Callable[..., None], settings: Settings) -> None:
+    """The IB Gateway login watch, through `build_scheduler`'s ``register``.
+
+    start_now: a login that needs approval should reach the owner within minutes of `serve`
+    starting, not one full check interval later.
+    """
+    register(
+        "gateway_watch",
+        "gateway",
+        gateway_watch_job(settings),
+        seconds=settings.gateway_check_minutes * 60,
+        start_now=True,
+    )
+
+
 def _first_run(label: str, *, start_now: bool = False, now: datetime | None = None) -> datetime:
     """When a freshly registered job should first fire: its cadence carries over a restart.
 
@@ -860,21 +914,7 @@ def build_scheduler(
         lambda: run_prune(settings.prune_raw_min_age_days),
         seconds=settings.prune_raw_hours * 3600,
     )
-    register(
-        "finnhub_backfill",
-        "finnhub_backfill",
-        lambda: backfill_finnhub_news(
-            settings.news_universe_file,
-            backfill_days=settings.finnhub_backfill_days,
-            chunk_days=settings.finnhub_backfill_chunk_days,
-            max_requests=settings.finnhub_backfill_max_requests,
-            request_spacing_seconds=settings.finnhub_request_spacing_seconds,
-        ),
-        seconds=settings.finnhub_backfill_hours * 3600,
-        # A job first fires one interval after its last run; the backfill also fires on startup
-        # (free-tier history rolls off daily, and a completed backfill makes this near-free).
-        start_now=True,
-    )
+    _register_finnhub_backfill(register, settings)
     register(
         "sentiment_score",
         "sentiment",
@@ -883,6 +923,7 @@ def build_scheduler(
     )
     _register_market_data_jobs(register, settings)
     _register_archive_jobs(register, settings)
+    _register_gateway_job(register, settings)
     # A job this build no longer registers (renamed or retired) would keep its seeded
     # interval and read `stale` forever, holding `ibkr-trader health` red.
     job_health.forget_unscheduled(scheduled)

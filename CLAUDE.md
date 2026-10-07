@@ -122,7 +122,9 @@ Prefer `stop` over `down` so the `pgdata` volume and its schema survive.
     `ibkr_trader.maintenance.prune_scored_raw`. Moving the file as-is would make
     `data_lake` import this package, which is the one thing it must never do —
     `tests/test_lake_seam.py::test_package_never_imports_a_consumer` over there fails on
-    it by filename. **The split, not the move, is the work.**
+    it by filename. **The split, not the move, is the work.** The `gateway` job
+    (`ibkr_trader.gateway_watch`: read-only IB Gateway login probe → ntfy phone alert) is
+    trading-side too and stays here in any split.
   - The real cost is config, not code: `build_scheduler()` and its jobs read twenty-seven
     fields off `Settings` (`poll_*`, `newsapi_*`, `finnhub_backfill_*`, `prune_raw_*`,
     `score_sentiment_minutes`, `news_universe_file`, `trends_*`, `fx_pairs`,
