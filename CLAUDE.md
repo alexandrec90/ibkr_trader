@@ -113,19 +113,21 @@ Prefer `stop` over `down` so the `pgdata` volume and its schema survive.
   a red nightly sync is the prompt to do so.
 - `src/ibkr_trader/scheduler.py` — the APScheduler wiring behind `serve`. **A split
   candidate, deliberately not split yet** — read this before proposing to move it:
-  - Six of its eight jobs are pure data-lake ingestion (`social_poll`,
-    `finnhub_news_poll`, `newsapi_poll`, `finnhub_backfill`, `trends_poll`, `prices_poll`),
-    each importing straight from `data_lake.ingestion.*`. Those are the movable part.
+  - Eight of its ten ingestion jobs are pure data-lake ingestion (`social_poll`,
+    `finnhub_news_poll`, `newsapi_poll`, `finnhub_backfill`, `trends_poll`, `prices_poll`,
+    `index_membership_poll`, `index_prices_poll`), each importing straight from
+    `data_lake.ingestion.*`. Those are the movable part.
   - Two are **not** and are what block a wholesale move: `sentiment_score` calls
     `ibkr_trader.signals.sentiment.score_pending`, and `prune_raw` calls
     `ibkr_trader.maintenance.prune_scored_raw`. Moving the file as-is would make
     `data_lake` import this package, which is the one thing it must never do —
     `tests/test_lake_seam.py::test_package_never_imports_a_consumer` over there fails on
     it by filename. **The split, not the move, is the work.**
-  - The real cost is config, not code: `build_scheduler()` reads twenty-one fields off
-    `Settings` (`poll_*`, `newsapi_*`, `finnhub_backfill_*`, `prune_raw_*`,
+  - The real cost is config, not code: `build_scheduler()` and its jobs read twenty-seven
+    fields off `Settings` (`poll_*`, `newsapi_*`, `finnhub_backfill_*`, `prune_raw_*`,
     `score_sentiment_minutes`, `news_universe_file`, `trends_*`, `fx_pairs`,
-    `scheduler_health_file`), and **none of them are in `data_lake.settings.LakeSettings`**,
+    `scheduler_health_file`, `tiingo_*`, `index_*`), and **none of them but the
+    `tiingo_api_key` credential are in `data_lake.settings.LakeSettings`**,
     which covers provider credentials and archive location only. A scheduler over there
     needs a `SchedulerSettings` Protocol first — see that repo's `CLAUDE.md` for how to
     extend the seam.

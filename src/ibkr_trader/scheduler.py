@@ -17,7 +17,7 @@ outage (the database was stopped; every run logged "executed successfully" anywa
 import logging
 import time
 from collections.abc import Callable, Sequence
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from apscheduler.schedulers.blocking import BlockingScheduler
@@ -445,6 +445,74 @@ def poll_prices_job(settings: Settings) -> int:
     return poll_yahoo_prices() + poll_fx(settings.fx_pairs)
 
 
+def poll_index_membership() -> int:
+    """Refresh the point-in-time S&P 500 membership spans — one small free download.
+
+    The source (fja05680/sp500, MIT) is updated every couple of months; a daily check is
+    cheap and keeps a removal from lingering. The connector refuses a download that would
+    wipe the table, so a broken file fails the job loudly instead of emptying the universe.
+    """
+    from data_lake.ingestion.market.index_membership import Sp500MembershipConnector
+
+    count = Sp500MembershipConnector().fetch()
+    logger.info("index membership: %d S&P 500 spans upserted", count)
+    return count
+
+
+#: Tiingo's public ticker list (~800 KB) changes slowly: cached beside the usage ledger and
+#: re-downloaded weekly rather than on every hourly pricing run.
+_TIINGO_LISTINGS_MAX_AGE = timedelta(days=7)
+
+
+def _tiingo_listings(cache_path: Path, *, now: datetime | None = None) -> dict:
+    """Tiingo's supported-ticker listings, from a weekly-refreshed local cache of the zip."""
+    from data_lake.ingestion.market.tiingo import fetch_supported_tickers, parse_supported_tickers
+
+    now = now or datetime.now(UTC)
+    fresh = cache_path.exists() and (
+        now - datetime.fromtimestamp(cache_path.stat().st_mtime, UTC) < _TIINGO_LISTINGS_MAX_AGE
+    )
+    if not fresh:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_bytes(fetch_supported_tickers())
+    return parse_supported_tickers(cache_path.read_bytes())
+
+
+def poll_index_prices(settings: Settings) -> dict[str, int]:
+    """Price the S&P 500 membership spans that are not priced yet, within free budgets.
+
+    Each run probes Yahoo for at most ``index_prices_max_yahoo`` spans (current members and
+    removed-but-still-trading ones) and, with a ``TIINGO_API_KEY``, prices dead members from
+    Tiingo inside its free-tier ledger. Once everything is resolved a run costs one query, so
+    the hourly cadence is the backfill's speed, not a standing cost. Members priced from Yahoo
+    then stay current through the ordinary ``prices`` poll; dead ones never change.
+    """
+    from data_lake.ingestion.market.index_pricing import resolve_index_prices
+    from data_lake.ingestion.market.tiingo import TiingoConnector, TiingoUsage
+
+    tiingo = listings = None
+    if settings.tiingo_api_key:
+        usage_path = Path(settings.tiingo_usage_file)
+        tiingo = TiingoConnector(usage=TiingoUsage(usage_path))
+        listings = _tiingo_listings(usage_path.with_name("tiingo-supported-tickers.zip"))
+    report = resolve_index_prices(
+        since=date.fromisoformat(settings.index_universe_since),
+        max_yahoo=settings.index_prices_max_yahoo,
+        tiingo=tiingo,
+        tiingo_listings=listings,
+    )
+    summary = {
+        "already": report.already,
+        "yahoo": report.resolved_yahoo,
+        "tiingo": report.resolved_tiingo,
+        "unpriced": report.unpriced,
+        "deferred": report.deferred,
+        "failed": len(report.failed),
+    }
+    logger.info("index prices: %s", summary)
+    return summary
+
+
 def run_sentiment_scoring() -> dict[str, int]:
     from ibkr_trader.signals.sentiment import score_pending
 
@@ -638,6 +706,35 @@ def wait_for_database(
             return True
 
 
+def _register_market_data_jobs(register: Callable[..., None], settings: Settings) -> None:
+    """Daily bars, plus the point-in-time S&P 500 universe, through ``register``.
+
+    ``prices`` and ``index_membership`` fire on startup: bars go stale whenever the machine
+    was off (the incremental fetch makes a current run nearly free), and ``index_prices``
+    has nothing to price until membership spans exist.
+    """
+    register(
+        "prices_poll",
+        "prices",
+        lambda: poll_prices_job(settings),
+        seconds=settings.poll_prices_hours * 3600,
+        start_now=True,
+    )
+    register(
+        "index_membership_poll",
+        "index_membership",
+        poll_index_membership,
+        seconds=settings.poll_index_membership_hours * 3600,
+        start_now=True,
+    )
+    register(
+        "index_prices_poll",
+        "index_prices",
+        lambda: poll_index_prices(settings),
+        seconds=settings.poll_index_prices_minutes * 60,
+    )
+
+
 def _register_archive_jobs(register: Callable[..., None], settings: Settings) -> None:
     """Cold-storage offload, through `build_scheduler`'s ``register``.
 
@@ -784,15 +881,7 @@ def build_scheduler(
         run_sentiment_scoring,
         seconds=settings.score_sentiment_minutes * 60,
     )
-    register(
-        "prices_poll",
-        "prices",
-        lambda: poll_prices_job(settings),
-        seconds=settings.poll_prices_hours * 3600,
-        # Also fires on startup: bars go stale whenever the machine was off, and the
-        # incremental fetch makes an already-current run nearly free.
-        start_now=True,
-    )
+    _register_market_data_jobs(register, settings)
     _register_archive_jobs(register, settings)
     # A job this build no longer registers (renamed or retired) would keep its seeded
     # interval and read `stale` forever, holding `ibkr-trader health` red.

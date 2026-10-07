@@ -239,6 +239,76 @@ def test_load_lab_inputs_loads_warmup_bars_and_fx():
     assert set(inputs.corporate or {}) == set(inputs.universe)
 
 
+def test_load_index_inputs_builds_the_point_in_time_universe_with_coverage():
+    from ibkr_trader.db.models import IndexMembership
+
+    session = _session()
+    first_bar = date(2023, 1, 2)
+
+    def instrument_with_bars(symbol: str, n: int) -> Instrument:
+        instrument = Instrument(symbol=symbol, exchange="SMART", currency="USD")
+        session.add(instrument)
+        session.flush()
+        for i in range(n):
+            ts = datetime.combine(first_bar + timedelta(days=i), datetime.min.time(), UTC)
+            session.add(
+                PriceBar(
+                    instrument_id=instrument.id,
+                    ts=ts,
+                    bar_size="1 day",
+                    source="yahoo",
+                    what_to_show="ADJUSTED_LAST",
+                    open=50.0,
+                    high=50.0,
+                    low=50.0,
+                    close=50.0,
+                    volume=1e6,
+                )
+            )
+        return instrument
+
+    member = instrument_with_bars("AAA", 700)
+    spy = instrument_with_bars("SPY", 700)  # a broad ETF: loaded ungated for the couch potato
+    for symbol, iid in (("AAA", member.id), ("GONE", None)):
+        session.add(
+            IndexMembership(
+                index_code="SP500",
+                symbol=symbol,
+                start_date=date(2023, 6, 1),
+                end_date=None,
+                source="fja05680",
+                instrument_id=iid,
+                resolution="yahoo" if iid else "unpriced",
+            )
+        )
+    session.flush()
+
+    inputs = lab.load_index_inputs(session, date(2024, 6, 3), date(2024, 12, 1))
+    assert inputs.label == lab.POINT_IN_TIME
+    assert set(inputs.universe) == {member.id, spy.id}
+    assert inputs.universe[member.id].member_ranges == ((date(2023, 6, 1), None),)
+    assert inputs.universe[spy.id].member_ranges is None
+    assert inputs.coverage is not None
+    assert inputs.coverage.ratio == pytest.approx(0.5)  # AAA priced, GONE not
+    assert [s.symbol for s in inputs.coverage.unpriced] == ["GONE"]
+    # measured over the decision window, not the warm-up
+    assert inputs.coverage.samples[0][0] == date(2024, 6, 3)
+
+
+def test_run_lab_carries_the_universe_label_and_coverage_into_the_result():
+    from ibkr_trader.backtest.universe import Coverage
+
+    universe, fx = _synthetic_universe()
+    windows = lab.recent_windows(max(universe[1].dates), date(2025, 1, 1), weights={None: 1.0})
+    measured = Coverage(samples=[(date(2025, 1, 2), 4, 3)])
+    inputs = lab.LabInputs(universe, fx, label=lab.POINT_IN_TIME, coverage=measured)
+    result = lab.run_lab(inputs, lab.default_specs()[:1], windows, NO_COMPARE)
+    assert result.universe_label == lab.POINT_IN_TIME
+    assert result.coverage is measured
+    plain = lab.run_lab(lab.LabInputs(universe, fx), lab.default_specs()[:1], windows, NO_COMPARE)
+    assert plain.universe_label == lab.CURATED and plain.coverage is None
+
+
 def test_lab_eligibility_has_no_penny_stocks_and_two_years_of_history():
     assert lab.LAB_ELIGIBILITY.min_price >= 5.0
     assert lab.LAB_ELIGIBILITY.min_history_days >= 504

@@ -56,6 +56,31 @@ return produced from it is an **upper bound**, not an unbiased performance estim
 defensible comparison is the ranking of strategies run over the identical universe and window;
 absolute return levels from this universe must not be used to claim achievable performance.
 
+### Point-in-time universe (the default for `backtest lab`)
+
+The fix for that bias, built from free sources only (the owner declined Norgate's CAD 630/yr
+Canadian package):
+
+| Piece | Source | Where |
+|---|---|---|
+| Who was in the S&P 500 on each date | [fja05680/sp500](https://github.com/fja05680/sp500) (MIT): ticker spans since 1996, tickers as spelled at the time | data-lake `ingestion.market.index_membership` → `index_memberships` |
+| Prices for current and still-listed members | Yahoo, accepted only when its history covers the span (a reused ticker fails that check) | data-lake `ingestion.market.index_pricing` |
+| Prices for members that later delisted | Tiingo free tier (keeps ~7,400 dead NYSE/NASDAQ tickers; bankruptcies under their "Q" ticker), paced by a ledger under 500 symbols/month, 50 req/h, 1,000/day | data-lake `ingestion.market.tiingo` |
+| Day-by-day gating, delisting settlement | a member is a candidate only inside its spans; a holding whose bars stop is cashed out at its last close | `backtest/universe.py`, `backtest/engine.py` |
+
+`serve` runs it: `index_membership` daily, `index_prices` hourly until every span is priced
+(about a month on Tiingo's free tier, then near-free). By hand: `ibkr-trader ingest
+index-membership`, then `ibkr-trader ingest index-prices`. Without `TIINGO_API_KEY` the dead
+members stay unpriced.
+
+**What it still cannot see is measured, not hidden.** Renamed tickers (ANTM → ELV) are not
+guessed (a wrong guess would price one company with another's history), reused tickers
+listed twice by Tiingo are skipped, and delistings before ~2016 are thin in Tiingo's free
+data. The lab reports the share of index member-days that were priced, overall and over the
+last-year window, beside every result. **Canada** stays out of stock picking: no free
+point-in-time TSX membership or delisted-price source exists, so Canadian exposure comes
+through the ETFs (which carry no survivorship problem).
+
 ## Accounts & tax ([`accounts.py`](../src/ibkr_trader/accounts.py))
 
 All five share one engine; only the **US-dividend withholding** treatment differs (Canadian
@@ -133,9 +158,11 @@ returns, friction (trades/yr and implied average holding period), a TFSA-vs-RRSP
 table, and each strategy's day-one book. The lab screen is stricter than the default: price
 ≥ $5, ≥ $2M/day traded, two years listed.
 
-Short windows carry less survivorship bias than long ones (the universe is today's
-survivors), which is one more reason the recent windows weigh most. One year of news means
-two semi-annual `mood_tilt` decisions: a hypothesis to forward-shadow, not evidence.
+The universe defaults to the **point-in-time S&P 500 plus the broad ETFs** (`--universe
+sp500`, see above), and the report states how much of the index was priced;
+`--universe tickers.txt` reproduces the older curated-survivor runs for comparison. One year
+of news means two semi-annual `mood_tilt` decisions: a hypothesis to forward-shadow, not
+evidence.
 
 ## Simulation realism ([`backtest/engine.py`](../src/ibkr_trader/backtest/engine.py))
 
@@ -157,7 +184,10 @@ two semi-annual `mood_tilt` decisions: a hypothesis to forward-shadow, not evide
 ibkr-trader backtest run --strategy ml_lt_ridge --account tfsa \
     --universe-file tickers.txt --start 2008-06-02 --eval-start 2010-01-04 --end 2030-01-01
 ibkr-trader backtest compare --sort-by calmar        # leaderboard
+ibkr-trader ingest index-membership      # point-in-time S&P 500 spans (serve: daily)
+ibkr-trader ingest index-prices          # price them: Yahoo, then Tiingo (serve: hourly)
 ibkr-trader backtest lab --account tfsa  # all buy-and-hold strategies, recency-weighted,
+                                         # point-in-time S&P 500 universe by default
                                          # → lab-report.html (needs the [report] extra)
 ibkr-trader report       # static HTML report: leaderboard + equity/drawdown charts, opens in
                          # the browser; no server stays resident (needs the [report] extra:

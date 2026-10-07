@@ -90,6 +90,21 @@ class Settings(BaseSettings):
     newsapi_mapping_file: str = "news-keywords.txt"
     newsapi_refresh_after_hours: float = 12.0
     newsapi_max_requests: int = 90
+    # Point-in-time S&P 500 universe (docs/registered-account-strategy.md §Point-in-time
+    # universe). Membership spans come from the free fja05680/sp500 list; each span is then
+    # priced from Yahoo, or — for members that later died — from Tiingo's free tier, which
+    # keeps delisted US tickers. TIINGO_API_KEY is optional: without it dead members stay
+    # unpriced and the coverage report says how many.
+    tiingo_api_key: str = ""
+    # Ledger of Tiingo's free-tier budget (500 symbols/month, 50 req/h, 1000/day), so the
+    # backfill spreads itself over as many months as it needs instead of tripping the limits.
+    tiingo_usage_file: str = "logs/tiingo-usage.json"
+    # First decision date the universe must be priced for (bars load from a year earlier).
+    index_universe_since: str = "2010-01-04"
+    poll_index_membership_hours: int = 24
+    poll_index_prices_minutes: int = 60
+    # Yahoo probes per index-prices run: at the shared 2 s Yahoo spacing, 60 is ~3-4 min.
+    index_prices_max_yahoo: int = 60
     # Where `serve` writes per-job outcomes, and how long it waits for the database before
     # firing the startup jobs. See scheduler.wait_for_database and job_health.
     scheduler_health_file: str = "logs/scheduler-health.json"

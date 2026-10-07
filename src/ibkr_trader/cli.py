@@ -254,6 +254,50 @@ def ingest_finnhub_backfill(
     typer.echo(f"upserted {count} articles")
 
 
+@ingest_app.command("index-membership")
+def ingest_index_membership():
+    """Download the S&P 500's point-in-time membership spans (fja05680/sp500, free).
+
+    The `serve` job runs this daily; run it by hand once to seed the table before
+    `ingest index-prices` has anything to price.
+    """
+    from ibkr_trader.scheduler import poll_index_membership
+
+    try:
+        count = poll_index_membership()
+    except Exception as exc:  # network, parse, or the connector's refuse-to-wipe guard
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(f"upserted {count} S&P 500 membership spans")
+
+
+@ingest_app.command("index-prices")
+def ingest_index_prices(
+    max_yahoo: int = typer.Option(
+        0, min=0, help="Yahoo probes this run (0 = the INDEX_PRICES_MAX_YAHOO setting)"
+    ),
+):
+    """Price S&P 500 membership spans that aren't priced yet: Yahoo first, then Tiingo for
+    members that later delisted (needs TIINGO_API_KEY; paced under its free tier).
+
+    Resumable: each run continues where the last stopped. The `serve` job runs it hourly.
+    """
+    from ibkr_trader.config import get_settings
+    from ibkr_trader.scheduler import poll_index_prices
+
+    settings = get_settings()
+    if max_yahoo:
+        settings = settings.model_copy(update={"index_prices_max_yahoo": max_yahoo})
+    try:
+        summary = poll_index_prices(settings)
+    except Exception as exc:  # every attempted span failed: an outage, not a quiet run
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(", ".join(f"{key} {value}" for key, value in summary.items()))
+    if not settings.tiingo_api_key:
+        typer.echo("note: TIINGO_API_KEY is unset, so delisted members stay unpriced")
+
+
 @ingest_app.command("social")
 def ingest_social(
     platform: list[str] = typer.Option(
@@ -503,7 +547,11 @@ def backtest_run(
 
 @backtest_app.command("lab")
 def backtest_lab(
-    universe_file: str = typer.Option("tickers.txt", help="one symbol per line"),
+    universe: str = typer.Option(
+        "sp500",
+        help="'sp500' = the S&P 500 as it stood on each date (incl. later-delisted members) "
+        "plus the broad ETFs; or a one-symbol-per-line file of today's names (survivor-biased)",
+    ),
     account: str = typer.Option(
         "",
         help="rrsp|tfsa|fhsa|lira|nonreg (default: config); the report also re-runs the "
@@ -538,10 +586,14 @@ def backtest_lab(
     from ibkr_trader.db.session import get_session
     from ibkr_trader.signals.mood import load_mood_panel
 
-    symbols = _read_universe(universe_file, "")
-    typer.echo(f"loading {len(symbols)} symbols from the database...")
+    point_in_time = universe.strip().lower() == "sp500"
+    symbols = [] if point_in_time else _read_universe(universe, "")
+    typer.echo(f"loading the {'S&P 500 point-in-time' if point_in_time else universe} universe...")
     with get_session() as session:
-        inputs = lab.load_lab_inputs(session, symbols, full_start_date, date.today())
+        if point_in_time:
+            inputs = lab.load_index_inputs(session, full_start_date, date.today())
+        else:
+            inputs = lab.load_lab_inputs(session, symbols, full_start_date, date.today())
         model = get_settings().sentiment_model
         panel = load_mood_panel(session, model=model) if mood else None
     if not inputs.universe:
@@ -613,6 +665,17 @@ def _format_lab_verdict(result) -> str:
     lines = [f"\nRecency-weighted CAGR edge over the couch potato ({result.account.upper()}):"]
     for name, score in sorted(recency_scores(result).items(), key=lambda kv: -kv[1]):
         lines.append(f"  {labels[name]:<28} {score * 100:+6.1f} pts/yr")
+    lines.append(f"Universe: {result.universe_label}")
+    if result.coverage is not None:
+        lines.append(
+            f"  {result.coverage.ratio:.0%} of index member-days priced; "
+            f"{len(result.coverage.unpriced)} membership span(s) unpriced"
+        )
+        if result.coverage.pending:
+            lines.append(
+                f"  backfill in progress: {len(result.coverage.pending)} span(s) not priced "
+                "yet — results are provisional (`ibkr-trader ingest index-prices`, or `serve`)"
+            )
     return "\n".join(lines)
 
 

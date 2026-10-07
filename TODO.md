@@ -75,9 +75,18 @@ those horizons mature). Automating this cadence in `serve` is a follow-up, not p
       24 broad-market ETFs (deep histories: SPY 1993, XIU 1999; US-listed ETFs added to
       `tickers-yahoo.txt` + aggregate). Quote ETF-floor results beside curated-stock upper
       bounds; real fix (PIT membership + delisted-data provider) still open below.
-- [ ] After choosing a delisted-data provider, add `Instrument.end_of_life_date` (and provider
-      identifier/symbol-history fields if its contract requires them), then ingest dead tickers
-      as ordinary instruments whose daily bars stop at their final trading date.
+- [x] ~~*Delisted-data provider + point-in-time universe*~~ [2026-10-06] — free path chosen
+      (owner declined Norgate): S&P 500 membership spans from fja05680/sp500, prices from
+      Yahoo, dead members from Tiingo's free tier (data-lake `index_membership`, `tiingo`,
+      `index_pricing`; serve jobs `index_membership` / `index_prices`). No
+      `Instrument.end_of_life_date`: a delisting is inferred from bars stopping
+      (`engine.DELISTED_AFTER_DAYS`) and the holding is cashed out at its last close. Dead
+      tickers live under their own instrument (Tiingo exchange code) so a reused ticker never
+      mixes two companies. `backtest lab` defaults to this universe and reports coverage.
+- [ ] Rename map for S&P 500 spans the free sources can't price (ANTM→ELV, ABC→COR,
+      BLL→BALL, …): each entry verified, never guessed. Raises coverage before ~2022.
+- [ ] Canadian point-in-time universe — blocked on a free TSX membership + delisted-price
+      source (none found 2026-10-06); Canada is held through ETFs until then.
 - [ ] Fundamental solvency screen (market cap, distress/default) once fundamentals are ingested;
       precise per-security dividend cashflows to replace the yield-based withholding drag.
 - [x] ~~*Registered-account buy-and-hold strategies + strategy lab*~~ [2026-10-05] —

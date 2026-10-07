@@ -62,6 +62,12 @@ class CostModel:
         return commission + slippage
 
 
+#: Calendar days past an instrument's last bar after which it is treated as gone: no longer
+#: a candidate, and any holding is settled to cash at its last close (an acquisition pays
+#: out about there; a bankruptcy's last bars are already near zero).
+DELISTED_AFTER_DAYS = 10
+
+
 @dataclass
 class Series:
     """One instrument's daily bars, sorted by date — the panel the simulator reasons over."""
@@ -76,6 +82,10 @@ class Series:
     volumes: list[float]
     asset_class: str | None = None
     leveraged: bool = False
+    #: Point-in-time index membership as inclusive ``(start, end)`` spans (``end`` None =
+    #: still a member). None means "not index-gated" — always a candidate (ETFs, curated
+    #: universe files). Set by the point-in-time universe loader (``backtest.universe``).
+    member_ranges: tuple[tuple[date, date | None], ...] | None = None
 
     def idx_asof(self, day: date) -> int:
         """Index of the latest bar on or before ``day``; -1 if none (not yet listed)."""
@@ -85,6 +95,22 @@ class Series:
         """Open price on exactly ``day`` (None if the market wasn't open for it that day)."""
         i = bisect_right(self.dates, day) - 1
         return self.opens[i] if i >= 0 and self.dates[i] == day else None
+
+    def is_member(self, day: date) -> bool:
+        """Was this instrument in the index on ``day``? Always True when not index-gated."""
+        if self.member_ranges is None:
+            return True
+        return any(
+            start <= day and (end is None or day <= end) for start, end in self.member_ranges
+        )
+
+    def has_ended(self, day: date) -> bool:
+        """Have this instrument's bars stopped — delisted, acquired, bankrupt — by ``day``?
+
+        True once ``day`` is more than ``DELISTED_AFTER_DAYS`` calendar days past the last
+        bar. Holidays and short halts stay well inside that; a stopped data feed does not.
+        """
+        return bool(self.dates) and (day - self.dates[-1]).days > DELISTED_AFTER_DAYS
 
 
 @dataclass
@@ -141,11 +167,15 @@ def _build_candidates(
     day: date,
     config: RegisteredStrategyConfig,
 ) -> list[Candidate]:
-    """Eligible-input candidates as-of ``day`` — dollar-volume normalized to CAD; all as-of."""
+    """Eligible-input candidates as-of ``day`` — dollar-volume normalized to CAD; all as-of.
+
+    Skips what was not investable on ``day``: not yet listed, out of its index on that day
+    (point-in-time universes), or already delisted.
+    """
     candidates: list[Candidate] = []
     for series in universe.values():
         i = series.idx_asof(day)
-        if i < 0:
+        if i < 0 or not series.is_member(day) or series.has_ended(day):
             continue
         fx_rate = _fx_to_cad(series.currency, fx, day)
         lo = max(0, i - config.liquidity_lookback + 1)
@@ -286,6 +316,45 @@ def _execute(
     return cash, trades_done, total_cost, fx_cost, sold_cad
 
 
+def _settle_delisted(
+    positions: dict[int, float], universe: dict[int, Series], fx: Series | None, day: date
+) -> float:
+    """Cash out holdings whose instrument has stopped trading, at its last close, in CAD.
+
+    Removes them from ``positions``. Without this a dead holding would sit at its last price
+    forever and its capital could never be redeployed — the engine only trades names that
+    open on the day. A delisting is a corporate action, not a trade: no budget, no commission.
+    """
+    proceeds = 0.0
+    for iid in [iid for iid in positions if universe[iid].has_ended(day)]:
+        series = universe[iid]
+        shares = positions.pop(iid)
+        proceeds += shares * series.closes[-1] * _fx_to_cad(series.currency, fx, day)
+    return proceeds
+
+
+def _withholding_due(
+    positions: dict[int, float],
+    universe: dict[int, Series],
+    fx: Series | None,
+    day: date,
+    cost_model: RegisteredAccountCostModel,
+    profile: AccountTaxProfile,
+) -> float:
+    """Today's non-recoverable US-dividend withholding (CAD) on the holdings, charged daily."""
+    total = 0.0
+    for iid, shares in positions.items():
+        series = universe[iid]
+        i = series.idx_asof(day)
+        if i < 0 or shares == 0:
+            continue
+        drag = cost_model.dividend_tax_drag_daily(
+            security_domicile(series.currency), profile, metrics_mod.TRADING_DAYS
+        )
+        total += shares * series.closes[i] * _fx_to_cad(series.currency, fx, day) * drag
+    return total
+
+
 def _run_params(config: RegisteredStrategyConfig, allocator: Allocator) -> dict:
     """What a run is pinned to in ``backtest_runs.params`` — the fair-comparison identity."""
     params = {
@@ -367,20 +436,12 @@ def simulate(
             total_sold += sold
             pending = None
 
-        # 2. dividend withholding drag on US-domiciled holdings, charged daily
-        for iid, shares in positions.items():
-            series = universe[iid]
-            i = series.idx_asof(day)
-            if i < 0 or shares == 0:
-                continue
-            drag = cost_model.dividend_tax_drag_daily(
-                security_domicile(series.currency), profile, metrics_mod.TRADING_DAYS
-            )
-            if drag:
-                holding_cad = shares * series.closes[i] * _fx_to_cad(series.currency, fx, day)
-                tax = holding_cad * drag
-                cash -= tax
-                total_tax += tax
+        # 2. holdings whose bars stopped (acquired, bankrupt) settle to cash at their last
+        #    close; then the US-dividend withholding drag on what is still held
+        cash += _settle_delisted(positions, universe, fx, day)
+        tax = _withholding_due(positions, universe, fx, day, cost_model, profile)
+        cash -= tax
+        total_tax += tax
 
         # 3. mark to market at today's close
         equity_curve.append((day, _portfolio_value(cash, positions, universe, fx, day)))
@@ -684,46 +745,80 @@ def _load_series(
     start: datetime,
     end: datetime,
     *,
-    bar_size: str = "1 day",
+    what_to_show: str = "ADJUSTED_LAST",
+    validate: bool = True,
+) -> Series | None:
+    """Load one instrument's daily bars into a Series, looked up by symbol.
+
+    A symbol held by several instruments (a reused ticker priced from two providers) resolves
+    to the first; point-in-time universes load by instrument instead (``load_instrument_series``).
+    """
+    instrument = session.scalar(select(Instrument).where(Instrument.symbol == symbol.upper()))
+    if instrument is None:
+        return None
+    return load_instrument_series(
+        session, instrument, start, end, what_to_show=what_to_show, validate=validate
+    )
+
+
+#: The simulator is a daily-bar engine; every loader reads this bar size.
+DAILY_BAR_SIZE = "1 day"
+
+
+def load_instrument_series(
+    session: Session,
+    instrument: Instrument,
+    start: datetime,
+    end: datetime,
+    *,
     what_to_show: str = "ADJUSTED_LAST",
     validate: bool = True,
 ) -> Series | None:
     """Load one instrument's daily bars into a Series. Falls back to TRADES if no adjusted bars
     exist for it (so a universe ingested only as TRADES still runs). Bars come from exactly one
-    source per instrument (see SOURCE_PREFERENCE) so multi-provider stores don't double-count."""
-    instrument = session.scalar(select(Instrument).where(Instrument.symbol == symbol.upper()))
-    if instrument is None:
-        return None
+    source per instrument (see SOURCE_PREFERENCE) so multi-provider stores don't double-count.
+
+    Selects plain columns rather than ORM objects: same data, a fraction of the cost when a
+    point-in-time universe loads ~1,000 instruments.
+    """
+    bar_size = DAILY_BAR_SIZE
     for wts in (what_to_show, "TRADES"):
         source = _pick_source(session, instrument.id, bar_size, wts, start, end)
         if source is None:
             continue
-        rows: list[PriceBar] = list(
-            session.scalars(
-                select(PriceBar)
-                .where(
-                    PriceBar.instrument_id == instrument.id,
-                    PriceBar.bar_size == bar_size,
-                    PriceBar.what_to_show == wts,
-                    PriceBar.source == source,
-                    PriceBar.ts >= start,
-                    PriceBar.ts <= end,
-                )
-                .order_by(PriceBar.ts)
+        rows = session.execute(
+            select(
+                PriceBar.ts,
+                PriceBar.open,
+                PriceBar.high,
+                PriceBar.low,
+                PriceBar.close,
+                PriceBar.volume,
             )
-        )
+            .where(
+                PriceBar.instrument_id == instrument.id,
+                PriceBar.bar_size == bar_size,
+                PriceBar.what_to_show == wts,
+                PriceBar.source == source,
+                PriceBar.ts >= start,
+                PriceBar.ts <= end,
+            )
+            .order_by(PriceBar.ts)
+        ).all()
         if rows:
             sqlite = session.get_bind().dialect.name == "sqlite"
-            timestamps = _utc_timestamps([bar.ts for bar in rows], sqlite=sqlite)
+            ts, opens, highs, lows, closes, volumes = (
+                list(column) for column in zip(*rows, strict=True)
+            )
             frame = pd.DataFrame(
                 {
-                    "instrument_id": [bar.instrument_id for bar in rows],
-                    "ts": timestamps,
-                    "open": [bar.open for bar in rows],
-                    "high": [bar.high for bar in rows],
-                    "low": [bar.low for bar in rows],
-                    "close": [bar.close for bar in rows],
-                    "volume": [bar.volume for bar in rows],
+                    "instrument_id": [instrument.id] * len(rows),
+                    "ts": _utc_timestamps(ts, sqlite=sqlite),
+                    "open": opens,
+                    "high": highs,
+                    "low": lows,
+                    "close": closes,
+                    "volume": volumes,
                 }
             )
             if validate:

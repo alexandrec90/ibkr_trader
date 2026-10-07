@@ -536,3 +536,113 @@ def test_holding_stats_edge_cases():
     assert holding_stats(10.0, np.asarray([0.0, 0.0]))["sell_turnover"] == 0.0
     tiny = holding_stats(1e-9, np.full(252, 100.0))
     assert tiny["avg_holding_years"] == 99.0  # capped, not astronomically large
+
+
+# --- point-in-time universes: membership gating and delistings --------------------------
+
+
+def test_series_membership_spans_are_inclusive_and_none_means_ungated():
+    cal = _calendar(5)
+    gated = _series(1, "AAA", "CAD", cal, closes=[10.0] * 5)
+    assert gated.is_member(date(1990, 1, 1))  # no ranges: never index-gated
+    gated.member_ranges = ((cal[1], cal[2]), (cal[4], None))
+    assert [gated.is_member(day) for day in cal] == [False, True, True, False, True]
+    assert gated.is_member(cal[4] + timedelta(days=999))  # open-ended: still a member
+
+
+def test_series_has_ended_only_after_the_delisting_gap():
+    from ibkr_trader.backtest.engine import DELISTED_AFTER_DAYS
+
+    cal = _calendar(3)
+    series = _series(1, "AAA", "CAD", cal, closes=[10.0] * 3)
+    assert not series.has_ended(cal[-1] + timedelta(days=DELISTED_AFTER_DAYS))
+    assert series.has_ended(cal[-1] + timedelta(days=DELISTED_AFTER_DAYS + 1))
+    assert not _series(2, "B", "CAD", [], closes=[]).has_ended(cal[0])
+
+
+def test_candidates_skip_non_members_and_delisted_names():
+    from ibkr_trader.backtest.engine import DELISTED_AFTER_DAYS, _build_candidates
+
+    cal = _calendar(40)
+    member = _series(1, "IN", "CAD", cal, closes=[10.0] * 40)
+    member.member_ranges = ((cal[0], None),)
+    outsider = _series(2, "OUT", "CAD", cal, closes=[10.0] * 40)
+    outsider.member_ranges = ((cal[0], cal[5]),)  # left the index early
+    dead = _series(3, "DEAD", "CAD", cal[:10], closes=[10.0] * 10)  # bars stop on day 9
+    universe = {1: member, 2: outsider, 3: dead}
+    day = cal[9] + timedelta(days=DELISTED_AFTER_DAYS + 1)
+    assert {c.symbol for c in _build_candidates(universe, None, cal[5], _config())} == {
+        "IN",
+        "OUT",
+        "DEAD",
+    }
+    assert {c.symbol for c in _build_candidates(universe, None, day, _config())} == {"IN"}
+
+
+def test_a_delisted_holding_settles_to_cash_at_its_last_close():
+    import pytest
+
+    cal = _calendar(60)
+    # a US name acquired at 120 USD on day 19: its bars stop there; the index keeps going
+    target = _series(1, "TGT", "USD", cal[:20], closes=[100.0] * 19 + [120.0])
+    other = _series(2, "OTH", "CAD", cal, closes=[50.0] * 60)
+    # USD/CAD jumps long after the settlement: settled cash is CAD and must not move with it,
+    # whereas a holding left stale at its last USD close would
+    fx = _series(0, "USDCAD", "CAD", cal, closes=[1.25] * 45 + [1.50] * 15)
+    result = simulate(
+        {1: target, 2: other},
+        cal,
+        FixedAllocator({1: 1.0}),
+        fx=fx,
+        cost_model=CHEAP,
+        profile=get_profile(AccountType.RRSP),
+        config=_config(),
+    )
+    equity = dict(result.equity_curve)
+    # 100,000 CAD bought 800 shares at 100 USD × 1.25 → 120 USD × 800 × 1.25 = 120,000 CAD
+    assert equity[cal[19]] == pytest.approx(120_000.0)
+    assert equity[cal[-1]] == pytest.approx(120_000.0)  # not 144,000: it was cashed out
+
+
+def test_settle_delisted_and_withholding_helpers():
+    import pytest
+
+    from ibkr_trader.backtest.engine import DELISTED_AFTER_DAYS, _settle_delisted, _withholding_due
+
+    cal = _calendar(5)
+    alive = _series(1, "LIVE", "USD", cal, closes=[10.0] * 5)
+    gone = _series(2, "GONE", "USD", cal[:2], closes=[4.0, 5.0])
+    fx = _series(0, "USDCAD", "CAD", cal, closes=[1.25] * 5)
+    positions = {1: 100.0, 2: 10.0}
+    day = cal[1] + timedelta(days=DELISTED_AFTER_DAYS + 1)
+    assert _settle_delisted(positions, {1: alive, 2: gone}, fx, day) == pytest.approx(
+        10 * 5.0 * 1.25
+    )
+    assert positions == {1: 100.0}
+
+    model = RegisteredAccountCostModel(assumed_us_dividend_yield=0.02)
+    tfsa = _withholding_due(
+        positions, {1: alive}, fx, cal[-1], model, get_profile(AccountType.TFSA)
+    )
+    assert tfsa == pytest.approx(100 * 10.0 * 1.25 * 0.02 * 0.15 / 252)
+    rrsp = _withholding_due(
+        positions, {1: alive}, fx, cal[-1], model, get_profile(AccountType.RRSP)
+    )
+    assert rrsp == 0.0
+
+
+def test_load_instrument_series_reads_by_instrument_not_symbol():
+    from ibkr_trader.backtest.engine import load_instrument_series
+
+    session = _sqlite_session()
+    yahoo_live = _seed_instrument(session, "DO", [10.0] * 5, exchange="SMART")
+    dead = Instrument(symbol="DO", exchange="NYSE", currency="USD")  # reused ticker
+    session.add(dead)
+    session.flush()
+    _seed_bars(session, dead, [3.0] * 7, source="tiingo")
+    start, end = datetime(2019, 1, 1, tzinfo=UTC), datetime(2021, 1, 1, tzinfo=UTC)
+    series = load_instrument_series(session, dead, start, end)
+    assert series is not None and series.instrument_id == dead.id
+    assert series.closes == [3.0] * 7 and len(series.dates) == 7
+    other = load_instrument_series(session, yahoo_live, start, end)
+    assert other is not None and other.closes == [10.0] * 5

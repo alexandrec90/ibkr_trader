@@ -91,6 +91,7 @@ def _patch_db(monkeypatch, inputs):
 
     monkeypatch.setattr(session_mod, "get_session", fake_session)
     monkeypatch.setattr(lab, "load_lab_inputs", lambda session, symbols, start, end: inputs)
+    monkeypatch.setattr(lab, "load_index_inputs", lambda session, start, end: inputs)
     monkeypatch.setattr(
         mood_mod, "load_mood_panel", lambda session, model: mood_mod.MoodPanel(daily={})
     )
@@ -113,7 +114,7 @@ def test_backtest_lab_writes_the_report(monkeypatch, tmp_path):
         [
             "backtest",
             "lab",
-            "--universe-file",
+            "--universe",
             str(universe_file),
             "--full-start",
             "2024-03-01",
@@ -128,6 +129,43 @@ def test_backtest_lab_writes_the_report(monkeypatch, tmp_path):
     page = out.read_text(encoding="utf-8")
     assert "Registered-account strategy lab" in page
     assert "No news/social mood data" in page  # the empty panel has no usable start
+    assert "curated list of today" in page  # a file universe carries the survivor caveat
+
+
+def test_backtest_lab_defaults_to_the_point_in_time_universe(monkeypatch, tmp_path):
+    pytest.importorskip("plotly")
+    from ibkr_trader.backtest.universe import Coverage, Span
+
+    inputs = _synthetic_inputs()
+    inputs.label = lab.POINT_IN_TIME
+    inputs.coverage = Coverage(
+        samples=[(date(2024, 6, 3), 4, 3)],
+        unpriced=[Span("ANTM", date(2002, 7, 25), date(2022, 6, 28))],
+    )
+    curated_called: list[bool] = []
+    _patch_db(monkeypatch, inputs)
+    monkeypatch.setattr(lab, "load_lab_inputs", lambda *args: curated_called.append(True) or inputs)
+    out = tmp_path / "lab.html"
+    result = runner.invoke(
+        cli.app,
+        ["backtest", "lab", "--full-start", "2024-03-01", "--no-mood", "-o", str(out), "--no-open"],
+    )
+    assert result.exit_code == 0, result.output
+    assert not curated_called  # no --universe: the S&P 500 point-in-time loader ran
+    assert "S&P 500 point-in-time" in result.output
+    assert "75% of index member-days priced; 1 membership span(s) unpriced" in result.output
+    assert "backfill in progress" not in result.output
+    page = out.read_text(encoding="utf-8")
+    assert "75% of index member-days priced" in page
+    assert "later acquired or went bankrupt" in page
+
+
+def test_format_lab_verdict_flags_a_backfill_in_progress():
+    from ibkr_trader.backtest.universe import Coverage, Span
+
+    result = lab.LabResult(specs=[], windows=[], account="tfsa")
+    result.coverage = Coverage(pending=[Span("AAPL", date(1996, 1, 2), None)])
+    assert "backfill in progress: 1 span(s) not priced yet" in cli._format_lab_verdict(result)
 
 
 def test_backtest_lab_without_bars_exits_nonzero(monkeypatch, tmp_path):
@@ -137,7 +175,7 @@ def test_backtest_lab_without_bars_exits_nonzero(monkeypatch, tmp_path):
     universe_file.write_text("XIC\n", encoding="utf-8")
     result = runner.invoke(
         cli.app,
-        ["backtest", "lab", "--universe-file", str(universe_file), "--no-mood", "--no-open"],
+        ["backtest", "lab", "--universe", str(universe_file), "--no-mood", "--no-open"],
     )
     assert result.exit_code == 1
     assert "no daily bars" in result.output + result.stderr
