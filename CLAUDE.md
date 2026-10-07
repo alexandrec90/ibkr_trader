@@ -45,17 +45,24 @@ SHA first, the bump the nightly asks for anyway. If it
 is missing anyway (`Distribution not found at:
 file:///…/data-lake`), cut it by hand from inside the worktree —
 `git -C ../../../../data-lake worktree add --detach "$PWD/../data-lake" origin/main` for a
-`claude --worktree` tree. A task that **edits** data-lake needs its own branch there
-instead: cut one from the data-lake checkout, beside this worktree, then link it into
-place from inside the worktree:
+`claude --worktree` tree.
+
+A task that **edits** data-lake does it on a data-lake branch in data-lake's own
+worktree, as its own session and PR:
+`python "$DEVKIT_DIR/scripts/agent-worktree.py" new --pick data-lake:main --slug <slug>`.
+A `claude --worktree` session here cannot write outside its own tree. **Never repoint
+`../data-lake` at that branch:** the path is the tier's one shared tree, so a junction
+or symlink there moves every sibling worktree onto your branch. To test this worktree
+against the branch, install it into **this worktree's** `.venv` only, and stop `uv run`
+from syncing it back to the shared tree:
 
 ```bash
-cmd /c mklink /J ..\data-lake ..\data-lake--<slug>   # Windows; a symlink elsewhere
+uv pip install --python .venv -e <the data-lake branch worktree>
+export UV_NO_SYNC=1    # every `uv run` keeps it (same as `uv run --no-sync`)
+unset UV_NO_SYNC && uv sync   # when done: back on the shared tree
 ```
 
-Point it at the **data-lake worktree for the same branch family**, never at the main
-checkout. The main checkout silently re-resolves `uv.lock` — boto3 and ruff specifier
-bumps — and smuggles an unrelated lockfile diff into whatever branch you are on.
+Once the data-lake PR merges, move the gate's `ref:` and run `uv lock` (below).
 
 ```bash
 uv sync                        # setup: create .venv, install locked deps + dev group
