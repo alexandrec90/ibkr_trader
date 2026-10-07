@@ -20,6 +20,16 @@ services:
     # the extension is present, so tests/CI on plain Postgres or SQLite are unaffected.
     image: timescale/timescaledb:2.17.2-pg16
     restart: unless-stopped
+    # The image runs timescaledb-tune at initdb, which sizes shared_buffers to 25% of the
+    # memory Docker shows it -- ~1 GB inside a 4 GB WSL VM on a 16 GB box, for a ~1.2 GB
+    # database, and the whole buffer pool stays resident. `-c` overrides the tuned
+    # postgresql.conf in the existing volume too. A bigger host raises them through .env.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=${DB_SHARED_BUFFERS:-256MB}
+      - -c
+      - maintenance_work_mem=${DB_MAINTENANCE_WORK_MEM:-128MB}
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-trader}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trader}
