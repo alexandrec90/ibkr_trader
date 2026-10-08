@@ -93,6 +93,21 @@ def test_health_artifact_survives_a_container_rebuild():
     assert "applogs:/app/logs" in compose["services"]["app"]["volumes"]
 
 
+def test_the_db_caps_the_memory_timescaledb_tune_would_claim():
+    """timescaledb-tune sizes shared_buffers to 25% of what Docker shows it: ~1 GB resident
+    inside the 4 GB WSL VM of a 16 GB machine, for a ~1.2 GB database. Only a `-c` on the
+    command line beats the tuned postgresql.conf already in the pgdata volume.
+    """
+    import yaml
+
+    compose = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    command = compose["services"]["db"]["command"]
+
+    assert command[0] == "postgres"
+    assert "shared_buffers=${DB_SHARED_BUFFERS:-256MB}" in command
+    assert "maintenance_work_mem=${DB_MAINTENANCE_WORK_MEM:-128MB}" in command
+
+
 def test_the_image_installs_the_archive_extra_serve_needs():
     """`serve` registers the archive jobs unconditionally and the `social` poll reads
     social-scraper's export back through the archive store, so with ARCHIVE_BACKEND=s3 the
