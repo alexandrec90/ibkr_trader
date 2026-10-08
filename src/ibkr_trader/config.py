@@ -120,6 +120,26 @@ class Settings(BaseSettings):
     ntfy_server: str = "https://ntfy.sh"
     # Anyone who knows the topic can read the alerts: make it long and random, keep it in .env.
     ntfy_topic: str = ""
+    # IPO collection + alerts (serve jobs, see ipo_watch.py). EDGAR refuses undeclared
+    # automated clients: SEC_USER_AGENT must name you and a contact address, e.g.
+    # "Jane Doe jane@example.com". Empty => the EDGAR filings poll fails loudly in `health`.
+    sec_user_agent: str = ""
+    poll_ipo_hours: int = 6
+    # A watched name alerts at every stage; anything else alerts only when the IPO calendar puts
+    # the deal at IPO_ALERT_MIN_DEAL_USD or more (0 turns the size rule off). Names match on
+    # whole words, so list the legal name too when it differs from the brand.
+    ipo_watchlist: list[str] = [
+        "Anthropic",
+        "OpenAI",
+        "SpaceX",
+        "Space Exploration Technologies",
+        "Discord",
+        "Stripe",
+        "Databricks",
+    ]
+    ipo_alert_min_deal_usd: float = 1_000_000_000.0
+    ipo_alert_stages: list[str] = ["filed", "expected", "priced", "withdrawn"]
+    ipo_alert_ledger_file: str = "logs/ipo-alerts.json"
 
     # Registered-account long-term strategy defaults.
     # These are env-overridable deployment defaults; a backtest run pins its own values into

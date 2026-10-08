@@ -268,7 +268,25 @@ def test_send_ntfy_posts_title_and_body_to_the_topic():
     assert request.data == b"Body"
     assert request.get_header("Title") == "Title"
     assert request.get_header("Priority") == "high"
+    assert request.get_header("Tags") == "warning"
+    assert request.get_header("Click") is None
     assert timeout == 10
+
+
+def test_post_ntfy_passes_tags_and_click_url():
+    from ibkr_trader.gateway_watch import Notification, post_ntfy
+
+    requests = []
+
+    def opener(request, timeout):
+        requests.append(request)
+
+    note = Notification("T", "B", priority="default", tags="chart", click="https://sec.gov/x")
+    assert post_ntfy("https://ntfy.sh", "t", note, opener=opener)
+    assert requests[0].get_header("Tags") == "chart"
+    assert requests[0].get_header("Click") == "https://sec.gov/x"
+    assert requests[0].get_header("Priority") == "default"
+    assert requests[0].data == b"B"
 
 
 def test_send_ntfy_without_a_topic_sends_nothing():
