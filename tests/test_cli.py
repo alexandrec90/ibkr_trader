@@ -1430,6 +1430,67 @@ def test_health_json_output_is_machine_readable(tmp_path):
     assert json.loads(result.output)["jobs"]["prices"]["last_success"]
 
 
+# --- ingest index-membership / index-prices ------------------------------------------
+
+
+def test_index_ingest_commands_are_wired_under_ingest():
+    commands = {c.name: c.callback for c in cli.ingest_app.registered_commands}
+    assert commands["index-membership"] is cli.ingest_index_membership
+    assert commands["index-prices"] is cli.ingest_index_prices
+
+
+def test_ingest_index_membership_reports_the_span_count(monkeypatch):
+    from ibkr_trader import scheduler
+
+    monkeypatch.setattr(scheduler, "poll_index_membership", lambda: 866)
+    result = runner.invoke(cli.app, ["ingest", "index-membership"])
+    assert result.exit_code == 0, _all_output(result)
+    assert "866 S&P 500 membership spans" in result.output
+
+
+def test_ingest_index_membership_reports_a_refusal_cleanly(monkeypatch):
+    from ibkr_trader import scheduler
+
+    def refuse():
+        raise ValueError("refusing to wipe the table")
+
+    monkeypatch.setattr(scheduler, "poll_index_membership", refuse)
+    result = runner.invoke(cli.app, ["ingest", "index-membership"])
+    assert result.exit_code == 1
+    assert "refusing to wipe" in _all_output(result)
+
+
+def test_ingest_index_prices_flows_the_yahoo_cap_and_notes_a_missing_key(monkeypatch):
+    from ibkr_trader import config, scheduler
+
+    seen = {}
+
+    def fake_poll(settings):
+        seen["max_yahoo"] = settings.index_prices_max_yahoo
+        return {"yahoo": 5, "unpriced": 2}
+
+    monkeypatch.setattr(scheduler, "poll_index_prices", fake_poll)
+    monkeypatch.setattr(config, "get_settings", lambda: config.Settings(tiingo_api_key=""))
+    result = runner.invoke(cli.app, ["ingest", "index-prices", "--max-yahoo", "9"])
+    assert result.exit_code == 0, _all_output(result)
+    assert seen["max_yahoo"] == 9
+    assert "yahoo 5, unpriced 2" in result.output
+    assert "TIINGO_API_KEY is unset" in result.output
+
+
+def test_ingest_index_prices_systemic_failure_exits_nonzero(monkeypatch):
+    from ibkr_trader import config, scheduler
+
+    def outage(settings):
+        raise RuntimeError("every attempted span failed")
+
+    monkeypatch.setattr(scheduler, "poll_index_prices", outage)
+    monkeypatch.setattr(config, "get_settings", lambda: config.Settings(tiingo_api_key="k"))
+    result = runner.invoke(cli.app, ["ingest", "index-prices"])
+    assert result.exit_code == 1
+    assert "every attempted span failed" in _all_output(result)
+
+
 # --- notify-test ----------------------------------------------------------------------------
 
 

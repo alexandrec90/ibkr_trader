@@ -33,9 +33,11 @@ from ibkr_trader.backtest.engine import (
     _load_universe,
     simulate,
 )
+from ibkr_trader.backtest.universe import SP500, Coverage, coverage, load_index_universe
 from ibkr_trader.signals.eligibility import EligibilityLimits, screen
 from ibkr_trader.signals.features import CorporateData, load_corporate_inputs
 from ibkr_trader.signals.portfolio import (
+    BROAD_ETF_SYMBOLS,
     Allocator,
     CoreSatelliteAllocator,
     CouchPotatoAllocator,
@@ -55,6 +57,10 @@ WINDOW_WEIGHTS: dict[int | None, float] = {1: 0.4, 3: 0.3, 5: 0.2, None: 0.1}
 REFERENCE = "couch_potato"
 #: Calendar days of bars loaded before the earliest decision so 12-month features are warm.
 WARMUP_DAYS = 550
+
+#: Universe labels: a hand-picked file of today's survivors, or an index as it stood each day.
+CURATED = "curated file (today's survivors)"
+POINT_IN_TIME = "S&P 500 point-in-time + broad ETFs"
 
 #: Registered-account screen for the lab: the default no-penny-stock / liquidity floors, but
 #: two years of listing history — a buy-and-hold book has no business holding a fresh IPO.
@@ -100,6 +106,10 @@ class LabResult:
     compare_account: str | None = None
     mood_start: date | None = None
     universe_n: int = 0
+    #: What the universe is — "SP500 point-in-time" or "curated file" — and, for an index
+    #: universe, how much of it could be priced.
+    universe_label: str = CURATED
+    coverage: Coverage | None = None
 
     def run(self, strategy: str, window: str, account: str | None = None) -> LabRun | None:
         account = account or self.account
@@ -244,6 +254,8 @@ class LabInputs:
     universe: dict[int, Series]
     fx: Series | None = None
     corporate: dict[int, CorporateData] | None = None
+    label: str = CURATED
+    coverage: Coverage | None = None
 
 
 @dataclass
@@ -297,6 +309,8 @@ def run_lab(
         compare_account=compare.value if compare else None,
         asof=calendar[-1],
         universe_n=len(inputs.universe),
+        universe_label=inputs.label,
+        coverage=inputs.coverage,
     )
     jobs = [(spec, window, account) for window in windows for spec in specs]
     if compare is not None and windows:
@@ -328,11 +342,33 @@ def run_lab(
     return result
 
 
+def _bar_window(full_start: date, end: date) -> tuple[datetime, datetime]:
+    """The bar window behind a lab run: ``WARMUP_DAYS`` before the first decision to ``end``."""
+    start = datetime.combine(full_start - timedelta(days=WARMUP_DAYS), datetime.min.time(), UTC)
+    return start, datetime.combine(end, datetime.max.time(), UTC)
+
+
 def load_lab_inputs(session: Session, symbols: list[str], full_start: date, end: date) -> LabInputs:
-    """Bars (with warm-up), USDCAD and corporate data for the lab, from Postgres only."""
-    start_dt = datetime.combine(full_start - timedelta(days=WARMUP_DAYS), datetime.min.time(), UTC)
-    end_dt = datetime.combine(end, datetime.max.time(), UTC)
+    """A curated universe file's bars (with warm-up), USDCAD and corporate data, from Postgres."""
+    start_dt, end_dt = _bar_window(full_start, end)
     universe = _load_universe(session, symbols, start_dt, end_dt)
     fx = _load_series(session, "USDCAD", start_dt, end_dt)
     corporate = {iid: load_corporate_inputs(session, iid) for iid in universe}
     return LabInputs(universe, fx, corporate)
+
+
+def load_index_inputs(session: Session, full_start: date, end: date) -> LabInputs:
+    """The point-in-time S&P 500 universe plus the broad ETFs the couch potato holds.
+
+    Members are gated day by day by their index membership (``backtest.universe``); the ETFs
+    are always candidates. Coverage — how much of the index the free sources could price —
+    is measured over the decision window and travels with the inputs into the report.
+    Canadian stocks are not included: no free point-in-time TSX source exists, so Canada is
+    held through the ETFs.
+    """
+    window = _bar_window(full_start, end)
+    universe, spans = load_index_universe(session, SP500, window, sorted(BROAD_ETF_SYMBOLS))
+    fx = _load_series(session, "USDCAD", *window)
+    corporate = {iid: load_corporate_inputs(session, iid) for iid in universe}
+    measured = coverage(spans, universe, full_start, end)
+    return LabInputs(universe, fx, corporate, label=POINT_IN_TIME, coverage=measured)

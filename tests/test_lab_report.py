@@ -151,6 +151,34 @@ def test_build_lab_report_is_one_self_contained_document():
     assert "Alpha &lt;A&amp;B&gt;" in page
 
 
+def test_curated_runs_carry_the_survivor_caveat_and_no_coverage_line():
+    result = _result()
+    assert rpt.coverage_line(result) == ""
+    assert "curated list of today" in rpt.survivorship_note(result)
+
+
+def test_point_in_time_runs_state_their_coverage():
+    from ibkr_trader.backtest.universe import Coverage, Span
+
+    result = _result()
+    result.universe_label = lab.POINT_IN_TIME
+    result.coverage = Coverage(
+        samples=[(date(2025, 1, 2), 10, 9), (date(2025, 11, 3), 10, 10)],
+        unpriced=[Span("ANTM", date(2002, 7, 25), date(2022, 6, 28))],
+    )
+    # overall 19/20; the newest window (from 2025-10-05) sees only the second sample
+    assert rpt.coverage_line(result) == (
+        " (95% of index member-days priced; 100% since 2025-10-05)"
+    )
+    note = rpt.survivorship_note(result)
+    assert "later acquired or went bankrupt" in note and "1 membership span(s) unpriced" in note
+    assert "backfill is still running" not in note  # nothing pending
+    result.coverage.pending = [Span("AAPL", date(1996, 1, 2), None)]
+    assert "1 span(s) are not priced yet" in rpt.survivorship_note(result)
+    page = rpt.build_lab_report(result, generated_at=STAMP)
+    assert "S&amp;P 500 point-in-time" in page and "95% of index member-days priced" in page
+
+
 def test_strategies_html_lists_every_strategy_escaped():
     listing = rpt.strategies_html(_result())
     assert listing.count("<dt>") == 3

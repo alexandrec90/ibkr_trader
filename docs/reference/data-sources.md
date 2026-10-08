@@ -48,6 +48,32 @@ trade dates. Norgate is the recommended production source because its published 
 directly matches both required markets and the survivorship use case. EODHD is the fallback
 pilot when cost dominates, but it must pass the same TSX completeness audit first.
 
+### Decision (2026-10-06): the free path
+
+The owner declined the paid packages ("CAD 630 for Canadian stocks is not worth it") and
+asked for free sources, scrapers allowed. Measured today, not assumed:
+
+- **Membership:** [fja05680/sp500](https://github.com/fja05680/sp500) (MIT) —
+  `sp500_ticker_start_end.csv`, one row per continuous span, tickers as spelled at the time.
+  866 spans touch 2010 or later: 503 current, 363 removed.
+- **Dead members' prices:** Tiingo's public `supported_tickers.zip` lists ~7,400 NYSE/NASDAQ
+  stocks whose data ends before 2026, with start/end dates. Bankruptcies keep their whole
+  history under the "Q" ticker (BBBYQ 1992–2023, SIVBQ from 1990, HTZGQ 2006–2021);
+  takeovers keep their own ticker (TWTR to 2022-10-28, ATVI to 2023-10-13). Against the 363
+  removed spans: 242 covered by exactly one Tiingo listing, 24 ambiguous (ticker reused),
+  31 partial, 66 absent — many of the absent are renames (ANTM→ELV, ABC→COR, BLL→BALL),
+  whose company is still priced under the new ticker. Pre-2009 failures (Lehman, WaMu) are
+  absent, and delistings before ~2016 are thin.
+- **Free-tier terms** ([pricing](https://www.tiingo.com/about/pricing)): 500 unique
+  symbols/month, 50 requests/hour, 1,000/day, 30+ years of history, internal/personal use only.
+- **Rejected:** Massive (formerly Polygon) free plan — two years of history only.
+- **Canada:** no free source for point-in-time TSX membership or delisted TSX prices was
+  found. Tiingo carries only TSX names cross-listed in New York, in USD.
+
+Implemented in data-lake (`ingestion.market.index_membership`, `.tiingo`, `.index_pricing`)
+and wired here (`backtest/universe.py`, the `index_membership` / `index_prices` serve jobs).
+See [registered-account-strategy.md](../registered-account-strategy.md#point-in-time-universe-the-default-for-backtest-lab).
+
 ### Ingestion readiness
 
 The existing schema can already represent a dead security as an `Instrument` with `PriceBar`

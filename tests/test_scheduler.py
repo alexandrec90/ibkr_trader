@@ -36,6 +36,12 @@ def _settings(**overrides):
         archive_bars_hours=24,
         archive_raw_min_age_days=30,
         archive_raw_hours=24,
+        tiingo_api_key="",
+        tiingo_usage_file="logs/tiingo-usage.json",
+        index_universe_since="2010-01-04",
+        poll_index_membership_hours=24,
+        poll_index_prices_minutes=60,
+        index_prices_max_yahoo=60,
         # Off by default here: build_scheduler only registers jobs, and these tests must never
         # be one refactor away from a real socket.
         gateway_watch_enabled=False,
@@ -57,11 +63,16 @@ def test_build_scheduler_registers_all_jobs_with_configured_intervals():
         "finnhub_backfill",
         "sentiment_score",
         "prices_poll",
+        "index_membership_poll",
+        "index_prices_poll",
         "archive_bars",
         "archive_raw",
         "gateway_watch",
     }
     assert jobs["social_poll"].trigger.interval == timedelta(minutes=30)
+    assert jobs["index_membership_poll"].trigger.interval == timedelta(hours=24)
+    assert jobs["index_membership_poll"].next_run_time is not None  # spans first, on startup
+    assert jobs["index_prices_poll"].trigger.interval == timedelta(minutes=60)
     assert jobs["finnhub_news_poll"].trigger.interval == timedelta(hours=6)
     assert jobs["newsapi_poll"].trigger.interval == timedelta(hours=12)
     assert jobs["trends_poll"].trigger.interval == timedelta(hours=24)
@@ -1238,3 +1249,111 @@ def test_poll_newsapi_job_missing_mapping_file_is_noop(tmp_path):
 
 def test_poll_newsapi_job_unset_mapping_file_is_noop():
     assert scheduler.poll_newsapi_job(_settings(newsapi_mapping_file="")) == 0
+
+
+# --- point-in-time S&P 500 universe -----------------------------------------------------
+
+
+def test_register_market_data_jobs_wires_bars_and_the_index_universe():
+    seen = {}
+
+    def record(job_id, label, job, *, seconds, start_now=False):
+        seen[job_id] = (label, seconds, start_now)
+
+    scheduler._register_market_data_jobs(record, _settings(poll_index_prices_minutes=30))
+    assert seen == {
+        "prices_poll": ("prices", 24 * 3600, True),
+        "index_membership_poll": ("index_membership", 24 * 3600, True),
+        "index_prices_poll": ("index_prices", 30 * 60, False),
+    }
+
+
+def test_poll_index_membership_runs_the_membership_connector(monkeypatch):
+    from data_lake.ingestion.market.index_membership import Sp500MembershipConnector
+
+    monkeypatch.setattr(Sp500MembershipConnector, "fetch", lambda self, **kw: 866)
+    assert scheduler.poll_index_membership() == 866
+
+
+def test_poll_index_membership_failure_propagates_to_the_guard(monkeypatch):
+    from data_lake.ingestion.market.index_membership import Sp500MembershipConnector
+
+    def refuse(self, **kw):
+        raise ValueError("only 12 current members parsed; refusing to wipe the table")
+
+    monkeypatch.setattr(Sp500MembershipConnector, "fetch", refuse)
+    with pytest.raises(ValueError, match="refusing"):
+        scheduler.poll_index_membership()
+
+
+def _fake_report(**counts):
+    base = dict(already=0, resolved_yahoo=0, resolved_tiingo=0, unpriced=0, deferred=0, failed={})
+    base.update(counts)
+    return SimpleNamespace(**base)
+
+
+def test_poll_index_prices_without_a_tiingo_key_prices_from_yahoo_only(monkeypatch):
+    seen = {}
+
+    def fake_resolve(**kwargs):
+        seen.update(kwargs)
+        return _fake_report(resolved_yahoo=3, unpriced=2)
+
+    monkeypatch.setattr(
+        "data_lake.ingestion.market.index_pricing.resolve_index_prices", fake_resolve
+    )
+    summary = scheduler.poll_index_prices(_settings(index_prices_max_yahoo=7))
+    assert summary == {
+        "already": 0,
+        "yahoo": 3,
+        "tiingo": 0,
+        "unpriced": 2,
+        "deferred": 0,
+        "failed": 0,
+    }
+    assert seen["tiingo"] is None and seen["tiingo_listings"] is None
+    assert seen["max_yahoo"] == 7
+    assert str(seen["since"]) == "2010-01-04"
+
+
+def test_poll_index_prices_with_a_key_uses_tiingo_and_its_ledger(monkeypatch, tmp_path):
+    from data_lake.ingestion.market import tiingo as tiingo_mod
+
+    seen = {}
+
+    def fake_resolve(**kwargs):
+        seen.update(kwargs)
+        return _fake_report(resolved_tiingo=4, deferred=1, failed={"XYZ": "boom"})
+
+    monkeypatch.setattr(
+        "data_lake.ingestion.market.index_pricing.resolve_index_prices", fake_resolve
+    )
+    monkeypatch.setattr(scheduler, "_tiingo_listings", lambda path: {"TWTR": ["listing"]})
+    usage_file = tmp_path / "logs" / "tiingo-usage.json"
+    summary = scheduler.poll_index_prices(
+        _settings(tiingo_api_key="k", tiingo_usage_file=str(usage_file))
+    )
+    assert summary["tiingo"] == 4 and summary["deferred"] == 1 and summary["failed"] == 1
+    assert isinstance(seen["tiingo"], tiingo_mod.TiingoConnector)
+    assert seen["tiingo_listings"] == {"TWTR": ["listing"]}
+
+
+def test_tiingo_listings_are_cached_and_refreshed_weekly(monkeypatch, tmp_path):
+    from data_lake.ingestion.market import tiingo as tiingo_mod
+
+    downloads: list[int] = []
+
+    def fake_fetch():
+        downloads.append(1)
+        return b"zip-bytes"
+
+    monkeypatch.setattr(tiingo_mod, "fetch_supported_tickers", fake_fetch)
+    monkeypatch.setattr(tiingo_mod, "parse_supported_tickers", lambda raw: {"raw": raw})
+    cache = tmp_path / "logs" / "tiingo-supported-tickers.zip"
+    now = datetime.now(UTC)
+
+    assert scheduler._tiingo_listings(cache, now=now) == {"raw": b"zip-bytes"}
+    assert scheduler._tiingo_listings(cache, now=now + timedelta(days=6)) == {"raw": b"zip-bytes"}
+    assert len(downloads) == 1  # served from the cache inside the week
+    scheduler._tiingo_listings(cache, now=now + timedelta(days=8))
+    assert len(downloads) == 2

@@ -348,6 +348,48 @@ def strategies_html(result: LabResult) -> str:
     return f'<dl class="strategies">{items}</dl>'
 
 
+def coverage_line(result: LabResult) -> str:
+    """The header's coverage clause for an index universe; empty for a curated run.
+
+    Reads like " (93% of index member-days priced; 88% since 2025-10-05)". The second figure
+    is the shortest window's, because the verdict weights it most.
+    """
+    if result.coverage is None:
+        return ""
+    recent = result.windows[-1].eval_start if result.windows else None
+    tail = f"; {result.coverage.ratio_since(recent):.0%} since {recent:%Y-%m-%d}" if recent else ""
+    return f" ({result.coverage.ratio:.0%} of index member-days priced{tail})"
+
+
+def survivorship_note(result: LabResult) -> str:
+    """The caveat that fits the universe: curated survivors, or a point-in-time index."""
+    if result.coverage is None:
+        return (
+            "The universe is a curated list of today's companies. A run that starts in 2010 "
+            "already &ldquo;knows&rdquo; these companies survived and grew, which flatters "
+            "every stock-picking strategy &mdash; most of all the long window. The couch potato "
+            "(broad ETFs) is the least biased line on the page; the gap to it is an upper "
+            "bound on skill."
+        )
+    unpriced = len(result.coverage.unpriced)
+    pending = len(result.coverage.pending)
+    backfill = (
+        f" <strong>The price backfill is still running: {pending} span(s) are not priced "
+        "yet, so treat these results as provisional until it finishes.</strong>"
+        if pending
+        else ""
+    )
+    return (
+        "Stocks come from the S&amp;P 500 as it stood on each decision date, including "
+        "companies that were later acquired or went bankrupt; a holding that stops trading is "
+        "cashed out at its last price. Free price sources could not price every past member "
+        f"({unpriced} membership span(s) unpriced: mostly renamed tickers and older "
+        "delistings), so some bias remains &mdash; the coverage figure at the top says how "
+        "much of the index each result could actually see. Canadian stocks are held only "
+        f"through the ETFs: no free point-in-time TSX source exists.{backfill}"
+    )
+
+
 def build_lab_report(result: LabResult, *, generated_at: datetime | None = None) -> str:
     """Assemble the self-contained HTML document for one lab run."""
     generated_at = generated_at or datetime.now(UTC)
@@ -378,6 +420,9 @@ def build_lab_report(result: LabResult, *, generated_at: datetime | None = None)
         stamp=generated_at.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC"),
         weights=html.escape(weights),
         mood_note=mood_note,
+        universe_label=html.escape(result.universe_label),
+        coverage_line=coverage_line(result),
+        survivorship_note=survivorship_note(result),
         strategies=strategies_html(result),
         scorecard=scorecard_table(result),
         accounts=account_table(result),
@@ -422,7 +467,7 @@ _DOCUMENT = """<!DOCTYPE html>
 <body>
 <h1>Registered-account strategy lab</h1>
 <p class="caption">Account simulated: <strong>{account}</strong> · data to {asof} ·
-{universe_n} instruments · long-only, no margin, no penny stocks (price ≥ $5, ≥ 2 years
+universe: <strong>{universe_label}</strong>, {universe_n} instruments{coverage_line} · long-only, no margin, no penny stocks (price ≥ $5, ≥ 2 years
 listed, liquid), every trade costed (commission, spread, slippage, churn penalty, CAD↔USD
 conversion) and non-recoverable US-dividend withholding charged. Each window is a fresh
 start: "if I had opened the account then".</p>
@@ -474,10 +519,7 @@ trading, not an order list.</p>
 
 <h2>Read this before trusting any number above</h2>
 <div class="info">
-<p><strong>Survivorship bias.</strong> The universe is today's large caps. A run that
-starts in 2010 already "knows" these companies survived and grew, which flatters every
-stock-picking strategy — most of all the long window. The couch potato (broad ETFs) is the
-least biased line on the page; the gap to it is an upper bound on skill.</p>
+<p><strong>Survivorship bias.</strong> {survivorship_note}</p>
 <p><strong>Parameters were set for turnover, not tuned for return.</strong> Review cadences and
 hold buffers were chosen to keep trading to roughly two dozen trades a year or fewer.</p>
 <p><strong>Mood data.</strong> {mood_note}</p>
