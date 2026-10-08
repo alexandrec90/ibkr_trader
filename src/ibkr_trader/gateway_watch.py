@@ -10,6 +10,10 @@ The ``gateway`` job in `serve` probes the API read-only every few minutes. After
 every ``repeat_hours`` while the gateway stays down, and sends one more when the login is back.
 A failed probe also re-raises, so ``job_health`` records it and `ibkr-trader health` goes red.
 
+The push names the cause and only goes out when the owner can act on it. A gateway container
+that is not running is never pushed: under ``restart: unless-stopped`` it only stays down when
+someone stopped it on purpose, and no phone approval could bring it back. It is still recorded.
+
 Notifications travel through a public ntfy server, so they carry no account ID and no
 credentials -- only "not logged in" and the error type.
 """
@@ -19,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import http.client
 import logging
+import socket
 import urllib.request
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -31,7 +36,47 @@ PROBE_TIMEOUT_SECONDS = 15.0
 
 
 class GatewayDown(RuntimeError):
-    """The gateway did not complete a read-only API handshake, or is on the wrong account."""
+    """The gateway did not complete a read-only API handshake, or is on the wrong account.
+
+    Each subclass carries what the alert says about it, and whether one is sent at all.
+    """
+
+    alert = True
+    title = "IB Gateway needs you"
+    summary = "Paper gateway unusable"
+    advice = ""
+
+
+class GatewayNotRunning(GatewayDown):
+    """Nothing listens at the gateway's address: the container is stopped. Recorded, not pushed."""
+
+    alert = False
+    summary = "Paper gateway not running"
+    advice = "Start it on the PC: docker compose --profile ibkr up -d ib-gateway."
+
+
+class GatewayNotLoggedIn(GatewayDown):
+    """The gateway accepts the connection but never answers the API handshake."""
+
+    summary = "Paper gateway not logged in"
+    advice = (
+        "If IBKR Mobile shows a login request, approve it. If not, restart the gateway on the "
+        "PC (docker compose --profile ibkr restart ib-gateway) so it logs in again, or look at "
+        "it in TigerVNC on the PC (scripts/vnc-viewer.py)."
+    )
+
+
+class GatewayWrongLogin(GatewayDown):
+    """The gateway is logged in, but not to a usable paper account."""
+
+    title = "IB Gateway login is wrong"
+    summary = "Gateway logged in but unusable"
+    advice = "Check which account it is on in TigerVNC on the PC (scripts/vnc-viewer.py)."
+
+
+#: Errors that mean nothing is listening at all: from the app container a stopped gateway's
+#: compose name stops resolving (``gaierror``); from the host its published port refuses.
+_NOT_RUNNING_ERRORS = (ConnectionRefusedError, socket.gaierror)
 
 
 async def _managed_accounts(host: str, port: int, client_id: int, timeout: float) -> list[str]:
@@ -60,8 +105,14 @@ def probe_gateway(
     """
     try:
         return asyncio.run(_managed_accounts(host, port, client_id, timeout))
+    except _NOT_RUNNING_ERRORS as exc:
+        raise GatewayNotRunning(
+            f"nothing listening at {host}:{port}: {type(exc).__name__}"
+        ) from exc
     except Exception as exc:
-        raise GatewayDown(f"no API handshake with {host}:{port}: {type(exc).__name__}") from exc
+        raise GatewayNotLoggedIn(
+            f"no API handshake with {host}:{port}: {type(exc).__name__}"
+        ) from exc
 
 
 def check_accounts(accounts: list[str], environment: str) -> None:
@@ -71,9 +122,11 @@ def check_accounts(accounts: list[str], environment: str) -> None:
     names no account ID, because it ends up in a push notification.
     """
     if not accounts:
-        raise GatewayDown("gateway answered but reported no managed accounts")
+        raise GatewayWrongLogin("gateway answered but reported no managed accounts")
     if environment == "paper" and not all(a.upper().startswith("DU") for a in accounts):
-        raise GatewayDown("gateway is logged into a NON-paper account while ENVIRONMENT=paper")
+        raise GatewayWrongLogin(
+            "gateway is logged into a NON-paper account while ENVIRONMENT=paper"
+        )
 
 
 def send_ntfy(
@@ -151,6 +204,14 @@ class GatewayWatch:
 
     def _failed(self, exc: GatewayDown) -> None:
         moment = self.now()
+        if not exc.alert:
+            # A stopped container is no step toward an alert: when it is started again, its
+            # first probes race its own login, and must not inherit a count to cut that short.
+            # ``last_alert`` stays, so an outage already pushed still gets its "back" notice.
+            logger.warning("gateway alert not sent: %s (%s)", exc.summary, exc)
+            self.consecutive_failures = 0
+            self.down_since = None
+            return
         self.consecutive_failures += 1
         if self.down_since is None:
             self.down_since = moment
@@ -159,11 +220,7 @@ class GatewayWatch:
         if self.last_alert is not None and moment - self.last_alert < self.repeat:
             return
         minutes = int((moment - self.down_since).total_seconds() // 60)
-        self.notify(
-            "IB Gateway needs you",
-            f"Paper gateway not logged in for ~{minutes} min ({exc}). Approve the login in "
-            "IBKR Mobile, or open the gateway in TigerVNC at 127.0.0.1:5900.",
-        )
+        self.notify(exc.title, f"{exc.summary} for ~{minutes} min ({exc}). {exc.advice}")
         self.last_alert = moment
 
     def _recovered(self) -> None:
