@@ -1,10 +1,19 @@
+import socket
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
 
 from ibkr_trader import gateway_watch
-from ibkr_trader.gateway_watch import GatewayDown, GatewayWatch, check_accounts, send_ntfy
+from ibkr_trader.gateway_watch import (
+    GatewayDown,
+    GatewayNotLoggedIn,
+    GatewayNotRunning,
+    GatewayWatch,
+    GatewayWrongLogin,
+    check_accounts,
+    send_ntfy,
+)
 
 
 class _Clock:
@@ -62,21 +71,21 @@ def test_a_logged_in_paper_gateway_is_healthy_and_silent():
 
 def test_a_failed_probe_raises_so_job_health_records_it():
     watch, gateway, _, _ = _watch()
-    gateway.answer = GatewayDown("no API handshake")
+    gateway.answer = GatewayNotLoggedIn("no API handshake")
     with pytest.raises(GatewayDown):
         watch()
 
 
 def test_one_failure_does_not_alert_so_the_nightly_restart_stays_quiet():
     watch, gateway, sent, _ = _watch(alert_after=2)
-    gateway.answer = GatewayDown("no API handshake")
+    gateway.answer = GatewayNotLoggedIn("no API handshake")
     _run(watch)
     assert sent == []
 
 
 def test_alerts_once_the_failures_in_a_row_reach_the_threshold():
     watch, gateway, sent, clock = _watch(alert_after=2)
-    gateway.answer = GatewayDown("no API handshake with ib-gateway:4004: TimeoutError")
+    gateway.answer = GatewayNotLoggedIn("no API handshake with ib-gateway:4004: TimeoutError")
     _run(watch)
     clock.advance(minutes=5)
     _run(watch)
@@ -84,24 +93,72 @@ def test_alerts_once_the_failures_in_a_row_reach_the_threshold():
     title, message = sent[0]
     assert title == "IB Gateway needs you"
     assert "~5 min" in message
+    assert message.startswith("Paper gateway not logged in for ~5 min")
     assert "IBKR Mobile" in message
+    assert "restart ib-gateway" in message
     assert "TimeoutError" in message
+
+
+def test_a_stopped_gateway_is_recorded_but_never_pushed():
+    """Nothing on the phone can start a container, so the push would only be noise."""
+    watch, gateway, sent, clock = _watch(alert_after=1, repeat_hours=2)
+    gateway.answer = GatewayNotRunning("nothing listening at ib-gateway:4004: gaierror")
+    for _ in range(30):
+        with pytest.raises(GatewayNotRunning):
+            watch()
+        clock.advance(minutes=5)
+    assert sent == []
+
+
+def test_a_stopped_gateway_does_not_count_toward_the_alert_once_started():
+    """Its first probe after a start races its own login and must not alert on its own."""
+    watch, gateway, sent, _ = _watch(alert_after=2)
+    gateway.answer = GatewayNotRunning("stopped")
+    _run(watch)
+    _run(watch)
+    gateway.answer = GatewayNotLoggedIn("logging in")
+    _run(watch)
+    assert sent == []
+
+
+def test_a_login_failure_after_a_stop_counts_its_minutes_from_the_start():
+    watch, gateway, sent, clock = _watch(alert_after=2)
+    gateway.answer = GatewayNotRunning("stopped")
+    _run(watch)
+    clock.advance(hours=3)
+    gateway.answer = GatewayNotLoggedIn("waiting for 2FA")
+    _run(watch)
+    clock.advance(minutes=5)
+    _run(watch)
+    assert len(sent) == 1
+    assert "~5 min" in sent[0][1]
+
+
+def test_an_alerted_outage_still_gets_its_recovery_notice_across_a_stop():
+    watch, gateway, sent, _ = _watch(alert_after=1)
+    gateway.answer = GatewayNotLoggedIn("waiting for 2FA")
+    _run(watch)
+    gateway.answer = GatewayNotRunning("stopped")
+    _run(watch)
+    gateway.answer = ["DU1"]
+    _run(watch)
+    assert [title for title, _ in sent] == ["IB Gateway needs you", "IB Gateway is back"]
 
 
 def test_a_success_between_failures_resets_the_count():
     watch, gateway, sent, _ = _watch(alert_after=2)
-    gateway.answer = GatewayDown("down")
+    gateway.answer = GatewayNotLoggedIn("down")
     _run(watch)
     gateway.answer = ["DU1"]
     _run(watch)
-    gateway.answer = GatewayDown("down")
+    gateway.answer = GatewayNotLoggedIn("down")
     _run(watch)
     assert sent == []
 
 
 def test_does_not_repeat_the_alert_every_run_while_still_down():
     watch, gateway, sent, clock = _watch(alert_after=1, repeat_hours=2)
-    gateway.answer = GatewayDown("down")
+    gateway.answer = GatewayNotLoggedIn("down")
     for _ in range(10):
         _run(watch)
         clock.advance(minutes=5)
@@ -110,7 +167,7 @@ def test_does_not_repeat_the_alert_every_run_while_still_down():
 
 def test_repeats_the_alert_after_the_repeat_window():
     watch, gateway, sent, clock = _watch(alert_after=1, repeat_hours=2)
-    gateway.answer = GatewayDown("down")
+    gateway.answer = GatewayNotLoggedIn("down")
     _run(watch)
     clock.advance(hours=2)
     _run(watch)
@@ -120,7 +177,7 @@ def test_repeats_the_alert_after_the_repeat_window():
 
 def test_sends_one_recovery_notice_after_an_alert():
     watch, gateway, sent, _ = _watch(alert_after=1)
-    gateway.answer = GatewayDown("down")
+    gateway.answer = GatewayNotLoggedIn("down")
     _run(watch)
     gateway.answer = ["DU1"]
     _run(watch)
@@ -130,7 +187,7 @@ def test_sends_one_recovery_notice_after_an_alert():
 
 def test_no_recovery_notice_when_no_alert_was_sent():
     watch, gateway, sent, _ = _watch(alert_after=2)
-    gateway.answer = GatewayDown("down")
+    gateway.answer = GatewayNotLoggedIn("down")
     _run(watch)
     gateway.answer = ["DU1"]
     _run(watch)
@@ -139,7 +196,7 @@ def test_no_recovery_notice_when_no_alert_was_sent():
 
 def test_alert_after_below_one_still_alerts_on_the_first_failure():
     watch, gateway, sent, _ = _watch(alert_after=0)
-    gateway.answer = GatewayDown("down")
+    gateway.answer = GatewayNotLoggedIn("down")
     _run(watch)
     assert len(sent) == 1
 
@@ -147,10 +204,13 @@ def test_alert_after_below_one_still_alerts_on_the_first_failure():
 def test_a_live_account_while_paper_alerts_without_naming_the_account():
     watch, gateway, sent, _ = _watch(alert_after=1)
     gateway.answer = ["U7654321"]
-    with pytest.raises(GatewayDown, match="NON-paper"):
+    with pytest.raises(GatewayWrongLogin, match="NON-paper"):
         watch()
     assert len(sent) == 1
-    assert "U7654321" not in sent[0][1]
+    title, message = sent[0]
+    assert title == "IB Gateway login is wrong"
+    assert "IBKR Mobile" not in message
+    assert "U7654321" not in message
 
 
 def test_a_probe_error_that_is_not_gateway_down_propagates_untouched():
@@ -170,12 +230,12 @@ def test_check_accounts_accepts_paper_accounts():
 
 
 def test_check_accounts_refuses_an_empty_account_list():
-    with pytest.raises(GatewayDown, match="no managed accounts"):
+    with pytest.raises(GatewayWrongLogin, match="no managed accounts"):
         check_accounts([], "paper")
 
 
 def test_check_accounts_refuses_a_mixed_login_while_paper():
-    with pytest.raises(GatewayDown, match="NON-paper"):
+    with pytest.raises(GatewayWrongLogin, match="NON-paper"):
         check_accounts(["DU1", "U2"], "paper")
 
 
@@ -198,13 +258,46 @@ def test_probe_returns_the_managed_accounts(monkeypatch):
     assert calls == [("ib-gateway", 4004, 99, 3)]
 
 
-def test_probe_turns_any_connection_error_into_gateway_down(monkeypatch):
+def test_probe_reads_a_handshake_timeout_as_not_logged_in(monkeypatch):
+    """A logged-out gateway behind socat accepts the connection and never answers."""
+
     async def fake(host, port, client_id, timeout):
         raise TimeoutError()
 
     monkeypatch.setattr(gateway_watch, "_managed_accounts", fake)
-    with pytest.raises(GatewayDown, match="ib-gateway:4004: TimeoutError"):
+    with pytest.raises(GatewayNotLoggedIn, match="ib-gateway:4004: TimeoutError"):
         gateway_watch.probe_gateway("ib-gateway", 4004, 99)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(socket.gaierror(-2, "Name or service not known"), id="compose-name-gone"),
+        pytest.param(ConnectionRefusedError(111, "Connection refused"), id="host-port-closed"),
+    ],
+)
+def test_probe_reads_nothing_listening_as_not_running(monkeypatch, error):
+    async def fake(host, port, client_id, timeout):
+        raise error
+
+    monkeypatch.setattr(gateway_watch, "_managed_accounts", fake)
+    with pytest.raises(GatewayNotRunning, match=f"ib-gateway:4004: {type(error).__name__}"):
+        gateway_watch.probe_gateway("ib-gateway", 4004, 99)
+
+
+def test_probe_reads_any_other_error_as_not_logged_in(monkeypatch):
+    async def fake(host, port, client_id, timeout):
+        raise ConnectionResetError()
+
+    monkeypatch.setattr(gateway_watch, "_managed_accounts", fake)
+    with pytest.raises(GatewayNotLoggedIn):
+        gateway_watch.probe_gateway("ib-gateway", 4004, 99)
+
+
+def test_every_probe_failure_is_still_a_gateway_down():
+    """The scheduler and `_run` above catch the base class; every kind must stay under it."""
+    for kind in (GatewayNotRunning, GatewayNotLoggedIn, GatewayWrongLogin):
+        assert issubclass(kind, GatewayDown)
 
 
 def test_probe_works_from_a_worker_thread_like_the_scheduler(monkeypatch):
