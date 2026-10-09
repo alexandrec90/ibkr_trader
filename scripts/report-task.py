@@ -198,7 +198,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.view == "models":
         return serve_mlflow(prefix)
     REPORTS_DIR.mkdir(exist_ok=True)
-    code = run_cli(prefix, cli_commands(args))
+    code = run_cli(prefix, cli_commands(args, REPORTS_DIR))
     if args.view == "factor" and code == 0:
         report = newest_report(REPORTS_DIR / "factor")
         if report is not None:
