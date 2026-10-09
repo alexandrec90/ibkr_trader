@@ -574,6 +574,60 @@ def test_report_free_port_skips_a_listening_one():
         assert script.free_port(taken, attempts=5) != taken
 
 
+def test_report_falls_back_to_the_running_interpreter_without_a_venv(tmp_path):
+    """Without `uv`, the venv is looked up explicitly, as VS Code's PATH is not the venv's."""
+    script = load_script("report-task.py")
+    assert script.python_exe(tmp_path) == sys.executable
+
+    scripts_dir = tmp_path / ".venv" / "Scripts"
+    scripts_dir.mkdir(parents=True)
+    (scripts_dir / "python.exe").write_text("")
+    assert script.python_exe(tmp_path) == str(scripts_dir / "python.exe")
+
+
+def test_report_main_runs_the_view_under_reports_and_opens_the_factor_sheet(monkeypatch, tmp_path):
+    script = load_script("report-task.py")
+    reports = tmp_path / "reports"
+    monkeypatch.setattr(script, "REPORTS_DIR", reports)
+    monkeypatch.setattr(script.shutil, "which", lambda _name: "uv")
+    opened, ran = [], []
+    monkeypatch.setattr(script.webbrowser, "open", opened.append)
+
+    def fake_run_cli(prefix, commands):
+        ran.append((prefix, commands))
+        (reports / "factor").mkdir()
+        (reports / "factor" / "factor-report-run-4.html").write_text("")
+        return 0
+
+    monkeypatch.setattr(script, "run_cli", fake_run_cli)
+
+    assert script.main(["factor"]) == 0
+    assert ran[0][0] == ["uv", "run", "--extra", "research", "python"]
+    assert ran[0][1] == [["backtest", "factor-report", "--output-dir", str(reports / "factor")]]
+    assert opened == [(reports / "factor" / "factor-report-run-4.html").resolve().as_uri()]
+
+
+def test_report_main_opens_nothing_when_the_view_failed(monkeypatch, tmp_path):
+    script = load_script("report-task.py")
+    monkeypatch.setattr(script, "REPORTS_DIR", tmp_path)
+    monkeypatch.setattr(script.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(script.webbrowser, "open", pytest.fail)
+    monkeypatch.setattr(script, "run_cli", lambda _prefix, _commands: 3)
+
+    assert script.main(["factor"]) == 3
+
+
+def test_report_main_serves_mlflow_for_models_without_running_the_cli(monkeypatch):
+    script = load_script("report-task.py")
+    monkeypatch.setattr(script.shutil, "which", lambda _name: "uv")
+    monkeypatch.setattr(script, "run_cli", pytest.fail)
+    served = []
+    monkeypatch.setattr(script, "serve_mlflow", lambda prefix: served.append(prefix) or 5)
+
+    assert script.main(["models"]) == 5
+    assert served == [["uv", "run", "--extra", "tracking", "python"]]
+
+
 def test_db_revision_passes_the_message_as_its_own_argv_element():
     """Never through a shell. A message with a quote or a `;` in it is free text from a
     VS Code prompt, and as one argv element it cannot be reinterpreted."""
