@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import os
+import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -56,6 +58,7 @@ CONTRACT_ENTRYPOINTS = (
     "ingest-task.py",  # Ingest: Run Source
     "snapshot-monthly.py",  # Snapshot: Run Monthly
     "backtest-task.py",  # Backtest: Run / Backtest: OOS
+    "report-task.py",  # Report: Open Model & Strategy Views / Report: Run Strategy Lab
     "db-revision.py",  # DB: New Migration (Autogenerate)
     # Not dispatched directly, but every one of the above wraps it, so a rename here
     # breaks all of them at once and none of them at import time.
@@ -429,6 +432,146 @@ def test_backtest_falls_back_to_the_running_interpreter_without_a_venv(tmp_path)
     scripts_dir.mkdir(parents=True)
     (scripts_dir / "python.exe").write_text("")
     assert script.python_exe(tmp_path) == str(scripts_dir / "python.exe")
+
+
+def test_report_views_each_name_the_extra_they_need():
+    """A view without its extra dies on an import; one asking for the wrong extra installs
+    a dependency nobody needed."""
+    script = load_script("report-task.py")
+    assert script.EXTRAS == {
+        "results": "report",
+        "lab": "report",
+        "factor": "research",
+        "models": "tracking",
+        "summary": None,
+    }
+
+
+def test_report_runner_adds_only_the_one_extra_through_uv_run(tmp_path):
+    """`uv run --extra` syncs inexactly, so `[ml]` survives adding `[report]`; `uv sync
+    --extra report` would have uninstalled it."""
+    script = load_script("report-task.py")
+    assert script.runner("report", "uv") == ["uv", "run", "--extra", "report", "python"]
+    assert script.runner(None, "uv") == ["uv", "run", "python"]
+    assert "sync" not in script.runner("report", "uv")
+
+
+def test_report_runner_falls_back_to_the_venv_without_uv(tmp_path):
+    script = load_script("report-task.py")
+    assert script.runner("report", None, tmp_path) == [sys.executable]
+
+
+def test_report_html_views_write_under_reports_not_the_repo_root(tmp_path):
+    script = load_script("report-task.py")
+    results = script.cli_commands(script.parse_args(["results"]), tmp_path)
+    factor = script.cli_commands(script.parse_args(["factor"]), tmp_path)
+
+    assert results == [["report", "--output", str(tmp_path / "backtest-results.html")]]
+    assert factor == [["backtest", "factor-report", "--output-dir", str(tmp_path / "factor")]]
+
+
+def test_report_lab_passes_the_picked_universe_and_account_through(tmp_path):
+    script = load_script("report-task.py")
+    args = script.parse_args(["lab", "--universe", "sp500", "--account", "tfsa"])
+
+    assert script.cli_commands(args, tmp_path) == [
+        [
+            "backtest",
+            "lab",
+            "--universe",
+            "sp500",
+            "--account",
+            "tfsa",
+            "--output",
+            str(tmp_path / "lab-report.html"),
+        ]
+    ]
+
+
+def test_report_lab_requires_both_picks():
+    """Defaulted, a task that stopped passing one would simulate a line-up nobody chose."""
+    script = load_script("report-task.py")
+    with pytest.raises(SystemExit):
+        script.parse_args(["lab", "--universe", "sp500"])
+
+
+def test_report_summary_runs_the_three_terminal_views():
+    script = load_script("report-task.py")
+    commands = script.cli_commands(script.parse_args(["summary"]))
+    assert [command[:2] for command in commands] == [
+        ["backtest", "compare"],
+        ["train", "report"],
+        ["snapshot", "report"],
+    ]
+
+
+def test_report_models_is_not_a_cli_view():
+    script = load_script("report-task.py")
+    with pytest.raises(ValueError, match="not a CLI view"):
+        script.cli_commands(script.parse_args(["models"]))
+
+
+def test_report_run_cli_keeps_going_and_returns_the_worst_code(monkeypatch):
+    """A summary with no trained model still shows the backtest leaderboard."""
+    script = load_script("report-task.py")
+    seen = []
+
+    def fake_run(argv, **_kwargs):
+        seen.append(argv)
+        return SimpleNamespace(returncode=1 if "train" in argv else 0)
+
+    monkeypatch.setattr(script.subprocess, "run", fake_run)
+    code = script.run_cli(["py"], [["backtest", "compare"], ["train", "report"], ["snapshot"]])
+
+    assert code == 1
+    assert len(seen) == 3
+    assert seen[0] == ["py", "-m", "ibkr_trader.cli", "backtest", "compare"]
+
+
+def test_report_newest_report_picks_the_latest_write(tmp_path):
+    script = load_script("report-task.py")
+    assert script.newest_report(tmp_path) is None
+
+    old = tmp_path / "factor-report-run-3.html"
+    new = tmp_path / "factor-report-run-7.html"
+    old.write_text("")
+    new.write_text("")
+    os.utime(old, (1_000, 1_000))
+    os.utime(new, (2_000, 2_000))
+    (tmp_path / "factor-report-run-9.png").write_text("")
+
+    assert script.newest_report(tmp_path) == new
+
+
+def test_report_mlflow_viewer_binds_loopback_over_the_local_store(tmp_path):
+    """The file store stays the only backend; the viewer reads it and listens on
+    127.0.0.1 only."""
+    script = load_script("report-task.py")
+    argv = script.mlflow_argv(["py"], 5003, tmp_path)
+
+    assert argv[:4] == ["py", "-m", "mlflow", "ui"]
+    assert argv[argv.index("--backend-store-uri") + 1] == tmp_path.resolve().as_uri()
+    assert argv[argv.index("--host") + 1] == "127.0.0.1"
+    assert argv[argv.index("--port") + 1] == "5003"
+    assert script.MLFLOW_ENV == {"MLFLOW_ALLOW_FILE_STORE": "true"}
+
+
+def test_report_models_without_a_store_says_how_to_make_one(monkeypatch, tmp_path, capsys):
+    script = load_script("report-task.py")
+    monkeypatch.setattr(script, "MLRUNS_DIR", tmp_path / "mlruns")
+    monkeypatch.setattr(script.subprocess, "Popen", pytest.fail)
+
+    assert script.serve_mlflow(["py"]) == 1
+    assert "--track-mlflow" in capsys.readouterr().out
+
+
+def test_report_free_port_skips_a_listening_one():
+    script = load_script("report-task.py")
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        taken = listener.getsockname()[1]
+        assert script.free_port(taken, attempts=5) != taken
 
 
 def test_db_revision_passes_the_message_as_its_own_argv_element():
