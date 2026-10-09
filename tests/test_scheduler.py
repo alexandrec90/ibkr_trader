@@ -46,6 +46,7 @@ def _settings(**overrides):
         # be one refactor away from a real socket.
         gateway_watch_enabled=False,
         gateway_check_minutes=5,
+        poll_ipo_hours=6,
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -68,6 +69,9 @@ def test_build_scheduler_registers_all_jobs_with_configured_intervals():
         "archive_bars",
         "archive_raw",
         "gateway_watch",
+        "ipo_calendar_poll",
+        "ipo_filings_poll",
+        "ipo_alerts",
     }
     assert jobs["social_poll"].trigger.interval == timedelta(minutes=30)
     assert jobs["index_membership_poll"].trigger.interval == timedelta(hours=24)
@@ -248,6 +252,60 @@ def test_gateway_watch_switched_on_is_the_settings_wired_watch(monkeypatch):
     settings = _settings(gateway_watch_enabled=True)
     assert scheduler.gateway_watch_job(settings) is sentinel
     assert seen == [settings]
+
+
+def test_ipo_polls_fire_on_startup_and_the_alert_runs_hourly():
+    job_health.reset()
+    before = datetime.now(UTC)
+    sched = scheduler.build_scheduler(settings=_settings(poll_ipo_hours=4))
+    jobs = {j.id: j for j in sched.get_jobs()}
+    for job_id in ("ipo_calendar_poll", "ipo_filings_poll"):
+        assert jobs[job_id].trigger.interval == timedelta(hours=4)
+        assert jobs[job_id].next_run_time <= datetime.now(UTC)
+    assert jobs["ipo_alerts"].trigger.interval == timedelta(hours=1)
+    assert jobs["ipo_alerts"].next_run_time >= before + timedelta(hours=1)
+    recorded = job_health.snapshot()["jobs"]
+    assert recorded["ipo_filings"]["interval_seconds"] == 4 * 3600
+    assert recorded["ipo_alerts"]["interval_seconds"] == 3600
+
+
+def test_ipo_alert_job_calls_ipo_watch_with_the_settings(monkeypatch):
+    from ibkr_trader import ipo_watch
+
+    seen = []
+    monkeypatch.setattr(ipo_watch, "alert_job", lambda settings: seen.append(settings) or 7)
+    settings = _settings()
+    sched = scheduler.build_scheduler(settings=settings)
+    job = {j.id: j for j in sched.get_jobs()}["ipo_alerts"]
+    job_health.reset()
+    job.func()
+    assert seen == [settings]
+    assert job_health.snapshot()["jobs"]["ipo_alerts"]["last_result"] == "7"
+
+
+def test_poll_ipo_calendar_runs_the_finnhub_connector(monkeypatch):
+    from data_lake.ingestion.market import finnhub_ipo
+
+    monkeypatch.setattr(finnhub_ipo.FinnhubIpoCalendarConnector, "fetch", lambda self: 12)
+    assert scheduler.poll_ipo_calendar() == 12
+
+
+def test_poll_ipo_filings_failure_propagates_to_the_guard(monkeypatch):
+    from data_lake.ingestion.market import sec_edgar
+
+    def refuse(self):
+        raise RuntimeError("SEC_USER_AGENT is not set")
+
+    monkeypatch.setattr(sec_edgar.EdgarRegistrationConnector, "fetch", refuse)
+    with pytest.raises(RuntimeError, match="SEC_USER_AGENT"):
+        scheduler.poll_ipo_filings()
+
+
+def test_poll_ipo_filings_returns_the_connector_count(monkeypatch):
+    from data_lake.ingestion.market import sec_edgar
+
+    monkeypatch.setattr(sec_edgar.EdgarRegistrationConnector, "fetch", lambda self: 3)
+    assert scheduler.poll_ipo_filings() == 3
 
 
 def test_build_scheduler_honours_overridden_cadence():

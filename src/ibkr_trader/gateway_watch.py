@@ -26,6 +26,7 @@ import logging
 import socket
 import urllib.request
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 logger = logging.getLogger(__name__)
@@ -129,6 +130,17 @@ def check_accounts(accounts: list[str], environment: str) -> None:
         )
 
 
+@dataclass(frozen=True)
+class Notification:
+    """One ntfy push. ``click`` is a URL the phone opens when it is tapped (ntfy's Click)."""
+
+    title: str
+    message: str
+    priority: str = "high"
+    tags: str = "warning"
+    click: str = ""
+
+
 def send_ntfy(
     server: str,
     topic: str,
@@ -138,19 +150,33 @@ def send_ntfy(
     priority: str = "high",
     opener: Callable[..., object] = urllib.request.urlopen,
 ) -> bool:
+    """POST one plain alert to ``{server}/{topic}``; see :func:`post_ntfy`."""
+    return post_ntfy(server, topic, Notification(title, message, priority), opener=opener)
+
+
+def post_ntfy(
+    server: str,
+    topic: str,
+    note: Notification,
+    *,
+    opener: Callable[..., object] = urllib.request.urlopen,
+) -> bool:
     """POST one notification to ``{server}/{topic}``. Returns whether it was sent; never raises.
 
     A notification that fails to send must not turn a gateway outage into a second, louder
     failure of the job itself -- it is logged, and the outage is still in ``job_health``.
     """
     if not topic:
-        logger.warning("gateway alert not sent: NTFY_TOPIC is not set (%s)", title)
+        logger.warning("ntfy alert not sent: NTFY_TOPIC is not set (%s)", note.title)
         return False
+    headers = {"Title": note.title, "Priority": note.priority, "Tags": note.tags}
+    if note.click:
+        headers["Click"] = note.click
     try:
         request = urllib.request.Request(
             f"{server.rstrip('/')}/{topic}",
-            data=message.encode("utf-8"),
-            headers={"Title": title, "Priority": priority, "Tags": "warning"},
+            data=note.message.encode("utf-8"),
+            headers=headers,
             method="POST",
         )
         response = opener(request, timeout=10)
@@ -160,7 +186,7 @@ def send_ntfy(
     # URLError, HTTPError and timeouts are all OSError; a malformed reply is an HTTPException;
     # a bad NTFY_SERVER URL is a ValueError. Anything else is a bug and should propagate.
     except (OSError, http.client.HTTPException, ValueError):
-        logger.exception("gateway alert could not be sent to ntfy")
+        logger.exception("alert could not be sent to ntfy (%s)", note.title)
         return False
     return True
 

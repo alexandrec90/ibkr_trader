@@ -459,6 +459,28 @@ def poll_index_membership() -> int:
     return count
 
 
+def poll_ipo_calendar() -> int:
+    """Upsert Finnhub's IPO calendar (a week back to 90 days out) -- one request."""
+    from data_lake.ingestion.market.finnhub_ipo import FinnhubIpoCalendarConnector
+
+    count = FinnhubIpoCalendarConnector().fetch()
+    logger.info("ipo calendar: %d deals upserted", count)
+    return count
+
+
+def poll_ipo_filings() -> int:
+    """Upsert EDGAR registration filings (S-1/F-1/DRS, amendments, 424B4, RW) since last run.
+
+    The connector resumes a few days before its newest row on its own and fails on an empty
+    SEC_USER_AGENT, so a missing setting shows red in `health` rather than as a quiet zero.
+    """
+    from data_lake.ingestion.market.sec_edgar import EdgarRegistrationConnector
+
+    count = EdgarRegistrationConnector().fetch()
+    logger.info("ipo filings: %d EDGAR filings upserted", count)
+    return count
+
+
 #: Tiingo's public ticker list (~800 KB) changes slowly: cached beside the usage ledger and
 #: re-downloaded weekly rather than on every hourly pricing run.
 _TIINGO_LISTINGS_MAX_AGE = timedelta(days=7)
@@ -599,6 +621,10 @@ def run_archive_raw(settings: Settings) -> dict[str, int]:
 #: The gateway job's recorded result when the watch is switched off, so `health` shows why it
 #: never probes instead of failing every five minutes against a gateway nobody started.
 GATEWAY_WATCH_OFF = "skipped: GATEWAY_WATCH_ENABLED is false"
+
+#: The major-IPO alert's cadence. Fixed, not a setting: it reads only the database, so hourly
+#: costs nothing and bounds how long a new filing waits behind its poll.
+IPO_ALERT_INTERVAL_SECONDS = 3600
 
 
 def gateway_watch_job(settings: Settings) -> Callable[[], object]:
@@ -797,6 +823,37 @@ def _register_finnhub_backfill(register: Callable[..., None], settings: Settings
     )
 
 
+def _register_ipo_jobs(register: Callable[..., None], settings: Settings) -> None:
+    """IPO calendar + EDGAR filings, and the major-IPO alert that reads them.
+
+    The polls fire on startup so a restart catches up on filings at once. The alert runs
+    hourly on its own: it only reads the database, and a separate label keeps a dead source
+    and a silent alert apart in `health`.
+    """
+    from ibkr_trader import ipo_watch
+
+    register(
+        "ipo_calendar_poll",
+        "ipo_calendar",
+        poll_ipo_calendar,
+        seconds=settings.poll_ipo_hours * 3600,
+        start_now=True,
+    )
+    register(
+        "ipo_filings_poll",
+        "ipo_filings",
+        poll_ipo_filings,
+        seconds=settings.poll_ipo_hours * 3600,
+        start_now=True,
+    )
+    register(
+        "ipo_alerts",
+        "ipo_alerts",
+        lambda: ipo_watch.alert_job(settings),
+        seconds=IPO_ALERT_INTERVAL_SECONDS,
+    )
+
+
 def _register_gateway_job(register: Callable[..., None], settings: Settings) -> None:
     """The IB Gateway login watch, through `build_scheduler`'s ``register``.
 
@@ -924,6 +981,7 @@ def build_scheduler(
     _register_market_data_jobs(register, settings)
     _register_archive_jobs(register, settings)
     _register_gateway_job(register, settings)
+    _register_ipo_jobs(register, settings)
     # A job this build no longer registers (renamed or retired) would keep its seeded
     # interval and read `stale` forever, holding `ibkr-trader health` red.
     job_health.forget_unscheduled(scheduled)

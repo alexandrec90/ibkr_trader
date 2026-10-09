@@ -254,6 +254,39 @@ def ingest_finnhub_backfill(
     typer.echo(f"upserted {count} articles")
 
 
+@ingest_app.command("ipo")
+def ingest_ipo(
+    since: str = typer.Option(
+        "", help="EDGAR: first filing day, YYYY-MM-DD (default: resume from the newest row)"
+    ),
+):
+    """Upsert the Finnhub IPO calendar and EDGAR registration filings (S-1/F-1/DRS, 424B4, RW).
+
+    The `serve` jobs run both every POLL_IPO_HOURS; pass --since a few weeks back once to seed
+    the filings history. EDGAR needs SEC_USER_AGENT; the calendar needs FINNHUB_KEY. Each
+    source runs even if the other fails, and the exit code is non-zero if either did.
+    """
+    from data_lake.ingestion.market.finnhub_ipo import FinnhubIpoCalendarConnector
+    from data_lake.ingestion.market.sec_edgar import EdgarRegistrationConnector
+
+    # Missing credentials and provider failures are RuntimeErrors (the connectors' provider
+    # errors subclass it); anything else is a bug and should surface as a traceback.
+    failed = False
+    try:
+        typer.echo(f"ipo calendar: upserted {FinnhubIpoCalendarConnector().fetch()} deals")
+    except (RuntimeError, ValueError) as exc:
+        typer.echo(f"ipo calendar error: {exc}", err=True)
+        failed = True
+    try:
+        count = EdgarRegistrationConnector().fetch(since=since or None)
+        typer.echo(f"edgar filings: upserted {count} filings")
+    except (RuntimeError, ValueError) as exc:
+        typer.echo(f"edgar filings error: {exc}", err=True)
+        failed = True
+    if failed:
+        raise typer.Exit(code=1)
+
+
 @ingest_app.command("index-membership")
 def ingest_index_membership():
     """Download the S&P 500's point-in-time membership spans (fja05680/sp500, free).

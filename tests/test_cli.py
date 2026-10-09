@@ -1430,6 +1430,60 @@ def test_health_json_output_is_machine_readable(tmp_path):
     assert json.loads(result.output)["jobs"]["prices"]["last_success"]
 
 
+# --- ingest ipo ----------------------------------------------------------------------
+
+
+def _patch_ipo_connectors(monkeypatch, calendar, filings):
+    from data_lake.ingestion.market import finnhub_ipo, sec_edgar
+
+    monkeypatch.setattr(finnhub_ipo.FinnhubIpoCalendarConnector, "fetch", calendar)
+    monkeypatch.setattr(sec_edgar.EdgarRegistrationConnector, "fetch", filings)
+
+
+def test_ipo_ingest_command_is_wired_under_ingest():
+    commands = {c.name: c.callback for c in cli.ingest_app.registered_commands}
+    assert commands["ipo"] is cli.ingest_ipo
+
+
+def test_ingest_ipo_runs_both_sources_and_passes_since(monkeypatch):
+    seen = []
+    _patch_ipo_connectors(
+        monkeypatch, lambda self: 4, lambda self, since=None: seen.append(since) or 9
+    )
+    result = runner.invoke(cli.app, ["ingest", "ipo", "--since", "2026-09-01"])
+    assert result.exit_code == 0, _all_output(result)
+    assert "upserted 4 deals" in result.output and "upserted 9 filings" in result.output
+    assert seen == ["2026-09-01"]
+
+
+def test_ingest_ipo_without_since_lets_the_connector_resume(monkeypatch):
+    seen = []
+    _patch_ipo_connectors(monkeypatch, lambda self: 0, lambda self, since=None: seen.append(since))
+    assert runner.invoke(cli.app, ["ingest", "ipo"]).exit_code == 0
+    assert seen == [None]
+
+
+def test_ingest_ipo_runs_edgar_even_when_the_calendar_fails(monkeypatch):
+    def no_key(self):
+        raise RuntimeError("FINNHUB_KEY is not set")
+
+    _patch_ipo_connectors(monkeypatch, no_key, lambda self, since=None: 2)
+    result = runner.invoke(cli.app, ["ingest", "ipo"])
+    assert result.exit_code == 1
+    output = _all_output(result)
+    assert "FINNHUB_KEY is not set" in output and "upserted 2 filings" in output
+
+
+def test_ingest_ipo_fails_on_a_missing_user_agent(monkeypatch):
+    def no_agent(self, since=None):
+        raise RuntimeError("SEC_USER_AGENT is not set")
+
+    _patch_ipo_connectors(monkeypatch, lambda self: 1, no_agent)
+    result = runner.invoke(cli.app, ["ingest", "ipo"])
+    assert result.exit_code == 1
+    assert "SEC_USER_AGENT is not set" in _all_output(result)
+
+
 # --- ingest index-membership / index-prices ------------------------------------------
 
 
