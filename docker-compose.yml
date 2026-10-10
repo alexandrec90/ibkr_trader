@@ -111,6 +111,14 @@ services:
       # directory keeps the image's appuser ownership — see the chown in the Dockerfile.
       - applogs:/app/logs
     command: ["ibkr-trader", "serve"]
+    # Every service on the machine shares one 4 GB WSL VM (with 2 GB swap), and `serve` had
+    # no cap: 2026-10-09 it held 2.4 GB resident ten minutes after a restart, ran the VM out
+    # of memory and swap, and the frozen VM took Docker's engine and every other project's
+    # containers with it, several times that day. Capped, an overrun is killed inside its own
+    # cgroup and `restart: unless-stopped` brings it back. The swap limit equal to the memory
+    # one keeps it from thrashing the VM's swap instead. A bigger host raises it through .env.
+    mem_limit: ${APP_MEM_LIMIT:-2g}
+    memswap_limit: ${APP_MEM_LIMIT:-2g}
 
 volumes:
   pgdata:
