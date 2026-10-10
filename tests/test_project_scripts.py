@@ -119,8 +119,33 @@ def test_the_app_is_capped_inside_the_shared_vm_without_swap():
     compose = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
     app = compose["services"]["app"]
 
-    assert app["mem_limit"] == "${APP_MEM_LIMIT:-2g}"
+    assert app["mem_limit"] == "${APP_MEM_LIMIT:-1536m}"
     assert app["memswap_limit"] == app["mem_limit"]
+
+
+def test_the_db_is_capped_inside_the_shared_vm_without_swap():
+    """657 MiB resident minutes after a VM boot on 2026-10-09, uncapped. With `app`'s cap and
+    the other projects' 512m caps, it must leave the 4 GB VM room for dockerd and the kernel.
+    """
+    import yaml
+
+    compose = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    db = compose["services"]["db"]
+
+    assert db["mem_limit"] == "${DB_MEM_LIMIT:-768m}"
+    assert db["memswap_limit"] == db["mem_limit"]
+
+
+def test_every_compose_service_is_capped_inside_the_shared_vm():
+    """One uncapped service is enough to run the shared 4 GB VM out of memory and freeze
+    Docker's engine for every project, so a new service must arrive with its own cap."""
+    import yaml
+
+    compose = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+
+    for name, service in compose["services"].items():
+        assert service.get("mem_limit"), f"{name} has no mem_limit"
+        assert service.get("memswap_limit") == service["mem_limit"], name
 
 
 def test_the_image_installs_the_archive_extra_serve_needs():
