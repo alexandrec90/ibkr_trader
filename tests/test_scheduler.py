@@ -161,6 +161,60 @@ def test_first_run_without_a_record_still_waits_out_the_catch_up_delay():
     assert first == now + timedelta(seconds=scheduler.CATCH_UP_DELAY_SECONDS)
 
 
+def test_stagger_spaces_runs_apart_in_input_order_and_never_earlier():
+    now = datetime(2026, 10, 9, 19, 30, tzinfo=UTC)
+    gap = timedelta(seconds=180)
+    runs = [now + timedelta(minutes=5), now, now, now + timedelta(hours=12)]
+
+    staggered = scheduler._stagger(runs, spacing=180)
+
+    # The two start-now runs keep registration order; the catch-up queues behind them.
+    assert staggered == [now + 2 * gap, now, now + gap, now + timedelta(hours=12)]
+    assert all(after >= before for before, after in zip(runs, staggered, strict=True))
+
+
+def test_stagger_leaves_runs_already_far_enough_apart_alone():
+    now = datetime(2026, 10, 9, tzinfo=UTC)
+    runs = [now, now + timedelta(minutes=10), now + timedelta(hours=1)]
+
+    assert scheduler._stagger(runs, spacing=180) == runs
+    assert scheduler._stagger([], spacing=180) == []
+
+
+def test_add_staggered_adds_each_queued_job_on_its_staggered_first_run():
+    from apscheduler.schedulers.blocking import BlockingScheduler
+
+    now = datetime.now(UTC) + timedelta(hours=1)
+    sched = BlockingScheduler(timezone="UTC")
+    pending = [(lambda: None, "a", 60.0, now), (lambda: None, "b", 3600.0, now)]
+
+    scheduler._add_staggered(sched, pending)
+
+    jobs = {job.id: job for job in sched.get_jobs()}
+    assert jobs["a"].next_run_time == now
+    assert jobs["b"].next_run_time == now + timedelta(seconds=scheduler.STARTUP_STAGGER_SECONDS)
+    assert jobs["b"].trigger.interval == timedelta(hours=1)
+
+
+def test_no_two_jobs_first_fire_together_after_a_boot():
+    """2026-10-09: every Docker VM boot fired prices, index membership, the Finnhub backfill and
+    both IPO polls in the same second; `serve` reached 1.65 GiB within minutes and, uncapped,
+    ran the shared 4 GB VM out of memory. The startup jobs now come up one at a time."""
+    job_health.reset()
+    before = datetime.now(UTC)
+    sched = scheduler.build_scheduler(settings=_settings())
+    jobs = sched.get_jobs()
+
+    first_runs = sorted(job.next_run_time for job in jobs)
+    gap = timedelta(seconds=scheduler.STARTUP_STAGGER_SECONDS)
+    for earlier, later in zip(first_runs, first_runs[1:], strict=False):
+        assert later - earlier >= gap
+    # Staggered, still on startup: each start_now job fires within the window.
+    window = before + len(jobs) * gap
+    for job_id in ("finnhub_backfill", "prices_poll", "index_membership_poll"):
+        assert {j.id: j for j in jobs}[job_id].next_run_time <= window
+
+
 def test_a_run_missed_while_the_host_slept_still_fires_once_on_wake():
     """APScheduler's default one-second grace would skip it and wait a whole interval more."""
     sched = scheduler.build_scheduler(settings=_settings())
@@ -241,6 +295,29 @@ def test_gateway_watch_switched_off_is_a_recorded_skip():
     assert job() == scheduler.GATEWAY_WATCH_OFF
 
 
+def test_gateway_watch_is_off_by_default():
+    """Nothing in `serve` trades yet, so the gateway container is left stopped to spare the
+    shared Docker VM; a watch left on against it would hold `health` red every five minutes."""
+    from ibkr_trader.config import Settings
+
+    assert Settings.model_fields["gateway_watch_enabled"].default is False
+
+
+def test_a_switched_off_gateway_watch_reads_healthy(tmp_path):
+    artifact = tmp_path / "health.json"
+    job_health.reset()
+    job_health.record_schedule("gateway", 5 * 60)
+    scheduler._guard(
+        scheduler.gateway_watch_job(_settings(gateway_watch_enabled=False)),
+        "gateway",
+        artifact_path=str(artifact),
+    )()
+
+    entry = job_health.load_artifact(artifact)["jobs"]["gateway"]
+    assert job_health.status_for(entry) == "ok"
+    assert entry["last_result"] == scheduler.GATEWAY_WATCH_OFF
+
+
 def test_gateway_watch_switched_on_is_the_settings_wired_watch(monkeypatch):
     from ibkr_trader import gateway_watch
 
@@ -259,9 +336,10 @@ def test_ipo_polls_fire_on_startup_and_the_alert_runs_hourly():
     before = datetime.now(UTC)
     sched = scheduler.build_scheduler(settings=_settings(poll_ipo_hours=4))
     jobs = {j.id: j for j in sched.get_jobs()}
+    startup_window = len(jobs) * timedelta(seconds=scheduler.STARTUP_STAGGER_SECONDS)
     for job_id in ("ipo_calendar_poll", "ipo_filings_poll"):
         assert jobs[job_id].trigger.interval == timedelta(hours=4)
-        assert jobs[job_id].next_run_time <= datetime.now(UTC)
+        assert jobs[job_id].next_run_time <= before + startup_window
     assert jobs["ipo_alerts"].trigger.interval == timedelta(hours=1)
     assert jobs["ipo_alerts"].next_run_time >= before + timedelta(hours=1)
     recorded = job_health.snapshot()["jobs"]

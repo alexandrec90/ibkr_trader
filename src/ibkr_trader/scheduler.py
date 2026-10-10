@@ -47,6 +47,11 @@ RETRY_DELAYS_SECONDS: tuple[int, ...] = (300, 900, 3600)
 #: process's first seconds. ``start_now`` jobs are exempt by definition.
 CATCH_UP_DELAY_SECONDS = 300
 
+#: The least gap between two jobs' first runs (see ``_stagger``). The startup jobs used to all
+#: fire in the same second; after every Docker VM boot on 2026-10-09 that burst took `serve`
+#: to 1.65 GiB within minutes, and with nothing capping it, ran the 4 GB VM out of memory.
+STARTUP_STAGGER_SECONDS = 180
+
 
 def _fail_if_every_item_failed(
     label: str, attempted: int, failures: int, last_error: BaseException | None
@@ -884,6 +889,25 @@ def _first_run(label: str, *, start_now: bool = False, now: datetime | None = No
     return earliest if due is None else max(due, earliest)
 
 
+def _stagger(
+    first_runs: Sequence[datetime], spacing: float = STARTUP_STAGGER_SECONDS
+) -> list[datetime]:
+    """Space first runs at least ``spacing`` seconds apart, keeping their order.
+
+    Each run moves only later, never earlier, and only as far as the run before it forces: the
+    start_now jobs and the restart's overdue catch-ups come up one by one instead of together,
+    while a job due hours from now keeps its slot. The result is in the input's order.
+    """
+    gap = timedelta(seconds=spacing)
+    staggered = list(first_runs)
+    previous: datetime | None = None
+    for index in sorted(range(len(staggered)), key=staggered.__getitem__):
+        if previous is not None:
+            staggered[index] = max(staggered[index], previous + gap)
+        previous = staggered[index]
+    return staggered
+
+
 def _add_interval_job(
     scheduler: BlockingScheduler,
     job: Callable[[], None],
@@ -908,6 +932,20 @@ def _add_interval_job(
     )
 
 
+#: A guarded job queued by ``build_scheduler``: (job, job id, interval seconds, first run).
+_PendingJob = tuple[Callable[[], None], str, float, datetime]
+
+
+def _add_staggered(scheduler: BlockingScheduler, pending: Sequence[_PendingJob]) -> None:
+    """Add the queued jobs, their first runs staggered against each other (see ``_stagger``).
+
+    Queued rather than added as registered, because the stagger needs every job's first run.
+    """
+    first_runs = _stagger([first_run for *_, first_run in pending])
+    for (guarded, job_id, seconds, _), first_run in zip(pending, first_runs, strict=True):
+        _add_interval_job(scheduler, guarded, job_id, seconds, first_run)
+
+
 def build_scheduler(
     settings: Settings | None = None,
     scheduler: BlockingScheduler | None = None,
@@ -927,6 +965,7 @@ def build_scheduler(
     # cadence afterwards.
     job_health.seed_from_artifact(artifact_path)
     scheduled: set[str] = set()
+    pending: list[_PendingJob] = []
 
     def register(
         job_id: str,
@@ -936,13 +975,11 @@ def build_scheduler(
         seconds: float,
         start_now: bool = False,
     ) -> None:
-        """Add one guarded interval job, and tell ``job_health`` what cadence to expect."""
+        """Queue one guarded interval job, and tell ``job_health`` what cadence to expect."""
         job_health.record_schedule(label, seconds)
         scheduled.add(label)
         guarded = _guard(job, label, scheduler=scheduler, artifact_path=artifact_path)
-        _add_interval_job(
-            scheduler, guarded, job_id, seconds, _first_run(label, start_now=start_now)
-        )
+        pending.append((guarded, job_id, seconds, _first_run(label, start_now=start_now)))
 
     register("social_poll", "social", poll_social_job, seconds=settings.poll_social_minutes * 60)
     register(
@@ -982,6 +1019,7 @@ def build_scheduler(
     _register_archive_jobs(register, settings)
     _register_gateway_job(register, settings)
     _register_ipo_jobs(register, settings)
+    _add_staggered(scheduler, pending)
     # A job this build no longer registers (renamed or retired) would keep its seeded
     # interval and read `stale` forever, holding `ibkr-trader health` red.
     job_health.forget_unscheduled(scheduled)
