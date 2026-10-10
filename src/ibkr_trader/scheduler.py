@@ -787,11 +787,11 @@ def _register_market_data_jobs(register: Callable[..., None], settings: Settings
 def _register_archive_jobs(register: Callable[..., None], settings: Settings) -> None:
     """Cold-storage offload, through `build_scheduler`'s ``register``.
 
-    Deliberately *not* start_now: a first run against an undrained backlog reads the whole
-    batch into memory in one transaction (measured ~1.1 GB RSS and ~2 h for 280 k payloads),
-    which is not something to fire while the process is also coming up. Drain the backlog
-    once from the CLI, then let the daily cadence keep pace — each subsequent run only has a
-    day of new rows to move. See remote-archive.md.
+    Deliberately *not* start_now: a run against an undrained backlog is long, which is not
+    something to fire while the process is also coming up. ``archive_raw_payloads`` drains it
+    in committed batches (data-lake ``archive/raw.py``), so its memory is one batch deep and
+    a run cut short resumes where it stopped; reading the whole backlog at once took
+    ``serve`` past its memory cap within seconds once 8.1 M social posts were eligible.
     """
     register(
         "archive_bars",
