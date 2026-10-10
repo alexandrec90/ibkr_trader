@@ -116,3 +116,48 @@ def test_prune_rejects_negative_age():
     session = _session()
     with pytest.raises(ValueError, match="min_age_days"):
         prune_scored_raw(session, min_age_days=-1)
+    with pytest.raises(ValueError, match="batch_rows"):
+        prune_scored_raw(session, batch_rows=0)
+
+
+def test_prune_commits_in_bounded_batches(monkeypatch):
+    """2026-10-10: one UPDATE over 8.1M scored social posts held their row locks for as long
+    as it ran, deadlocked with the social poll and sentiment scoring, rolled back, and the
+    job failed every day. A batch holds at most `batch_rows` rows' locks and commits."""
+    session = _session()
+    now = datetime.now(UTC)
+    session.add_all([_post(f"p{i}", sentiment=0.1, fetched_at=now) for i in range(5)])
+    session.add(_post("unscored", sentiment=None, fetched_at=now))
+    session.commit()
+    commits: list[None] = []
+    real_commit = session.commit
+    monkeypatch.setattr(session, "commit", lambda: (commits.append(None), real_commit())[1])
+
+    counts = prune_scored_raw(session, batch_rows=2)
+
+    assert counts == {"news_articles": 0, "social_posts": 5}
+    assert len(commits) == 3, "five rows in batches of two, each committed"
+    unscored = session.scalar(select(SocialPost).where(SocialPost.external_id == "unscored"))
+    assert unscored.raw is not None
+
+
+def test_a_prune_that_fails_partway_keeps_the_batches_it_committed(monkeypatch):
+    session = _session()
+    now = datetime.now(UTC)
+    session.add_all([_post(f"p{i}", sentiment=0.1, fetched_at=now) for i in range(4)])
+    session.commit()
+    real_commit = session.commit
+    commits: list[None] = []
+
+    def commit_once_then_deadlock():
+        if commits:
+            raise RuntimeError("deadlock detected")
+        commits.append(None)
+        real_commit()
+
+    monkeypatch.setattr(session, "commit", commit_once_then_deadlock)
+    with pytest.raises(RuntimeError, match="deadlock"):
+        prune_scored_raw(session, batch_rows=2)
+    session.rollback()
+    pruned = [p for p in session.scalars(select(SocialPost)) if p.raw is None]
+    assert len(pruned) == 2, "the committed batch stays pruned; the next run does the rest"

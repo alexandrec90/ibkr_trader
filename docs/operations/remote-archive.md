@@ -107,12 +107,14 @@ body, sentiment, hashed author) always stays in Postgres; only the payload blob 
 > are compressed, and it now dominates the database (~900 MB of the 1099 MB). Timescale's own
 > compression policy is what manages that space.
 
-**One run = one transaction.** The local NULLing commits once, at the end, after every
-partition has uploaded and verified. An interrupted run therefore leaves the partitions in the
-bucket and Postgres completely untouched — payloads exist in both places, never neither, and a
-rerun merges idempotently. The run also holds the whole batch in memory (~1.1 GB RSS for
-280 k payloads) and took ~2 h. Committing per partition would fix both, and Phase 3's cloud
-job timeouts will need it.
+**One batch = one transaction.** Payloads are read 50 k rows at a time, oldest event first,
+and each batch's NULLing commits once its month objects have uploaded and verified (data-lake
+`archive/raw.py`, `BATCH_ROWS`). An interrupted run therefore leaves every finished batch
+archived and NULLed, and the batch it was on in both places — payloads exist in both places,
+never neither, and a rerun merges idempotently and resumes after the last committed batch.
+Memory is one batch plus the month object it merges into. The old single transaction held
+every payload at once (~1.1 GB RSS for 280 k payloads), and on 2026-10-10 a bulk import's
+8.1 M eligible social posts took `serve` past its memory cap within seconds of every restart.
 
 ## Setup
 
@@ -164,10 +166,11 @@ are still registered in that case, deliberately: `job_health` seeds itself from 
 run's artifact, so a job that stops being registered keeps its recorded cadence and is
 reported `stale` forever after.
 
-> **Drain the backlog once from the CLI before relying on the schedule.** A run holds the
-> whole batch in memory in a single transaction — measured ~1.1 GB RSS and ~2 h for the
-> initial 280 k payloads. That is why neither job fires at startup. Once the backlog is
-> drained each daily run only has a day of new rows to move, which is cheap.
+> **A backlog drains on the schedule too, just slowly.** `archive_raw` commits per batch, so
+> a large backlog is bounded in memory and survives a restart mid-run; it is still hours of
+> work, which is why neither job fires at startup. `ibkr-trader archive raw` from the CLI
+> drains it the same way without competing with `serve`'s other jobs. Once drained, each
+> daily run only has a day of new rows to move, which is cheap.
 
 Cadence knobs: `ARCHIVE_BARS_HOURS`, `ARCHIVE_RAW_HOURS` (both 24 by default). Job outcomes
 land in the scheduler health artifact like every other job — `ibkr-trader health` reads it.
