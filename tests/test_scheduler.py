@@ -181,6 +181,21 @@ def test_stagger_leaves_runs_already_far_enough_apart_alone():
     assert scheduler._stagger([], spacing=180) == []
 
 
+def test_add_staggered_adds_each_queued_job_on_its_staggered_first_run():
+    from apscheduler.schedulers.blocking import BlockingScheduler
+
+    now = datetime.now(UTC) + timedelta(hours=1)
+    sched = BlockingScheduler(timezone="UTC")
+    pending = [(lambda: None, "a", 60.0, now), (lambda: None, "b", 3600.0, now)]
+
+    scheduler._add_staggered(sched, pending)
+
+    jobs = {job.id: job for job in sched.get_jobs()}
+    assert jobs["a"].next_run_time == now
+    assert jobs["b"].next_run_time == now + timedelta(seconds=scheduler.STARTUP_STAGGER_SECONDS)
+    assert jobs["b"].trigger.interval == timedelta(hours=1)
+
+
 def test_no_two_jobs_first_fire_together_after_a_boot():
     """2026-10-09: every Docker VM boot fired prices, index membership, the Finnhub backfill and
     both IPO polls in the same second; `serve` reached 1.65 GiB within minutes and, uncapped,

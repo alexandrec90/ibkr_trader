@@ -932,6 +932,20 @@ def _add_interval_job(
     )
 
 
+#: A guarded job queued by ``build_scheduler``: (job, job id, interval seconds, first run).
+_PendingJob = tuple[Callable[[], None], str, float, datetime]
+
+
+def _add_staggered(scheduler: BlockingScheduler, pending: Sequence[_PendingJob]) -> None:
+    """Add the queued jobs, their first runs staggered against each other (see ``_stagger``).
+
+    Queued rather than added as registered, because the stagger needs every job's first run.
+    """
+    first_runs = _stagger([first_run for *_, first_run in pending])
+    for (guarded, job_id, seconds, _), first_run in zip(pending, first_runs, strict=True):
+        _add_interval_job(scheduler, guarded, job_id, seconds, first_run)
+
+
 def build_scheduler(
     settings: Settings | None = None,
     scheduler: BlockingScheduler | None = None,
@@ -951,8 +965,7 @@ def build_scheduler(
     # cadence afterwards.
     job_health.seed_from_artifact(artifact_path)
     scheduled: set[str] = set()
-    # Added once every job is known, so their first runs can be staggered against each other.
-    pending: list[tuple[Callable[[], None], str, float, datetime]] = []
+    pending: list[_PendingJob] = []
 
     def register(
         job_id: str,
@@ -1006,9 +1019,7 @@ def build_scheduler(
     _register_archive_jobs(register, settings)
     _register_gateway_job(register, settings)
     _register_ipo_jobs(register, settings)
-    first_runs = _stagger([first_run for *_, first_run in pending])
-    for (guarded, job_id, seconds, _), first_run in zip(pending, first_runs, strict=True):
-        _add_interval_job(scheduler, guarded, job_id, seconds, first_run)
+    _add_staggered(scheduler, pending)
     # A job this build no longer registers (renamed or retired) would keep its seeded
     # interval and read `stale` forever, holding `ibkr-trader health` red.
     job_health.forget_unscheduled(scheduled)
