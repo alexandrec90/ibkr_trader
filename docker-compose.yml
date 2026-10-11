@@ -32,7 +32,9 @@ services:
       - maintenance_work_mem=${DB_MAINTENANCE_WORK_MEM:-128MB}
     # Capped like `app` below, for the same shared VM: 657 MiB resident minutes after a VM
     # boot on 2026-10-09, uncapped. 768m is shared_buffers plus room for the backends, which
-    # only holds while idle ones disconnect (`IDLE_SESSION_TIMEOUT_MS` in db/session.py).
+    # only holds while idle ones disconnect (`IDLE_SESSION_TIMEOUT_MS` in db/session.py) and
+    # busy ones never plan over every price_bars chunk (`PLAN_CACHE_OPTION` there, and the
+    # bounded newest-bar lookups in data-lake's ingestion/market/bars.py).
     mem_limit: ${DB_MEM_LIMIT:-768m}
     memswap_limit: ${DB_MEM_LIMIT:-768m}
     environment:
