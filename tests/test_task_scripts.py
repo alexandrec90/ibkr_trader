@@ -60,6 +60,8 @@ CONTRACT_ENTRYPOINTS = (
     "backtest-task.py",  # Backtest: Run / Backtest: OOS
     "report-task.py",  # Report: Open Model & Strategy Views / Report: Run Strategy Lab
     "db-revision.py",  # DB: New Migration (Autogenerate)
+    # Not a task: devkit's fix pass runs it every half hour (`fix_migrate.py` there).
+    "db-upgrade.py",
     # Not dispatched directly, but every one of the above wraps it, so a rename here
     # breaks all of them at once and none of them at import time.
     "task-artifact-runner.py",
@@ -651,6 +653,27 @@ def test_db_revision_prefers_the_environment_database_url():
     assert script.database_url({}) == script.DEFAULT_DATABASE_URL
     # 5432 is taken by another local Postgres on this machine.
     assert "5433" in script.DEFAULT_DATABASE_URL
+
+
+def test_db_revision_prefers_the_venv_interpreter_and_falls_back(tmp_path):
+    script = load_script("db-revision.py")
+    assert script.python_exe(tmp_path) == sys.executable
+    venv_python = tmp_path / ".venv" / "Scripts" / "python.exe"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_text("", encoding="utf-8")
+    assert script.python_exe(tmp_path) == str(venv_python)
+
+
+def test_db_revision_artifact_is_headed_on_failure_and_emptied_on_success(monkeypatch, tmp_path):
+    script = load_script("db-revision.py")
+    artifact = tmp_path / "artifacts" / "tasks" / "db-revision.log"
+    monkeypatch.setattr(script, "ARTIFACT", artifact)
+    script.write_artifact(["alembic exited 1", "boom"])
+    assert artifact.read_text(encoding="utf-8") == (
+        "# source: scripts/db-revision.py\nalembic exited 1\nboom"
+    )
+    script.write_artifact([])
+    assert artifact.read_text(encoding="utf-8") == ""
 
 
 def test_db_revision_reports_the_generated_file_repo_relative():
