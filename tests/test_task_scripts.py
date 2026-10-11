@@ -60,6 +60,8 @@ CONTRACT_ENTRYPOINTS = (
     "backtest-task.py",  # Backtest: Run / Backtest: OOS
     "report-task.py",  # Report: Open Model & Strategy Views / Report: Run Strategy Lab
     "db-revision.py",  # DB: New Migration (Autogenerate)
+    # Not a task: devkit's fix pass runs it every half hour (`fix_migrate.py` there).
+    "db-upgrade.py",
     # Not dispatched directly, but every one of the above wraps it, so a rename here
     # breaks all of them at once and none of them at import time.
     "task-artifact-runner.py",
