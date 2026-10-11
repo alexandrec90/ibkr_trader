@@ -29,7 +29,7 @@ EARNINGS_BEFORE = {"id", "instrument_id", "report_ts", "source"}
 
 #: Columns of a model that a later revision adds, so this one rightly lacks them.
 #: tests/test_ipo_events_migration.py checks ``ipo_events`` matches the model at head.
-ADDED_LATER = {"ipo_events": {"instrument_id", "resolution", "resolved_at"}}  # d1e2f3a4b5c6
+ADDED_LATER = {"ipo_events": {"instrument_id", "resolution", "resolved_at"}}  # e2f3a4b5c6d7
 
 
 def _run(module, step, monkeypatch, connection):

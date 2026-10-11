@@ -1,34 +1,44 @@
-"""The Alembic revisions form one unbroken chain.
+"""The Alembic revisions form one chain: unique ids, known parents, a single root and head.
 
 Two branches that each add a revision off the same parent merge in git without a conflict:
-the files have different names. Alembic then sees one revision id twice, or two heads, and
-``alembic upgrade head`` either silently skips a migration or refuses to run. These checks
-fail the suite on the merge instead.
+the files have different names. Alembic then sees one revision id twice, and silently keeps
+one of them, or two heads, and ``alembic upgrade head`` refuses to run. Either way a database
+upgraded on one branch never runs the other's. These checks fail the suite on the merge
+instead.
 """
 
-from importlib import import_module
+import ast
 from pathlib import Path
 
 import pytest
 
-VERSIONS = Path(__file__).resolve().parents[1] / "migrations" / "versions"
+MIGRATIONS = Path(__file__).resolve().parent.parent / "migrations" / "versions"
+
+
+def _assigned(path: Path, name: str):
+    for node in ast.parse(path.read_text(encoding="utf-8")).body:
+        target = node.target if isinstance(node, ast.AnnAssign) else None
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = node.targets[0]
+        if isinstance(target, ast.Name) and target.id == name and node.value is not None:
+            return ast.literal_eval(node.value)
+    raise AssertionError(f"{path.name} assigns no {name}")
 
 
 def _revisions() -> list[tuple[str, str, str | None]]:
-    """(file stem, revision, down_revision) for every revision file."""
-    found = []
-    for path in sorted(VERSIONS.glob("*.py")):
-        module = import_module(f"migrations.versions.{path.stem}")
-        found.append((path.stem, module.revision, module.down_revision))
-    return found
+    """(file name, revision, down_revision) for every revision file."""
+    return [
+        (path.name, _assigned(path, "revision"), _assigned(path, "down_revision"))
+        for path in sorted(MIGRATIONS.glob("*.py"))
+    ]
 
 
 def duplicate_ids(revisions) -> dict[str, list[str]]:
     """Revision ids claimed by more than one file, with the files that claim them."""
     files: dict[str, list[str]] = {}
-    for stem, revision, _ in revisions:
-        files.setdefault(revision, []).append(stem)
-    return {revision: stems for revision, stems in files.items() if len(stems) > 1}
+    for name, revision, _ in revisions:
+        files.setdefault(revision, []).append(name)
+    return {revision: names for revision, names in files.items() if len(names) > 1}
 
 
 def heads(revisions) -> set[str]:
@@ -45,17 +55,18 @@ def test_every_revision_id_is_unique():
     assert duplicate_ids(_revisions()) == {}
 
 
-def test_there_is_exactly_one_head():
-    assert len(heads(_revisions())) == 1
+def test_every_parent_exists_and_there_is_one_root_and_one_head():
+    revisions = _revisions()
+    ids = {revision for _, revision, _ in revisions}
+    parents = [down for _, _, down in revisions]
+
+    assert [p for p in parents if p is not None and p not in ids] == []
+    assert parents.count(None) == 1
+    assert len(heads(revisions)) == 1
 
 
-def test_every_parent_exists():
-    ids = {revision for _, revision, _ in _revisions()}
-    assert {down for _, _, down in _revisions() if down is not None} <= ids
-
-
-def test_each_file_is_named_after_its_revision():
-    assert [stem for stem, revision, _ in _revisions() if not stem.startswith(revision)] == []
+def test_the_file_name_starts_with_its_revision_id():
+    assert [name for name, revision, _ in _revisions() if not name.startswith(revision)] == []
 
 
 @pytest.mark.parametrize(

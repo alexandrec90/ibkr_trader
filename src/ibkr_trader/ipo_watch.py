@@ -90,6 +90,8 @@ class IpoEventView:
     deal_value_usd: float | None = None
     url: str | None = None
     first_seen_at: datetime | None = None
+    #: SIC 6770 ("blank checks") on EDGAR; None when the source cannot say (Finnhub's calendar).
+    is_spac: bool | None = None
 
 
 def name_tokens(text: str) -> list[str]:
@@ -173,9 +175,14 @@ def _price_text(event: IpoEventView) -> str | None:
 
 
 def format_alert(event: IpoEventView, reason: str) -> tuple[str, str]:
-    """The notification's (title, body). Public data only; nothing account-shaped."""
+    """The notification's (title, body). Public data only; nothing account-shaped.
+
+    A SPAC is labelled in the title: a blank-check listing is a shell raising cash for a later
+    merger, not the operating company going public, and reads very differently on a phone.
+    """
     stage = _STAGE_WORDS.get(event.stage, event.stage)
-    title = f"{event.company_name}: {stage}"
+    spac = " (SPAC)" if event.is_spac else ""
+    title = f"{event.company_name}{spac}: {stage}"
     details: list[str] = []
     if event.form_type:
         details.append(f"Form {event.form_type}")
@@ -322,6 +329,7 @@ def load_events(session: Session, stages: Sequence[str], now: datetime) -> list[
             deal_value_usd=row.deal_value_usd,
             url=row.url,
             first_seen_at=row.first_seen_at,
+            is_spac=row.is_spac,
         )
         for row in rows
     ]

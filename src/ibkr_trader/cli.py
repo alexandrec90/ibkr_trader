@@ -157,6 +157,102 @@ def check_data(
     typer.echo(f"OK: {checked_rows} recent price rows passed")
 
 
+@app.command("events")
+def events_command(
+    days: int = typer.Option(14, min=0, help="days ahead of today to include"),
+    back: int = typer.Option(0, min=0, help="days before today to include (history)"),
+    symbols: str = typer.Option(
+        "", help="comma-separated tickers: narrows earnings/dividends/splits (macro stays)"
+    ),
+    kind: list[str] = typer.Option(
+        [],
+        help="keep only this kind (repeatable): fomc_meeting, boc_rate_announcement, "
+        "data_release, earnings, ex_dividend, dividend_payment, split, ipo",
+    ),
+):
+    """List stored market events: earnings, dividends, splits, FOMC / Bank of Canada / data
+    releases, IPOs. Reads the database only; the `serve` jobs keep it filled."""
+    from datetime import UTC, datetime, timedelta
+
+    from ibkr_trader.db.session import get_session
+    from ibkr_trader.events import format_events, load_events
+
+    today = datetime.now(UTC).date()
+    wanted = [s.strip().upper() for s in symbols.split(",") if s.strip()] or None
+    try:
+        with get_session() as session:
+            rows = load_events(
+                session,
+                today - timedelta(days=back),
+                today + timedelta(days=days),
+                symbols=wanted,
+                kinds=kind or None,
+            )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from None
+    if not rows:
+        typer.echo("no events stored for that window")
+        return
+    for line in format_events(rows):
+        typer.echo(line)
+
+
+@ingest_app.command("macro")
+def ingest_macro():
+    """Upsert rates and the macro calendar: FRED series and release dates (needs FRED_API_KEY),
+    FOMC meetings, Bank of Canada rate and announcement schedule. The first run backfills.
+
+    Each source runs even if another fails; the exit code is non-zero if any did.
+    """
+    from ibkr_trader.config import get_settings
+    from ibkr_trader.scheduler import run_macro
+
+    try:
+        summary = run_macro(get_settings())
+    except Exception as exc:  # the first failing source; the log names every one
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(", ".join(f"{key} {value}" for key, value in summary.items()))
+
+
+@ingest_app.command("earnings-calendar")
+def ingest_earnings_calendar():
+    """Upsert Finnhub's earnings calendar (a week back to EARNINGS_CALENDAR_DAYS_AHEAD out)
+    for instruments already tracked. Needs FINNHUB_KEY."""
+    from ibkr_trader.config import get_settings
+    from ibkr_trader.scheduler import poll_earnings_calendar
+
+    try:
+        count = poll_earnings_calendar(get_settings())
+    except (RuntimeError, ValueError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(f"upserted {count} earnings events")
+
+
+@ingest_app.command("buybacks")
+def ingest_buybacks(
+    symbols: str = typer.Option(
+        "", help="comma-separated tickers (default: every tracked symbol, as `serve` does)"
+    ),
+):
+    """Upsert SEC XBRL buyback facts: repurchase cash, shares repurchased, programme size.
+    Needs SEC_USER_AGENT. Non-SEC filers (TSX names) are skipped."""
+    from ibkr_trader.scheduler import poll_buybacks
+
+    try:
+        if symbols.strip():
+            from data_lake.ingestion.market.sec_xbrl import SecFactsConnector
+
+            count = SecFactsConnector().fetch(symbols=_read_universe("", symbols))
+        else:
+            count = poll_buybacks()
+    except (RuntimeError, ValueError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(f"upserted {count} SEC facts")
+
+
 @app.command()
 def ibkr_check():
     """Connect to TWS/IB Gateway, print server time + account summary (read-only smoke test)."""
@@ -539,8 +635,10 @@ def ingest_prices(
 
 @ingest_app.command("fundamentals")
 def ingest_fundamentals(symbol: str):
-    """Upsert Yahoo corporate data (dividends, share counts, statements, sector, earnings dates)
-    for one symbol (e.g. AAPL, RY.TO). ETFs ingest dividends only, gracefully."""
+    """Upsert Yahoo corporate data (dividends, splits, the next ex-dividend date, share counts,
+    statements, sector, earnings dates with EPS) for one symbol (e.g. AAPL, RY.TO). ETFs ingest
+    dividends and splits only, gracefully. The `serve` job refreshes every tracked symbol
+    weekly (FUNDAMENTALS_ROTATION_DAYS)."""
     from data_lake.ingestion.market.yahoo_fundamentals import YahooFundamentalsConnector
 
     try:

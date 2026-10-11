@@ -8,14 +8,14 @@ from ibkr_trader.db.models import IpoEvent
 
 MIGRATION = "migrations.versions.b9c0d1e2f3a4_ipo_events"
 LAKE_EVENTS = "migrations.versions.c0d1e2f3a4b5_lake_event_and_calendar_data"
-PRICING = "migrations.versions.d1e2f3a4b5c6_listing_dates_and_ipo_pricing"
+PRICING = "migrations.versions.e2f3a4b5c6d7_listing_dates_and_ipo_pricing"
 
 #: Added by the later PRICING revision, so absent from the tables before it.
 PRICING_COLUMNS = {"instrument_id", "resolution", "resolved_at"}
 
 #: Columns of the model that a later revision adds, so this one rightly lacks them.
 #: The PRICING tests below check the table matches the model at head.
-ADDED_LATER = {"is_spac"} | PRICING_COLUMNS  # c0d1e2f3a4b5, d1e2f3a4b5c6
+ADDED_LATER = {"is_spac"} | PRICING_COLUMNS  # c0d1e2f3a4b5, e2f3a4b5c6d7
 
 
 def _run(step, monkeypatch, connection, module=MIGRATION):

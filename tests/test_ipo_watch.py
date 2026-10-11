@@ -170,6 +170,13 @@ def test_format_filing_with_no_deal_details():
     assert "Form S-1" in body and "filed 2026-10-07" in body
 
 
+def test_format_labels_a_spac_and_only_a_spac():
+    title, _ = format_alert(_filing(is_spac=True), "watchlist: Anthropic")
+    assert title == "Anthropic, PBC (SPAC): filed publicly"
+    assert format_alert(_filing(is_spac=False), "r")[0] == "Anthropic, PBC: filed publicly"
+    assert format_alert(_filing(is_spac=None), "r")[0] == "Anthropic, PBC: filed publicly"
+
+
 def test_format_single_price_and_bare_event():
     _, body = format_alert(_deal(price_low=None, price_high=21.0, exchange=None), "r")
     assert "$21.00" in body and "as DCRD" in body
@@ -325,7 +332,7 @@ def test_load_events_bounds_the_read_and_maps_the_columns(session_factory):
     with session_factory() as session:
         session.add_all(
             [
-                _row(),
+                _row(is_spac=True),
                 _row(
                     external_id="old",
                     first_seen_at=NOW - timedelta(days=90),
@@ -354,6 +361,7 @@ def test_load_events_bounds_the_read_and_maps_the_columns(session_factory):
     assert deal.exchange == "NASDAQ" and deal.symbol == "ANTH" and deal.shares == 10
     assert filing.symbol is None  # an empty ticker reads as absent
     assert filing.first_seen_at is not None and filing.url.endswith("-index.htm")
+    assert filing.is_spac is True and deal.is_spac is None
 
 
 def _job_settings(tmp_path, **kw):

@@ -120,10 +120,11 @@ Prefer `stop` over `down` so the `pgdata` volume and its schema survive.
   a red nightly sync is the prompt to do so.
 - `src/ibkr_trader/scheduler.py` — the APScheduler wiring behind `serve`. **A split
   candidate, deliberately not split yet** — read this before proposing to move it:
-  - Eleven of its thirteen ingestion jobs are pure data-lake ingestion (`social_poll`,
+  - Fifteen of its seventeen ingestion jobs are pure data-lake ingestion (`social_poll`,
     `finnhub_news_poll`, `newsapi_poll`, `finnhub_backfill`, `trends_poll`, `prices_poll`,
     `index_membership_poll`, `index_prices_poll`, `ipo_calendar_poll`, `ipo_filings_poll`,
-    `ipo_prices_poll`), each importing straight from `data_lake.ingestion.*`. Those are the
+    `ipo_prices_poll`, `fundamentals_poll`, `earnings_calendar_poll`, `macro_poll`,
+    `buybacks_poll`), each importing straight from `data_lake.ingestion.*`. Those are the
     movable part.
   - Two are **not** and are what block a wholesale move: `sentiment_score` calls
     `ibkr_trader.signals.sentiment.score_pending`, and `prune_raw` calls
@@ -134,12 +135,13 @@ Prefer `stop` over `down` so the `pgdata` volume and its schema survive.
     (`ibkr_trader.gateway_watch`: read-only IB Gateway login probe → ntfy phone alert) and
     the `ipo_alerts` job (`ibkr_trader.ipo_watch`: major-IPO ntfy alert over `ipo_events`)
     are trading-side too and stay here in any split.
-  - The real cost is config, not code: `build_scheduler()` and its jobs read thirty-one
+  - The real cost is config, not code: `build_scheduler()` and its jobs read thirty-nine
     fields off `Settings` (`poll_*`, `newsapi_*`, `finnhub_backfill_*`, `prune_raw_*`,
     `score_sentiment_minutes`, `news_universe_file`, `trends_*`, `fx_pairs`,
     `scheduler_health_file`, `tiingo_*`, `index_*`, `ipo_universe_since`,
-    `ipo_prices_max_yahoo`), and **none of them but the
-    `tiingo_api_key` and `sec_user_agent` credentials are in
+    `ipo_prices_max_yahoo`, `fundamentals_rotation_days`, `earnings_calendar_days_ahead`,
+    `fred_series`, `fred_release_ids`), and **none of them but the `tiingo_api_key` and
+    `sec_user_agent` credentials are in
     `data_lake.settings.LakeSettings`**,
     which covers provider credentials and archive location only. A scheduler over there
     needs a `SchedulerSettings` Protocol first — see that repo's `CLAUDE.md` for how to
