@@ -376,13 +376,26 @@ def test_serve_starts_the_scheduler(monkeypatch):
     """serve delegates to the scheduler (patched here so it doesn't actually block)."""
     started = {}
 
-    def fake_serve():
+    def fake_serve(*, migrate):
         started["called"] = True
+        started["migrate"] = migrate
 
     monkeypatch.setattr("ibkr_trader.scheduler.serve", fake_serve)
     result = runner.invoke(cli.app, ["serve"])
     assert result.exit_code == 0
-    assert started.get("called") is True
+    assert started == {"called": True, "migrate": False}
+
+
+def test_serve_migrate_asks_the_scheduler_to_migrate_first(monkeypatch):
+    """The deployed container passes --migrate (docker-compose.yml); a bare `serve` run by
+    hand against a database leaves its schema alone."""
+    seen = {}
+    monkeypatch.setattr(
+        "ibkr_trader.scheduler.serve", lambda *, migrate: seen.setdefault("migrate", migrate)
+    )
+    result = runner.invoke(cli.app, ["serve", "--migrate"])
+    assert result.exit_code == 0, result.output
+    assert seen == {"migrate": True}
 
 
 def test_ingest_finnhub_news_reports_error_cleanly(monkeypatch):

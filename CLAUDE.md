@@ -94,8 +94,10 @@ and review it before upgrading.
   `ibkr-trader ingest|backtest|serve` run against the real Postgres dataset.
 - **`ib-gateway`** (the `ibkr` profile) — live IBKR API calls (`ibkr-check`, `serve` against the
   gateway).
-- **`app`** (the `app` profile) — the `ibkr-trader serve` scheduler. Rebuild with `--build` after
-  a code change or the container keeps running the old image.
+- **`app`** (the `app` profile) — the `ibkr-trader serve --migrate` scheduler. Rebuild with
+  `--build` after a code change or the container keeps running the old image. `--migrate` is
+  what carries a merged migration to the database: devkit's collector redeploy is only
+  `compose up -d --build`, so the container runs `alembic upgrade head` itself on start.
 
 Prefer `stop` over `down` so the `pgdata` volume and its schema survive.
 

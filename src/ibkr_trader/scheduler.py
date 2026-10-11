@@ -1208,14 +1208,40 @@ def build_scheduler(
     return scheduler
 
 
-def serve() -> None:  # pragma: no cover - blocking loop, exercised via build_scheduler in tests
-    """Start the long-running scheduler (blocks). Ctrl-C to stop."""
+def prepare_database(
+    wait_seconds: float,
+    *,
+    migrate: bool,
+    wait: Callable[[float], bool] = wait_for_database,
+    upgrade: Callable[[], None] | None = None,
+) -> None:
+    """Wait for the database, then bring it to the newest migration when ``migrate`` is set.
+
+    The wait comes first: the startup jobs get one shot each and a daily cadence, so firing them
+    against a database that is still booting costs a full day of data. A failed wait is not
+    fatal, but a failed migration is, and that is deliberate: the deployed container rebuilds
+    onto merged code with ``docker compose up -d --build``, and nothing else in that path runs
+    ``alembic upgrade head``, so a merged migration never reached the database and the scheduler
+    ran models ahead of their schema. Exiting lets ``restart: unless-stopped`` retry and keeps
+    the container visibly down rather than quietly writing against the wrong schema.
+    """
+    if not wait(wait_seconds):
+        logger.error("serve: starting anyway; jobs will retry, but check the database")
+    if not migrate:
+        return
+    if upgrade is None:
+        from ibkr_trader.db.migrate import upgrade_head
+
+        upgrade = upgrade_head
+    logger.info("serve: migrating the database to head")
+    upgrade()
+
+
+def serve(*, migrate: bool = False) -> None:  # pragma: no cover - blocking loop
+    """Start the long-running scheduler (blocks). Ctrl-C to stop. Startup is `prepare_database`."""
     logging.basicConfig(level=logging.INFO)
     settings = get_settings()
-    # Before the startup jobs fire, not after: they get one shot each and a daily cadence, so
-    # firing them against a database that is still booting costs a full day of data.
-    if not wait_for_database(settings.db_wait_seconds):
-        logger.error("serve: starting anyway; jobs will retry, but check the database")
+    prepare_database(settings.db_wait_seconds, migrate=migrate)
     scheduler = build_scheduler(settings=settings)
     logger.info("serve: starting scheduler with jobs %s", [job.id for job in scheduler.get_jobs()])
     scheduler.start()
