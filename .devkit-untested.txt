@@ -61,7 +61,6 @@ scripts/report-workflow-failure.py::run_env
 scripts/report-workflow-failure.py::run_facts
 scripts/report-workflow-failure.py::stopped_body
 scripts/report-workflow-failure.py::sweep
-scripts/run-tests.py::main
 scripts/ship.py::backoff_delays
 scripts/ship.py::current_branch
 scripts/snapshot-monthly.py::Step
