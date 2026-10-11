@@ -9,8 +9,8 @@ first bar is its listing).
 
 Purely additive: nullable columns, no change to existing rows.
 
-Revision ID: c0d1e2f3a4b5
-Revises: b9c0d1e2f3a4
+Revision ID: d1e2f3a4b5c6
+Revises: c0d1e2f3a4b5
 Create Date: 2026-10-10 00:00:00.000000
 
 """
@@ -21,8 +21,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = "c0d1e2f3a4b5"
-down_revision: Union[str, None] = "b9c0d1e2f3a4"
+revision: str = "d1e2f3a4b5c6"
+down_revision: Union[str, None] = "c0d1e2f3a4b5"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

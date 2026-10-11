@@ -96,6 +96,9 @@ class Settings(BaseSettings):
     # keeps delisted US tickers. TIINGO_API_KEY is optional: without it dead members stay
     # unpriced and the coverage report says how many.
     tiingo_api_key: str = ""
+    # FRED (St. Louis Fed) key for data-lake's macro-observation and release-calendar
+    # connectors. Optional: no serve job reads FRED yet, so empty only disables those.
+    fred_api_key: str = ""
     # Ledger of Tiingo's free-tier budget (500 symbols/month, 50 req/h, 1000/day), so the
     # backfill spreads itself over as many months as it needs instead of tripping the limits.
     tiingo_usage_file: str = "logs/tiingo-usage.json"
