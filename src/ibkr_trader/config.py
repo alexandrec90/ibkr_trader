@@ -96,9 +96,6 @@ class Settings(BaseSettings):
     # keeps delisted US tickers. TIINGO_API_KEY is optional: without it dead members stay
     # unpriced and the coverage report says how many.
     tiingo_api_key: str = ""
-    # FRED (St. Louis Fed) key for data-lake's macro-observation and release-calendar
-    # connectors. Optional: no serve job reads FRED yet, so empty only disables those.
-    fred_api_key: str = ""
     # Ledger of Tiingo's free-tier budget (500 symbols/month, 50 req/h, 1000/day), so the
     # backfill spreads itself over as many months as it needs instead of tripping the limits.
     tiingo_usage_file: str = "logs/tiingo-usage.json"
@@ -146,6 +143,43 @@ class Settings(BaseSettings):
     ipo_alert_min_deal_usd: float = 1_000_000_000.0
     ipo_alert_stages: list[str] = ["filed", "expected", "priced", "withdrawn"]
     ipo_alert_ledger_file: str = "logs/ipo-alerts.json"
+    # Market events (serve jobs, see scheduler._register_event_jobs), historical and upcoming.
+    # Yahoo corporate data -- earnings dates with EPS estimate/actual, dividends, splits, the
+    # announced next ex-dividend date, statements -- is ~11 throttled requests per symbol, so
+    # each daily run refreshes one slice and every tracked symbol comes round once per
+    # FUNDAMENTALS_ROTATION_DAYS.
+    poll_fundamentals_hours: int = 24
+    fundamentals_rotation_days: int = 7
+    # Finnhub's market-wide earnings calendar (free tier: a month back, upcoming ahead) catches
+    # a re-dated report between rotations. Uses FINNHUB_KEY.
+    poll_earnings_calendar_hours: int = 24
+    earnings_calendar_days_ahead: int = 90
+    # Macro: rates and the US data-release calendar from FRED (free key at
+    # fred.stlouisfed.org/docs/api/api_key.html), the FOMC meeting calendar from the Federal
+    # Reserve, and the Bank of Canada's policy rate and announcement schedule (both keyless).
+    # Empty FRED_API_KEY => the FRED half of the macro job fails loudly in `health`.
+    fred_api_key: str = ""
+    poll_macro_hours: int = 24
+    # Fed funds effective + target range, Treasury 3m/2y/10y, CPI, core CPI, unemployment,
+    # payrolls.
+    fred_series: list[str] = [
+        "DFF",
+        "DFEDTARU",
+        "DFEDTARL",
+        "DGS3MO",
+        "DGS2",
+        "DGS10",
+        "CPIAUCSL",
+        "CPILFESL",
+        "UNRATE",
+        "PAYEMS",
+    ]
+    # FRED release ids whose past and scheduled dates are kept: CPI (10), retail sales (9),
+    # PPI (46), Employment Situation (50), GDP (53), Personal Income and Outlays / PCE (54).
+    fred_release_ids: list[int] = [10, 9, 46, 50, 53, 54]
+    # Buybacks: repurchase cash, shares repurchased and authorised programme size from SEC XBRL
+    # company facts (10-K/10-Q, keyless; uses SEC_USER_AGENT). Filings are quarterly, so weekly.
+    poll_buybacks_hours: int = 168
 
     # Registered-account long-term strategy defaults.
     # These are env-overridable deployment defaults; a backtest run pins its own values into

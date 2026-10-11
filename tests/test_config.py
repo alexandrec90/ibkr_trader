@@ -114,3 +114,21 @@ def test_execution_account_refuses_live_routing_even_when_old_ack_gate_is_true()
 
     with pytest.raises(RuntimeError, match="live-account routing is disabled"):
         settings.ibkr_execution_account("tfsa")
+
+
+def test_settings_declares_each_field_once():
+    """Two branches adding the same field merge cleanly when they add it in different places,
+    and Python keeps the last one silently -- comment, default and all."""
+    import ast
+    import inspect
+    from collections import Counter
+
+    from ibkr_trader import config
+
+    tree = ast.parse(inspect.getsource(config))
+    body = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "Settings").body
+    names = Counter(
+        n.target.id for n in body if isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name)
+    )
+
+    assert [name for name, count in names.items() if count > 1] == []
