@@ -30,6 +30,13 @@ services:
       - shared_buffers=${DB_SHARED_BUFFERS:-256MB}
       - -c
       - maintenance_work_mem=${DB_MAINTENANCE_WORK_MEM:-128MB}
+    # Capped like `app` below, for the same shared VM: 657 MiB resident minutes after a VM
+    # boot on 2026-10-09, uncapped. 768m is shared_buffers plus room for the backends, which
+    # only holds while idle ones disconnect (`IDLE_SESSION_TIMEOUT_MS` in db/session.py) and
+    # busy ones never plan over every price_bars chunk (`PLAN_CACHE_OPTION` there, and the
+    # bounded newest-bar lookups in data-lake's ingestion/market/bars.py).
+    mem_limit: ${DB_MEM_LIMIT:-768m}
+    memswap_limit: ${DB_MEM_LIMIT:-768m}
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-trader}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trader}
@@ -57,6 +64,11 @@ services:
     image: ghcr.io/gnzsnz/ib-gateway:stable
     restart: unless-stopped
     profiles: ["ibkr"] # opt-in: `docker compose --profile ibkr up -d`
+    # Left stopped while nothing trades (GATEWAY_WATCH_ENABLED defaults to false): it holds
+    # ~300 MB of the shared VM. Starting it again means turning the watch back on in .env.
+    # Capped anyway (294 MiB observed), so starting it again cannot bring the VM wedge back.
+    mem_limit: ${GATEWAY_MEM_LIMIT:-512m}
+    memswap_limit: ${GATEWAY_MEM_LIMIT:-512m}
     environment:
       # Empty credentials just make the gateway container fail its login loop;
       # In single-session paper mode the image expects the generic names, so map the
@@ -111,6 +123,17 @@ services:
       # directory keeps the image's appuser ownership — see the chown in the Dockerfile.
       - applogs:/app/logs
     command: ["ibkr-trader", "serve"]
+    # Every service on the machine shares one 4 GB WSL VM (with 2 GB swap), and `serve` had
+    # no cap: 2026-10-09 it held 2.4 GB resident ten minutes after a restart, ran the VM out
+    # of memory and swap, and the frozen VM took Docker's engine and every other project's
+    # containers with it, several times that day. Capped, an overrun is killed inside its own
+    # cgroup and `restart: unless-stopped` brings it back. The swap limit equal to the memory
+    # one keeps it from thrashing the VM's swap instead. A bigger host raises it through .env.
+    # 1536m, not 2g: app + db (768m) + the other projects' 512m caps must leave ~0.75 GB of
+    # the 4 GB for dockerd and the kernel. The startup jobs are staggered (scheduler.py,
+    # STARTUP_STAGGER_SECONDS) so the post-boot burst, which peaked at 1.65 GiB, fits under it.
+    mem_limit: ${APP_MEM_LIMIT:-1536m}
+    memswap_limit: ${APP_MEM_LIMIT:-1536m}
 
 volumes:
   pgdata:

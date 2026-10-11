@@ -24,6 +24,7 @@ from pathlib import Path
 from apscheduler.schedulers.blocking import BlockingScheduler
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError
+from sqlalchemy.orm import Session
 
 from ibkr_trader import job_health
 from ibkr_trader.config import Settings, get_settings
@@ -47,6 +48,11 @@ RETRY_DELAYS_SECONDS: tuple[int, ...] = (300, 900, 3600)
 #: overdue at once; this keeps the heavy ones (archiving an undrained backlog) out of the
 #: process's first seconds. ``start_now`` jobs are exempt by definition.
 CATCH_UP_DELAY_SECONDS = 300
+
+#: The least gap between two jobs' first runs (see ``_stagger``). The startup jobs used to all
+#: fire in the same second; after every Docker VM boot on 2026-10-09 that burst took `serve`
+#: to 1.65 GiB within minutes, and with nothing capping it, ran the 4 GB VM out of memory.
+STARTUP_STAGGER_SECONDS = 180
 
 
 def _fail_if_every_item_failed(
@@ -401,6 +407,24 @@ def poll_yahoo_prices() -> int:
 #: overlap heals late corrections around the boundary day.
 _FX_REFRESH_OVERLAP_DAYS = 3
 
+#: How far back :func:`_newest_fx_bar` looks before it scans the pair's whole history. An
+#: unbounded ``max(ts)`` plans over every ``price_bars`` chunk and leaves ~63 MB of catalog
+#: cache in its backend (see ``PLAN_CACHE_OPTION`` in db/session.py, which keeps this bound
+#: a plan-time constant). A pair polled on schedule always has a bar inside it.
+_FX_NEWEST_LOOKBACK = timedelta(days=45)
+
+
+def _newest_fx_bar(session: Session, pair: str, *, now: datetime | None = None) -> datetime | None:
+    """The newest stored bar of ``pair`` from any source, looking in the recent window first."""
+    query = (
+        select(func.max(PriceBar.ts))
+        .join(Instrument, Instrument.id == PriceBar.instrument_id)
+        .where(Instrument.symbol == pair)
+    )
+    cutoff = (now or datetime.now(UTC)) - _FX_NEWEST_LOOKBACK
+    recent = session.scalar(query.where(PriceBar.ts >= cutoff))
+    return recent if recent is not None else session.scalar(query)
+
 
 def poll_fx(pairs: list[str]) -> int:
     """Refresh daily FX bars from the newest stored bar forward (full history when empty).
@@ -419,11 +443,7 @@ def poll_fx(pairs: list[str]) -> int:
     total = 0
     for pair in pairs:
         with get_session() as session:
-            newest = session.scalar(
-                select(func.max(PriceBar.ts))
-                .join(Instrument, Instrument.id == PriceBar.instrument_id)
-                .where(Instrument.symbol == pair.strip().upper())
-            )
+            newest = _newest_fx_bar(session, pair.strip().upper())
         date_from = (
             (newest.date() - timedelta(days=_FX_REFRESH_OVERLAP_DAYS)).isoformat() if newest else ""
         )
@@ -830,11 +850,11 @@ def _register_market_data_jobs(register: Callable[..., None], settings: Settings
 def _register_archive_jobs(register: Callable[..., None], settings: Settings) -> None:
     """Cold-storage offload, through `build_scheduler`'s ``register``.
 
-    Deliberately *not* start_now: a first run against an undrained backlog reads the whole
-    batch into memory in one transaction (measured ~1.1 GB RSS and ~2 h for 280 k payloads),
-    which is not something to fire while the process is also coming up. Drain the backlog
-    once from the CLI, then let the daily cadence keep pace — each subsequent run only has a
-    day of new rows to move. See remote-archive.md.
+    Deliberately *not* start_now: a run against an undrained backlog is long, which is not
+    something to fire while the process is also coming up. ``archive_raw_payloads`` drains it
+    in committed batches (data-lake ``archive/raw.py``), so its memory is one batch deep and
+    a run cut short resumes where it stopped; reading the whole backlog at once took
+    ``serve`` past its memory cap within seconds once 8.1 M social posts were eligible.
     """
     register(
         "archive_bars",
@@ -940,6 +960,25 @@ def _first_run(label: str, *, start_now: bool = False, now: datetime | None = No
     return earliest if due is None else max(due, earliest)
 
 
+def _stagger(
+    first_runs: Sequence[datetime], spacing: float = STARTUP_STAGGER_SECONDS
+) -> list[datetime]:
+    """Space first runs at least ``spacing`` seconds apart, keeping their order.
+
+    Each run moves only later, never earlier, and only as far as the run before it forces: the
+    start_now jobs and the restart's overdue catch-ups come up one by one instead of together,
+    while a job due hours from now keeps its slot. The result is in the input's order.
+    """
+    gap = timedelta(seconds=spacing)
+    staggered = list(first_runs)
+    previous: datetime | None = None
+    for index in sorted(range(len(staggered)), key=staggered.__getitem__):
+        if previous is not None:
+            staggered[index] = max(staggered[index], previous + gap)
+        previous = staggered[index]
+    return staggered
+
+
 def _add_interval_job(
     scheduler: BlockingScheduler,
     job: Callable[[], None],
@@ -964,6 +1003,20 @@ def _add_interval_job(
     )
 
 
+#: A guarded job queued by ``build_scheduler``: (job, job id, interval seconds, first run).
+_PendingJob = tuple[Callable[[], None], str, float, datetime]
+
+
+def _add_staggered(scheduler: BlockingScheduler, pending: Sequence[_PendingJob]) -> None:
+    """Add the queued jobs, their first runs staggered against each other (see ``_stagger``).
+
+    Queued rather than added as registered, because the stagger needs every job's first run.
+    """
+    first_runs = _stagger([first_run for *_, first_run in pending])
+    for (guarded, job_id, seconds, _), first_run in zip(pending, first_runs, strict=True):
+        _add_interval_job(scheduler, guarded, job_id, seconds, first_run)
+
+
 def build_scheduler(
     settings: Settings | None = None,
     scheduler: BlockingScheduler | None = None,
@@ -983,6 +1036,7 @@ def build_scheduler(
     # cadence afterwards.
     job_health.seed_from_artifact(artifact_path)
     scheduled: set[str] = set()
+    pending: list[_PendingJob] = []
 
     def register(
         job_id: str,
@@ -992,13 +1046,11 @@ def build_scheduler(
         seconds: float,
         start_now: bool = False,
     ) -> None:
-        """Add one guarded interval job, and tell ``job_health`` what cadence to expect."""
+        """Queue one guarded interval job, and tell ``job_health`` what cadence to expect."""
         job_health.record_schedule(label, seconds)
         scheduled.add(label)
         guarded = _guard(job, label, scheduler=scheduler, artifact_path=artifact_path)
-        _add_interval_job(
-            scheduler, guarded, job_id, seconds, _first_run(label, start_now=start_now)
-        )
+        pending.append((guarded, job_id, seconds, _first_run(label, start_now=start_now)))
 
     register("social_poll", "social", poll_social_job, seconds=settings.poll_social_minutes * 60)
     register(
@@ -1038,6 +1090,7 @@ def build_scheduler(
     _register_archive_jobs(register, settings)
     _register_gateway_job(register, settings)
     _register_ipo_jobs(register, settings)
+    _add_staggered(scheduler, pending)
     # A job this build no longer registers (renamed or retired) would keep its seeded
     # interval and read `stale` forever, holding `ibkr-trader health` red.
     job_health.forget_unscheduled(scheduled)

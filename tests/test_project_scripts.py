@@ -108,6 +108,46 @@ def test_the_db_caps_the_memory_timescaledb_tune_would_claim():
     assert "maintenance_work_mem=${DB_MAINTENANCE_WORK_MEM:-128MB}" in command
 
 
+def test_the_app_is_capped_inside_the_shared_vm_without_swap():
+    """`serve` shares one 4 GB WSL VM with every project's containers. Uncapped, it ran the
+    VM out of memory and swap on 2026-10-09 and froze Docker's engine for all of them. The
+    cap keeps an overrun inside its own cgroup, and a swap limit equal to it keeps the
+    overrun from moving into the VM's swap instead.
+    """
+    import yaml
+
+    compose = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    app = compose["services"]["app"]
+
+    assert app["mem_limit"] == "${APP_MEM_LIMIT:-1536m}"
+    assert app["memswap_limit"] == app["mem_limit"]
+
+
+def test_the_db_is_capped_inside_the_shared_vm_without_swap():
+    """657 MiB resident minutes after a VM boot on 2026-10-09, uncapped. With `app`'s cap and
+    the other projects' 512m caps, it must leave the 4 GB VM room for dockerd and the kernel.
+    """
+    import yaml
+
+    compose = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    db = compose["services"]["db"]
+
+    assert db["mem_limit"] == "${DB_MEM_LIMIT:-768m}"
+    assert db["memswap_limit"] == db["mem_limit"]
+
+
+def test_every_compose_service_is_capped_inside_the_shared_vm():
+    """One uncapped service is enough to run the shared 4 GB VM out of memory and freeze
+    Docker's engine for every project, so a new service must arrive with its own cap."""
+    import yaml
+
+    compose = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+
+    for name, service in compose["services"].items():
+        assert service.get("mem_limit"), f"{name} has no mem_limit"
+        assert service.get("memswap_limit") == service["mem_limit"], name
+
+
 def test_the_image_installs_the_archive_extra_serve_needs():
     """`serve` registers the archive jobs unconditionally and the `social` poll reads
     social-scraper's export back through the archive store, so with ARCHIVE_BACKEND=s3 the

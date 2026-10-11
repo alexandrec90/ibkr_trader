@@ -112,7 +112,10 @@ class Settings(BaseSettings):
     # Gateway login watch (serve job, see gateway_watch.py): a read-only probe of the IB Gateway
     # that pushes a phone notification through ntfy when the login needs a human. The client ID
     # must differ from IBKR_CLIENT_ID, or the probe would kick the trading connection off.
-    gateway_watch_enabled: bool = True
+    # Off by default: nothing in `serve` trades yet (IbkrBroker.connect is a skeleton), so the
+    # gateway container is left stopped to save ~300 MB of the shared Docker VM, and a watch
+    # against a stopped gateway would hold `health` red. Turn it on with the gateway.
+    gateway_watch_enabled: bool = False
     gateway_check_minutes: int = 5
     gateway_check_client_id: int = 99
     gateway_alert_after_failures: int = 2
