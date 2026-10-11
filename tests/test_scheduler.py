@@ -1,3 +1,4 @@
+import logging
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -1640,6 +1641,33 @@ def test_poll_earnings_calendar_passes_the_horizon(monkeypatch):
     )
     assert scheduler.poll_earnings_calendar(_settings(earnings_calendar_days_ahead=45)) == 31
     assert seen == {"days_ahead": 45}
+
+
+def test_run_each_keeps_going_past_a_failure_and_returns_errors_in_order(caplog):
+    first, second = RuntimeError("first"), ValueError("second")
+
+    def run(item):
+        if item == "a":
+            raise first
+        if item == "c":
+            raise second
+        return len(item)
+
+    with caplog.at_level(logging.ERROR, logger=scheduler.logger.name):
+        results, errors = scheduler._run_each(["a", "bb", "c", "dddd"], run, "x failed for %s")
+    assert results == [("bb", 2), ("dddd", 4)]
+    assert errors == [first, second]
+    assert [r.getMessage() for r in caplog.records] == ["x failed for a", "x failed for c"]
+
+
+def test_run_each_keeps_duplicate_items_apart():
+    results, errors = scheduler._run_each(["A", "A"], lambda item: 3, "%s")
+    assert results == [("A", 3), ("A", 3)]
+    assert errors == []
+
+
+def test_run_each_of_nothing_is_empty():
+    assert scheduler._run_each([], lambda item: 1, "%s") == ([], [])
 
 
 def test_run_macro_runs_every_source_and_summarises():

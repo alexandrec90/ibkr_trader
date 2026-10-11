@@ -20,6 +20,7 @@ import zlib
 from collections.abc import Callable, Sequence
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from typing import TypeVar
 
 from apscheduler.schedulers.blocking import BlockingScheduler
 from sqlalchemy import func, select, text
@@ -54,6 +55,8 @@ CATCH_UP_DELAY_SECONDS = 300
 #: to 1.65 GiB within minutes, and with nothing capping it, ran the 4 GB VM out of memory.
 STARTUP_STAGGER_SECONDS = 180
 
+_Item = TypeVar("_Item")
+
 
 def _fail_if_every_item_failed(
     label: str, attempted: int, failures: int, last_error: BaseException | None
@@ -72,6 +75,26 @@ def _fail_if_every_item_failed(
     if attempted and failures == attempted and last_error is not None:
         logger.error("%s: all %d item(s) failed; failing the job", label, attempted)
         raise last_error
+
+
+def _run_each(
+    items: Sequence[_Item], run: Callable[[_Item], int], failed: str
+) -> tuple[list[tuple[_Item, int]], list[BaseException]]:
+    """Run ``run`` on every item, logging a failure as ``failed % item`` and moving on.
+
+    The one place a per-item loop catches broadly, so each caller decides what a failure
+    costs: ``_fail_if_every_item_failed`` for a symbol loop, the first error for the macro
+    job. Returns each succeeding item with its count, and the errors in the order raised.
+    """
+    results: list[tuple[_Item, int]] = []
+    errors: list[BaseException] = []
+    for item in items:
+        try:
+            results.append((item, run(item)))
+        except Exception as exc:
+            logger.exception(failed, item)
+            errors.append(exc)
+    return results, errors
 
 
 def _read_universe_file(path: str) -> list[str]:
@@ -383,23 +406,19 @@ def poll_yahoo_prices() -> int:
     with get_session() as session:
         symbols = tracked_yahoo_symbols(session)
     connector = YahooConnector()
-    total = 0
-    failures = 0
-    last_error: BaseException | None = None
-    for symbol in symbols:
-        try:
-            total += connector.fetch(symbol=symbol)
-        except Exception as exc:
-            failures += 1
-            last_error = exc
-            logger.exception("price poll failed for %s", symbol)
+    results, errors = _run_each(
+        symbols, lambda symbol: connector.fetch(symbol=symbol), "price poll failed for %s"
+    )
+    total = sum(count for _, count in results)
     logger.info(
         "price poll upserted %d bars across %d symbols (%d failed)",
         total,
         len(symbols),
-        failures,
+        len(errors),
     )
-    _fail_if_every_item_failed("price poll", len(symbols), failures, last_error)
+    _fail_if_every_item_failed(
+        "price poll", len(symbols), len(errors), errors[-1] if errors else None
+    )
     return total
 
 
@@ -533,24 +552,20 @@ def poll_fundamentals(settings: Settings, today: date | None = None) -> int:
         symbols, settings.fundamentals_rotation_days, today or datetime.now(UTC).date()
     )
     connector = YahooFundamentalsConnector()
-    total = 0
-    failures = 0
-    last_error: BaseException | None = None
-    for symbol in due:
-        try:
-            total += connector.fetch(symbol=symbol)
-        except Exception as exc:
-            failures += 1
-            last_error = exc
-            logger.exception("fundamentals poll failed for %s", symbol)
+    results, errors = _run_each(
+        due, lambda symbol: connector.fetch(symbol=symbol), "fundamentals poll failed for %s"
+    )
+    total = sum(count for _, count in results)
     logger.info(
         "fundamentals poll upserted %d rows across %d of %d symbols (%d failed)",
         total,
         len(due),
         len(symbols),
-        failures,
+        len(errors),
     )
-    _fail_if_every_item_failed("fundamentals poll", len(due), failures, last_error)
+    _fail_if_every_item_failed(
+        "fundamentals poll", len(due), len(errors), errors[-1] if errors else None
+    )
     return total
 
 
@@ -595,17 +610,12 @@ def run_macro(
     FOMC and Bank of Canada loads -- but any failure then fails the job, re-raising the first
     error so `health` shows it and a dead database still earns `_guard`'s retry.
     """
-    summary: dict[str, int] = {}
-    first_error: BaseException | None = None
-    for label, run in parts if parts is not None else _macro_parts(settings):
-        try:
-            summary[label] = run()
-        except Exception as exc:
-            logger.exception("macro poll: %s failed", label)
-            first_error = first_error or exc
+    runs = dict(parts if parts is not None else _macro_parts(settings))
+    results, errors = _run_each(list(runs), lambda label: runs[label](), "macro poll: %s failed")
+    summary = dict(results)
     logger.info("macro poll: %s", summary)
-    if first_error is not None:
-        raise first_error
+    if errors:
+        raise errors[0]
     return summary
 
 

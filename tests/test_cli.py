@@ -1548,6 +1548,11 @@ def test_events_rejects_an_unknown_kind(monkeypatch):
     assert "earnigns" in _all_output(result)
 
 
+def test_events_command_is_wired_at_the_top_level():
+    commands = {c.name: c.callback for c in cli.app.registered_commands}
+    assert commands["events"] is cli.events_command
+
+
 def test_event_ingest_commands_are_wired_under_ingest():
     commands = {c.name: c.callback for c in cli.ingest_app.registered_commands}
     assert commands["macro"] is cli.ingest_macro
