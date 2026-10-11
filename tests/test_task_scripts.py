@@ -146,6 +146,7 @@ def test_lint_all_main_runs_each_gate_for_changed_python(monkeypatch):
     script = load_script("lint-all.py")
     calls = []
     monkeypatch.setattr(script, "changed_paths", lambda: ["CLAUDE.md", "scripts/example.py"])
+    monkeypatch.setattr(script, "align_shared_sibling", lambda: calls.append(("align", [])))
     monkeypatch.setattr(
         script,
         "run_artifact",
@@ -154,10 +155,42 @@ def test_lint_all_main_runs_each_gate_for_changed_python(monkeypatch):
 
     assert script.main(["--changed"]) == 0
     assert calls == [
+        ("align", []),  # before `uv run` syncs against the shared ../data-lake
         ("lint", ["-m", "ruff", "check", "scripts/example.py"]),
         ("format-check", ["-m", "ruff", "format", "--check", "scripts/example.py"]),
         ("typecheck", ["-m", "mypy", "src"]),
     ]
+
+
+def test_run_tests_aligns_the_shared_sibling_before_uv_run_syncs(monkeypatch):
+    script = load_script("run-tests.py")
+    calls = []
+    monkeypatch.setattr(script, "align_shared_sibling", lambda: calls.append("align"))
+    monkeypatch.setattr(
+        script.subprocess,
+        "run",
+        lambda command, **kwargs: calls.append(command[:2]) or SimpleNamespace(returncode=0),
+    )
+    assert script.main(["-k", "x"]) == 0
+    assert calls == ["align", ["uv", "run"]]
+
+
+@pytest.mark.parametrize("name", ["lint-all.py", "run-tests.py"])
+def test_the_runners_hand_this_tree_to_the_vendored_pin_re_check(monkeypatch, name):
+    """devkit 0db0d931 / 941b7470: a sibling tree cut off another data-lake pin moved the
+    shared `../data-lake`, and `uv run` relocked `uv.lock` against it."""
+    script = load_script(name)
+    seen = []
+    monkeypatch.setitem(sys.modules, "toolchain", SimpleNamespace(align_path_sources=seen.append))
+    script.align_shared_sibling()
+    assert seen == [script.ROOT]
+
+
+@pytest.mark.parametrize("name", ["lint-all.py", "run-tests.py"])
+def test_a_vendored_toolchain_without_the_re_check_changes_nothing(monkeypatch, name):
+    script = load_script(name)
+    monkeypatch.setitem(sys.modules, "toolchain", SimpleNamespace())
+    script.align_shared_sibling()  # no AttributeError: a pre-pull copy is simply skipped
 
 
 def test_lint_all_names_the_changed_files_it_has_no_linter_for(monkeypatch, capsys):

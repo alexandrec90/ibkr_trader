@@ -16,10 +16,29 @@ from __future__ import annotations
 
 import argparse
 import subprocess
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 RUNNER = ROOT / "scripts" / "task-artifact-runner.py"
+
+
+def align_shared_sibling() -> None:
+    """Put the shared `../data-lake` tree back at this tree's CI pin before `uv run` syncs.
+
+    `lint-all.py`'s twin, and why: a tree cut off another pin moves the one `../data-lake`
+    every `.claude/worktrees` tree shares, and the suite then imports a data-lake CI never
+    runs against (devkit 0db0d931, 941b7470). A vendored `toolchain` that predates
+    `align_path_sources` changes nothing.
+    """
+    sys.path.insert(0, str(ROOT / "scripts" / "hooks"))
+    try:
+        import toolchain
+
+        align = toolchain.align_path_sources
+    except (ImportError, AttributeError):
+        return
+    align(ROOT)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -31,6 +50,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.changed:
         pytest_args += ["--last-failed", "--last-failed-no-failures", "all"]
     pytest_args += [arg for arg in extra if arg]
+    align_shared_sibling()
     command = [
         "uv",
         "run",
