@@ -8,9 +8,9 @@ from ibkr_trader.db.models import IpoEvent
 
 MIGRATION = "migrations.versions.b9c0d1e2f3a4_ipo_events"
 
-#: Columns the model gained in later revisions (c0d1e2f3a4b5_market_events adds is_spac);
-#: tests/test_market_events_migration.py holds the table to the full model after those.
-ADDED_LATER = frozenset({"is_spac"})
+#: Columns of the model that a later revision adds, so this one rightly lacks them.
+#: tests/test_lake_event_data_migration.py checks the table matches the model at head.
+ADDED_LATER = {"is_spac"}  # c0d1e2f3a4b5
 
 
 def _run(step, monkeypatch, connection):
@@ -30,10 +30,11 @@ def test_upgrade_creates_the_table_the_model_declares(monkeypatch):
 
     model = IpoEvent.__table__
     # id is the primary key; SQLite reports a PK column nullable, which says nothing here.
-    declared = [c for c in model.columns if c.name not in ADDED_LATER]
-    expected = {c.name: c.nullable for c in declared if c.name != "id"}
+    expected = {
+        c.name: c.nullable for c in model.columns if c.name != "id" and c.name not in ADDED_LATER
+    }
     assert {k: v for k, v in columns.items() if k != "id"} == expected
-    assert set(columns) == {c.name for c in declared}
+    assert set(columns) == {c.name for c in model.columns} - ADDED_LATER
     assert indexes == {i.name for i in model.indexes}
     assert uniques == [["source", "external_id"]]
 
