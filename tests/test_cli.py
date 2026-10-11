@@ -1487,6 +1487,123 @@ def test_ingest_ipo_fails_on_a_missing_user_agent(monkeypatch):
 # --- ingest index-membership / index-prices ------------------------------------------
 
 
+# --- events / ingest macro / earnings-calendar / buybacks ----------------------------
+
+
+def _events_session(monkeypatch):
+    """Point `events` at an in-memory database holding one FOMC meeting 5 days out."""
+    from ibkr_trader.db import session as session_mod
+    from ibkr_trader.db.models import EconomicEvent
+
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    today = datetime.now(UTC).date()
+    with factory() as session:
+        session.add(
+            EconomicEvent(
+                source="federalreserve",
+                external_id="fomc:x",
+                kind="fomc_meeting",
+                name="FOMC meeting",
+                country="US",
+                event_date=today + timedelta(days=5),
+                raw={"sep": True},
+                first_seen_at=datetime.now(UTC),
+                fetched_at=datetime.now(UTC),
+            )
+        )
+        session.commit()
+
+    @contextmanager
+    def fake_session():
+        with factory() as session:
+            yield session
+
+    monkeypatch.setattr(session_mod, "get_session", fake_session)
+    return today
+
+
+def test_events_lists_the_window(monkeypatch):
+    today = _events_session(monkeypatch)
+    result = runner.invoke(cli.app, ["events", "--days", "7"])
+    assert result.exit_code == 0, _all_output(result)
+    day = (today + timedelta(days=5)).isoformat()
+    assert f"{day}  fomc_meeting  US  FOMC meeting (with projections)" in result.output
+
+
+def test_events_outside_the_window_says_so(monkeypatch):
+    _events_session(monkeypatch)
+    result = runner.invoke(cli.app, ["events", "--days", "2"])
+    assert result.exit_code == 0
+    assert "no events stored" in result.output
+
+
+def test_events_rejects_an_unknown_kind(monkeypatch):
+    _events_session(monkeypatch)
+    result = runner.invoke(cli.app, ["events", "--kind", "earnigns"])
+    assert result.exit_code == 2
+    assert "earnigns" in _all_output(result)
+
+
+def test_event_ingest_commands_are_wired_under_ingest():
+    commands = {c.name: c.callback for c in cli.ingest_app.registered_commands}
+    assert commands["macro"] is cli.ingest_macro
+    assert commands["earnings-calendar"] is cli.ingest_earnings_calendar
+    assert commands["buybacks"] is cli.ingest_buybacks
+
+
+def test_ingest_macro_prints_the_summary_and_fails_on_any_source(monkeypatch):
+    from ibkr_trader import scheduler
+
+    monkeypatch.setattr(scheduler, "run_macro", lambda settings: {"fomc": 16, "boc_rate": 4})
+    result = runner.invoke(cli.app, ["ingest", "macro"])
+    assert result.exit_code == 0, _all_output(result)
+    assert "fomc 16, boc_rate 4" in result.output
+
+    def no_key(settings):
+        raise RuntimeError("FRED_API_KEY is not set")
+
+    monkeypatch.setattr(scheduler, "run_macro", no_key)
+    result = runner.invoke(cli.app, ["ingest", "macro"])
+    assert result.exit_code == 1
+    assert "FRED_API_KEY is not set" in _all_output(result)
+
+
+def test_ingest_earnings_calendar_reports_the_count(monkeypatch):
+    from ibkr_trader import scheduler
+
+    monkeypatch.setattr(scheduler, "poll_earnings_calendar", lambda settings: 42)
+    result = runner.invoke(cli.app, ["ingest", "earnings-calendar"])
+    assert result.exit_code == 0, _all_output(result)
+    assert "upserted 42 earnings events" in result.output
+
+
+def test_ingest_buybacks_defaults_to_the_tracked_sweep_or_takes_symbols(monkeypatch):
+    from data_lake.ingestion.market.sec_xbrl import SecFactsConnector
+
+    from ibkr_trader import scheduler
+
+    monkeypatch.setattr(scheduler, "poll_buybacks", lambda: 7)
+    result = runner.invoke(cli.app, ["ingest", "buybacks"])
+    assert result.exit_code == 0 and "upserted 7 SEC facts" in result.output
+
+    seen = {}
+    monkeypatch.setattr(SecFactsConnector, "fetch", lambda self, **kw: seen.update(kw) or 3)
+    result = runner.invoke(cli.app, ["ingest", "buybacks", "--symbols", "aapl, msft"])
+    assert result.exit_code == 0, _all_output(result)
+    assert seen == {"symbols": ["AAPL", "MSFT"]}
+
+    def no_agent(self, **kw):
+        raise RuntimeError("SEC_USER_AGENT is not set")
+
+    monkeypatch.setattr(SecFactsConnector, "fetch", no_agent)
+    result = runner.invoke(cli.app, ["ingest", "buybacks", "--symbols", "AAPL"])
+    assert result.exit_code == 1 and "SEC_USER_AGENT" in _all_output(result)
+
+
 def test_index_ingest_commands_are_wired_under_ingest():
     commands = {c.name: c.callback for c in cli.ingest_app.registered_commands}
     assert commands["index-membership"] is cli.ingest_index_membership

@@ -25,18 +25,23 @@ Conventions:
 
 from data_lake.db.base import Base, JsonVariant, SqliteFriendlyBigInt
 from data_lake.db.models import (
+    CorporateEvent,
     Dividend,
     EarningsEvent,
+    EconomicEvent,
     Feature,
     FundamentalSnapshot,
     IndexMembership,
     Instrument,
     IpoEvent,
     Listing,
+    MacroObservation,
     NewsArticle,
     PriceBar,
+    SecFact,
     ShareCount,
     SocialPost,
+    StockSplit,
     TrendPoint,
 )
 
@@ -57,18 +62,23 @@ from ibkr_trader.db.trading_models import (
 #: schema. :mod:`ibkr_trader.db.adoption` is what keeps it out of our migrations.
 LAKE_TABLES = frozenset(
     {
+        "corporate_events",
         "dividends",
         "earnings_events",
+        "economic_events",
         "features",
         "fundamental_snapshots",
         "index_memberships",
         "instruments",
         "ipo_events",
         "listings",
+        "macro_observations",
         "news_articles",
         "price_bars",
+        "sec_facts",
         "share_counts",
         "social_posts",
+        "stock_splits",
         "trend_points",
     }
 )
@@ -89,8 +99,10 @@ __all__ = [
     "TRADING_TABLES",
     "BacktestRun",
     "Base",
+    "CorporateEvent",
     "Dividend",
     "EarningsEvent",
+    "EconomicEvent",
     "Execution",
     "Feature",
     "FundamentalSnapshot",
@@ -99,14 +111,17 @@ __all__ = [
     "IpoEvent",
     "JsonVariant",
     "Listing",
+    "MacroObservation",
     "NewsArticle",
     "Order",
     "OrderSide",
     "Prediction",
     "PriceBar",
+    "SecFact",
     "ShareCount",
     "SocialPost",
     "SqliteFriendlyBigInt",
+    "StockSplit",
     "StrategySnapshot",
     "TrendPoint",
 ]

@@ -47,6 +47,14 @@ def _settings(**overrides):
         gateway_watch_enabled=False,
         gateway_check_minutes=5,
         poll_ipo_hours=6,
+        poll_fundamentals_hours=24,
+        fundamentals_rotation_days=7,
+        poll_earnings_calendar_hours=24,
+        earnings_calendar_days_ahead=90,
+        poll_macro_hours=24,
+        fred_series=["DFF"],
+        fred_release_ids=[10],
+        poll_buybacks_hours=168,
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -72,8 +80,16 @@ def test_build_scheduler_registers_all_jobs_with_configured_intervals():
         "ipo_calendar_poll",
         "ipo_filings_poll",
         "ipo_alerts",
+        "fundamentals_poll",
+        "earnings_calendar_poll",
+        "macro_poll",
+        "buybacks_poll",
     }
     assert jobs["social_poll"].trigger.interval == timedelta(minutes=30)
+    assert jobs["fundamentals_poll"].trigger.interval == timedelta(hours=24)
+    assert jobs["earnings_calendar_poll"].trigger.interval == timedelta(hours=24)
+    assert jobs["macro_poll"].trigger.interval == timedelta(hours=24)
+    assert jobs["buybacks_poll"].trigger.interval == timedelta(hours=168)
     assert jobs["index_membership_poll"].trigger.interval == timedelta(hours=24)
     assert jobs["index_membership_poll"].next_run_time is not None  # spans first, on startup
     assert jobs["index_prices_poll"].trigger.interval == timedelta(minutes=60)
@@ -1493,3 +1509,169 @@ def test_tiingo_listings_are_cached_and_refreshed_weekly(monkeypatch, tmp_path):
     assert len(downloads) == 1  # served from the cache inside the week
     scheduler._tiingo_listings(cache, now=now + timedelta(days=8))
     assert len(downloads) == 2
+
+
+# --- market events: fundamentals rotation, earnings calendar, macro, buybacks ------------------
+
+_SYMBOLS = [f"S{i:03d}" for i in range(300)]
+
+
+def test_rotation_slice_covers_every_symbol_exactly_once_per_rotation():
+    start = datetime(2026, 10, 10).date()
+    slices = [scheduler.rotation_slice(_SYMBOLS, 7, start + timedelta(days=d)) for d in range(7)]
+    seen = [s for day in slices for s in day]
+    assert sorted(seen) == _SYMBOLS  # each symbol once, none missed
+    assert all(slices)  # 300 symbols over 7 days: no day is empty
+    # the same day of the next rotation is the same slice: stable across restarts
+    assert scheduler.rotation_slice(_SYMBOLS, 7, start + timedelta(days=7)) == slices[0]
+
+
+def test_rotation_slice_of_one_day_or_less_is_everything():
+    today = datetime(2026, 10, 10).date()
+    assert scheduler.rotation_slice(_SYMBOLS, 1, today) == _SYMBOLS
+    assert scheduler.rotation_slice(_SYMBOLS, 0, today) == _SYMBOLS
+    assert scheduler.rotation_slice([], 7, today) == []
+
+
+def test_poll_fundamentals_fetches_only_todays_slice(monkeypatch):
+    from data_lake.ingestion.market.yahoo_fundamentals import YahooFundamentalsConnector
+
+    today = datetime(2026, 10, 10).date()
+    monkeypatch.setattr(scheduler, "get_session", _sqlite_session_scope())
+    monkeypatch.setattr(
+        "data_lake.ingestion.market.yahoo_common.tracked_yahoo_symbols", lambda session: _SYMBOLS
+    )
+    fetched = []
+    monkeypatch.setattr(
+        YahooFundamentalsConnector,
+        "fetch",
+        lambda self, symbol="", **kw: fetched.append(symbol) or 2,
+    )
+
+    total = scheduler.poll_fundamentals(_settings(fundamentals_rotation_days=7), today=today)
+
+    assert fetched == scheduler.rotation_slice(_SYMBOLS, 7, today)
+    assert total == 2 * len(fetched)
+
+
+def test_poll_fundamentals_skips_a_bad_symbol_but_fails_when_all_fail(monkeypatch):
+    from data_lake.ingestion.market.yahoo_fundamentals import YahooFundamentalsConnector
+
+    monkeypatch.setattr(scheduler, "get_session", _sqlite_session_scope())
+    monkeypatch.setattr(
+        "data_lake.ingestion.market.yahoo_common.tracked_yahoo_symbols",
+        lambda session: ["AAPL", "BAD"],
+    )
+
+    def one_bad(self, symbol="", **kw):
+        if symbol == "BAD":
+            raise RuntimeError("yahoo said no")
+        return 5
+
+    monkeypatch.setattr(YahooFundamentalsConnector, "fetch", one_bad)
+    assert scheduler.poll_fundamentals(_settings(fundamentals_rotation_days=1)) == 5
+
+    def dead_db(self, symbol="", **kw):
+        raise _operational_error()
+
+    monkeypatch.setattr(YahooFundamentalsConnector, "fetch", dead_db)
+    with pytest.raises(OperationalError):
+        scheduler.poll_fundamentals(_settings(fundamentals_rotation_days=1))
+
+
+def test_poll_earnings_calendar_passes_the_horizon(monkeypatch):
+    from data_lake.ingestion.market.finnhub_earnings import FinnhubEarningsCalendarConnector
+
+    seen = {}
+    monkeypatch.setattr(
+        FinnhubEarningsCalendarConnector, "fetch", lambda self, **kw: seen.update(kw) or 31
+    )
+    assert scheduler.poll_earnings_calendar(_settings(earnings_calendar_days_ahead=45)) == 31
+    assert seen == {"days_ahead": 45}
+
+
+def test_run_macro_runs_every_source_and_summarises():
+    parts = [("fred_series", lambda: 3), ("fomc", lambda: 16)]
+    assert scheduler.run_macro(_settings(), parts=parts) == {"fred_series": 3, "fomc": 16}
+
+
+def test_run_macro_runs_the_rest_after_a_failure_then_fails_the_job():
+    ran = []
+
+    def no_key():
+        raise RuntimeError("FRED_API_KEY is not set")
+
+    parts = [
+        ("fred_series", no_key),
+        ("fomc", lambda: ran.append("fomc") or 16),
+        ("boc_rate", lambda: ran.append("boc") or 4),
+    ]
+    with pytest.raises(RuntimeError, match="FRED_API_KEY"):
+        scheduler.run_macro(_settings(), parts=parts)
+    assert ran == ["fomc", "boc"]  # a missing FRED key never stops the keyless sources
+
+
+def test_run_macro_reraises_the_first_error_unwrapped_so_a_dead_db_is_retried():
+    def dead_db():
+        raise _operational_error()
+
+    with pytest.raises(OperationalError):
+        scheduler.run_macro(_settings(), parts=[("fomc", dead_db), ("boc_rate", lambda: 1)])
+
+
+def test_macro_parts_wire_each_connector_to_its_settings(monkeypatch):
+    from data_lake.ingestion.macro import bank_of_canada, fomc, fred
+
+    calls = {}
+
+    def recorder(name, result):
+        def fetch(self, **kw):
+            calls[name] = kw
+            return result
+
+        return fetch
+
+    monkeypatch.setattr(fred.FredSeriesConnector, "fetch", recorder("series", 1))
+    monkeypatch.setattr(fred.FredReleaseCalendarConnector, "fetch", recorder("releases", 2))
+    monkeypatch.setattr(fomc.FomcCalendarConnector, "fetch", recorder("fomc", 3))
+    monkeypatch.setattr(bank_of_canada.BankOfCanadaRateConnector, "fetch", recorder("rate", 4))
+    monkeypatch.setattr(
+        bank_of_canada.BankOfCanadaScheduleConnector, "fetch", recorder("schedule", 5)
+    )
+
+    summary = scheduler.run_macro(_settings(fred_series=["DGS10"], fred_release_ids=[50]))
+
+    assert summary == {
+        "fred_series": 1,
+        "fred_releases": 2,
+        "fomc": 3,
+        "boc_rate": 4,
+        "boc_schedule": 5,
+    }
+    assert calls["series"] == {"series_ids": ["DGS10"]}
+    assert calls["releases"] == {"release_ids": [50]}
+
+
+def test_poll_buybacks_sweeps_every_tracked_symbol(monkeypatch):
+    from data_lake.ingestion.market.sec_xbrl import SecFactsConnector
+
+    monkeypatch.setattr(scheduler, "get_session", _sqlite_session_scope())
+    monkeypatch.setattr(
+        "data_lake.ingestion.market.yahoo_common.tracked_yahoo_symbols",
+        lambda session: ["AAPL", "RY.TO"],
+    )
+    seen = {}
+    monkeypatch.setattr(SecFactsConnector, "fetch", lambda self, **kw: seen.update(kw) or 12)
+    assert scheduler.poll_buybacks() == 12
+    assert seen == {"symbols": ["AAPL", "RY.TO"]}
+
+
+def test_event_calendars_fire_on_startup_and_the_sweeps_wait():
+    job_health.reset()
+    before = datetime.now(UTC)
+    jobs = {j.id: j for j in scheduler.build_scheduler(settings=_settings()).get_jobs()}
+    startup_window = len(jobs) * timedelta(seconds=scheduler.STARTUP_STAGGER_SECONDS)
+    for job_id in ("earnings_calendar_poll", "macro_poll"):
+        assert jobs[job_id].next_run_time <= before + startup_window
+    assert jobs["fundamentals_poll"].next_run_time >= before + timedelta(hours=24)
+    assert jobs["buybacks_poll"].next_run_time >= before + timedelta(hours=168)

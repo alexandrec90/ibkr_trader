@@ -16,6 +16,7 @@ outage (the database was stopped; every run logged "executed successfully" anywa
 
 import logging
 import time
+import zlib
 from collections.abc import Callable, Sequence
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -486,6 +487,125 @@ def poll_ipo_filings() -> int:
     return count
 
 
+def rotation_slice(symbols: Sequence[str], rotation_days: int, today: date) -> list[str]:
+    """The symbols due on ``today`` when every symbol is refreshed once per ``rotation_days``.
+
+    A symbol's day is a stable hash of its name (CRC-32, not ``hash()``, which is salted per
+    process), so the slice is the same across restarts and machines and a newly tracked symbol
+    simply joins one day's slice. ``rotation_days`` of 1 or less means every symbol, every day.
+    """
+    if rotation_days <= 1:
+        return list(symbols)
+    slot = today.toordinal() % rotation_days
+    return [s for s in symbols if zlib.crc32(s.encode("utf-8")) % rotation_days == slot]
+
+
+def poll_fundamentals(settings: Settings, today: date | None = None) -> int:
+    """Refresh today's slice of tracked symbols' Yahoo corporate data.
+
+    One symbol is ~11 throttled Yahoo requests (statements, earnings dates with EPS estimate
+    and actual, dividends, splits, the announced next ex-dividend date, share counts), so the
+    tracked universe is spread over ``fundamentals_rotation_days`` (see ``rotation_slice``).
+    Upcoming earnings dates are also caught daily by the market-wide Finnhub calendar, so a
+    slice whose day was missed costs freshness, not coverage.
+    """
+    from data_lake.ingestion.market.yahoo_common import tracked_yahoo_symbols
+    from data_lake.ingestion.market.yahoo_fundamentals import YahooFundamentalsConnector
+
+    with get_session() as session:
+        symbols = tracked_yahoo_symbols(session)
+    due = rotation_slice(
+        symbols, settings.fundamentals_rotation_days, today or datetime.now(UTC).date()
+    )
+    connector = YahooFundamentalsConnector()
+    total = 0
+    failures = 0
+    last_error: BaseException | None = None
+    for symbol in due:
+        try:
+            total += connector.fetch(symbol=symbol)
+        except Exception as exc:
+            failures += 1
+            last_error = exc
+            logger.exception("fundamentals poll failed for %s", symbol)
+    logger.info(
+        "fundamentals poll upserted %d rows across %d of %d symbols (%d failed)",
+        total,
+        len(due),
+        len(symbols),
+        failures,
+    )
+    _fail_if_every_item_failed("fundamentals poll", len(due), failures, last_error)
+    return total
+
+
+def poll_earnings_calendar(settings: Settings) -> int:
+    """Upsert Finnhub's market-wide earnings calendar for instruments we already track."""
+    from data_lake.ingestion.market.finnhub_earnings import FinnhubEarningsCalendarConnector
+
+    count = FinnhubEarningsCalendarConnector().fetch(
+        days_ahead=settings.earnings_calendar_days_ahead
+    )
+    logger.info("earnings calendar: %d events upserted", count)
+    return count
+
+
+def _macro_parts(settings: Settings) -> list[tuple[str, Callable[[], int]]]:
+    """The macro job's independent sources, as (label, run) pairs."""
+    from data_lake.ingestion.macro.bank_of_canada import (
+        BankOfCanadaRateConnector,
+        BankOfCanadaScheduleConnector,
+    )
+    from data_lake.ingestion.macro.fomc import FomcCalendarConnector
+    from data_lake.ingestion.macro.fred import FredReleaseCalendarConnector, FredSeriesConnector
+
+    return [
+        ("fred_series", lambda: FredSeriesConnector().fetch(series_ids=settings.fred_series)),
+        (
+            "fred_releases",
+            lambda: FredReleaseCalendarConnector().fetch(release_ids=settings.fred_release_ids),
+        ),
+        ("fomc", lambda: FomcCalendarConnector().fetch()),
+        ("boc_rate", lambda: BankOfCanadaRateConnector().fetch()),
+        ("boc_schedule", lambda: BankOfCanadaScheduleConnector().fetch()),
+    ]
+
+
+def run_macro(
+    settings: Settings, parts: Sequence[tuple[str, Callable[[], int]]] | None = None
+) -> dict[str, int]:
+    """Rates and the macro calendar: FRED series + release dates, FOMC, Bank of Canada.
+
+    Every source runs even when another fails -- a missing FRED key must not stop the keyless
+    FOMC and Bank of Canada loads -- but any failure then fails the job, re-raising the first
+    error so `health` shows it and a dead database still earns `_guard`'s retry.
+    """
+    summary: dict[str, int] = {}
+    first_error: BaseException | None = None
+    for label, run in parts if parts is not None else _macro_parts(settings):
+        try:
+            summary[label] = run()
+        except Exception as exc:
+            logger.exception("macro poll: %s failed", label)
+            first_error = first_error or exc
+    logger.info("macro poll: %s", summary)
+    if first_error is not None:
+        raise first_error
+    return summary
+
+
+def poll_buybacks() -> int:
+    """Upsert SEC XBRL repurchase facts for every tracked symbol (non-SEC filers are skipped)."""
+    from data_lake.ingestion.market.sec_xbrl import SecFactsConnector
+    from data_lake.ingestion.market.yahoo_common import tracked_yahoo_symbols
+
+    with get_session() as session:
+        symbols = tracked_yahoo_symbols(session)
+    count = SecFactsConnector().fetch(symbols=symbols)
+    logger.info("buybacks: %d SEC facts upserted across %d symbols", count, len(symbols))
+    return count
+
+
 #: Tiingo's public ticker list (~800 KB) changes slowly: cached beside the usage ledger and
 #: re-downloaded weekly rather than on every hourly pricing run.
 _TIINGO_LISTINGS_MAX_AGE = timedelta(days=7)
@@ -859,6 +979,41 @@ def _register_ipo_jobs(register: Callable[..., None], settings: Settings) -> Non
     )
 
 
+def _register_event_jobs(register: Callable[..., None], settings: Settings) -> None:
+    """Earnings, dividends, splits, macro calendars and buybacks, through ``register``.
+
+    The calendars (one request or a handful each) fire on startup, so an upcoming date lands
+    as soon as `serve` is up. The fundamentals rotation and the buybacks sweep walk the whole
+    tracked universe, so they wait for their slot like the archive jobs.
+    """
+    register(
+        "fundamentals_poll",
+        "fundamentals",
+        lambda: poll_fundamentals(settings),
+        seconds=settings.poll_fundamentals_hours * 3600,
+    )
+    register(
+        "earnings_calendar_poll",
+        "earnings_calendar",
+        lambda: poll_earnings_calendar(settings),
+        seconds=settings.poll_earnings_calendar_hours * 3600,
+        start_now=True,
+    )
+    register(
+        "macro_poll",
+        "macro",
+        lambda: run_macro(settings),
+        seconds=settings.poll_macro_hours * 3600,
+        start_now=True,
+    )
+    register(
+        "buybacks_poll",
+        "buybacks",
+        poll_buybacks,
+        seconds=settings.poll_buybacks_hours * 3600,
+    )
+
+
 def _register_gateway_job(register: Callable[..., None], settings: Settings) -> None:
     """The IB Gateway login watch, through `build_scheduler`'s ``register``.
 
@@ -1019,6 +1174,7 @@ def build_scheduler(
     _register_archive_jobs(register, settings)
     _register_gateway_job(register, settings)
     _register_ipo_jobs(register, settings)
+    _register_event_jobs(register, settings)
     _add_staggered(scheduler, pending)
     # A job this build no longer registers (renamed or retired) would keep its seeded
     # interval and read `stale` forever, holding `ibkr-trader health` red.
