@@ -655,6 +655,27 @@ def test_db_revision_prefers_the_environment_database_url():
     assert "5433" in script.DEFAULT_DATABASE_URL
 
 
+def test_db_revision_prefers_the_venv_interpreter_and_falls_back(tmp_path):
+    script = load_script("db-revision.py")
+    assert script.python_exe(tmp_path) == sys.executable
+    venv_python = tmp_path / ".venv" / "Scripts" / "python.exe"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_text("", encoding="utf-8")
+    assert script.python_exe(tmp_path) == str(venv_python)
+
+
+def test_db_revision_artifact_is_headed_on_failure_and_emptied_on_success(monkeypatch, tmp_path):
+    script = load_script("db-revision.py")
+    artifact = tmp_path / "artifacts" / "tasks" / "db-revision.log"
+    monkeypatch.setattr(script, "ARTIFACT", artifact)
+    script.write_artifact(["alembic exited 1", "boom"])
+    assert artifact.read_text(encoding="utf-8") == (
+        "# source: scripts/db-revision.py\nalembic exited 1\nboom"
+    )
+    script.write_artifact([])
+    assert artifact.read_text(encoding="utf-8") == ""
+
+
 def test_db_revision_reports_the_generated_file_repo_relative():
     """The point of printing the path is that someone opens it."""
     script = load_script("db-revision.py")

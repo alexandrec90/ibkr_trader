@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import importlib.util
 import socket
+import subprocess
 import sys
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -100,6 +101,74 @@ def test_verdict_is_current_only_on_every_head():
 
 def test_alembic_runs_through_the_venv_as_a_module(tmp_path):
     assert up.alembic_argv("current", root=tmp_path)[1:] == ["-m", "alembic", "current"]
+
+
+def test_python_exe_prefers_the_venv_and_falls_back_to_the_running_interpreter(tmp_path):
+    assert up.python_exe(tmp_path) == sys.executable
+    venv_python = tmp_path / ".venv" / "Scripts" / "python.exe"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_text("", encoding="utf-8")
+    assert up.python_exe(tmp_path) == str(venv_python)
+
+
+def test_alembic_hands_it_the_url_and_keeps_only_non_blank_output(monkeypatch):
+    seen = {}
+
+    def run(argv, **kwargs):
+        seen["argv"], seen["env"] = argv, kwargs["env"]
+        return SimpleNamespace(stdout="f7b8c9d0e1f2 (head)\n\n", stderr="  \nwarn\n", returncode=4)
+
+    monkeypatch.setattr(up.subprocess, "run", run)
+    assert up.alembic("postgresql://u:p@h/x", "heads") == (["f7b8c9d0e1f2 (head)", "warn"], 4)
+    assert seen["argv"][-2:] == ["alembic", "heads"]
+    assert seen["env"]["DATABASE_URL"] == "postgresql://u:p@h/x"
+
+
+def test_an_alembic_that_runs_past_its_timeout_is_a_failure(monkeypatch):
+    def run(argv, **kwargs):
+        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+    monkeypatch.setattr(up.subprocess, "run", run)
+    assert up.alembic("postgresql://u:p@h/x", "current") == (
+        [f"ran past {up.ALEMBIC_TIMEOUT}s"],
+        up.FAILED,
+    )
+
+
+def test_write_artifact_heads_a_failure_and_empties_on_success(db):
+    up.write_artifact(["alembic heads exited 1", "", "boom"])
+    assert up.ARTIFACT.read_text(encoding="utf-8") == (
+        "# source: scripts/db-upgrade.py\nalembic heads exited 1\n\nboom"
+    )
+    up.write_artifact([])
+    assert up.ARTIFACT.read_text(encoding="utf-8") == ""
+
+
+def test_fail_records_the_cause_and_names_the_artifact(db, capsys):
+    assert up.fail("alembic heads exited 1", ["boom"]) == up.FAILED
+    assert "boom" in up.ARTIFACT.read_text(encoding="utf-8")
+    err = capsys.readouterr().err
+    assert err.startswith("error: alembic heads exited 1")
+    assert str(Path("artifacts", "tasks", "db-upgrade.log")) in err
+
+
+def test_check_reads_heads_after_current_and_applies_nothing(db):
+    assert up.check("postgresql://u:p@h/x") == up.BEHIND
+    db["answers"][("current",)] = (["f7b8c9d0e1f2 (head)"], 0)
+    assert up.check("postgresql://u:p@h/x") == up.CURRENT
+    assert db["ran"] == [("current",), ("heads",)] * 2
+
+
+def test_check_fails_when_alembic_heads_cannot_answer(db):
+    db["answers"][("heads",)] = (["no script_location"], 1)
+    assert up.check("postgresql://u:p@h/x") == up.FAILED
+    assert "alembic heads exited 1" in up.ARTIFACT.read_text(encoding="utf-8")
+
+
+def test_upgrade_applies_head(db, capsys):
+    assert up.upgrade("postgresql://u:p@h/x") == 0
+    assert db["ran"] == [("upgrade", "head")]
+    assert capsys.readouterr().out.strip().endswith("upgraded to head")
 
 
 def test_check_reports_behind_and_applies_nothing(db):
