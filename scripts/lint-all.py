@@ -16,10 +16,29 @@ from __future__ import annotations
 
 import argparse
 import subprocess
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 RUNNER = ROOT / "scripts" / "task-artifact-runner.py"
+
+
+def align_shared_sibling() -> None:
+    """Put the shared `../data-lake` tree back at this tree's CI pin before `uv run` syncs.
+
+    Every `.claude/worktrees` tree resolves `../data-lake` to one shared tree, and a tree
+    cut off another pin moves it: `uv run` then relocked `uv.lock` against that data-lake
+    and mypy failed what CI passed (devkit 0db0d931, 941b7470). The vendored
+    `toolchain.align_path_sources` re-checks it; a copy that predates it changes nothing.
+    """
+    sys.path.insert(0, str(ROOT / "scripts" / "hooks"))
+    try:
+        import toolchain
+
+        align = toolchain.align_path_sources
+    except (ImportError, AttributeError):
+        return
+    align(ROOT)
 
 
 def changed_paths() -> list[str]:
@@ -79,6 +98,7 @@ def main(argv: list[str] | None = None) -> int:
         if not targets:
             return nothing_to_do(changed)
 
+    align_shared_sibling()
     failures = 0
     failures += bool(run_artifact("lint", ["-m", "ruff", "check", *targets]))
     failures += bool(run_artifact("format-check", ["-m", "ruff", "format", "--check", *targets]))

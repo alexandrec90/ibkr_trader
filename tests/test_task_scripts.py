@@ -60,6 +60,8 @@ CONTRACT_ENTRYPOINTS = (
     "backtest-task.py",  # Backtest: Run / Backtest: OOS
     "report-task.py",  # Report: Open Model & Strategy Views / Report: Run Strategy Lab
     "db-revision.py",  # DB: New Migration (Autogenerate)
+    # Not a task: devkit's fix pass runs it every half hour (`fix_migrate.py` there).
+    "db-upgrade.py",
     # Not dispatched directly, but every one of the above wraps it, so a rename here
     # breaks all of them at once and none of them at import time.
     "task-artifact-runner.py",
@@ -144,6 +146,7 @@ def test_lint_all_main_runs_each_gate_for_changed_python(monkeypatch):
     script = load_script("lint-all.py")
     calls = []
     monkeypatch.setattr(script, "changed_paths", lambda: ["CLAUDE.md", "scripts/example.py"])
+    monkeypatch.setattr(script, "align_shared_sibling", lambda: calls.append(("align", [])))
     monkeypatch.setattr(
         script,
         "run_artifact",
@@ -152,10 +155,42 @@ def test_lint_all_main_runs_each_gate_for_changed_python(monkeypatch):
 
     assert script.main(["--changed"]) == 0
     assert calls == [
+        ("align", []),  # before `uv run` syncs against the shared ../data-lake
         ("lint", ["-m", "ruff", "check", "scripts/example.py"]),
         ("format-check", ["-m", "ruff", "format", "--check", "scripts/example.py"]),
         ("typecheck", ["-m", "mypy", "src"]),
     ]
+
+
+def test_run_tests_aligns_the_shared_sibling_before_uv_run_syncs(monkeypatch):
+    script = load_script("run-tests.py")
+    calls = []
+    monkeypatch.setattr(script, "align_shared_sibling", lambda: calls.append("align"))
+    monkeypatch.setattr(
+        script.subprocess,
+        "run",
+        lambda command, **kwargs: calls.append(command[:2]) or SimpleNamespace(returncode=0),
+    )
+    assert script.main(["-k", "x"]) == 0
+    assert calls == ["align", ["uv", "run"]]
+
+
+@pytest.mark.parametrize("name", ["lint-all.py", "run-tests.py"])
+def test_the_runners_hand_this_tree_to_the_vendored_pin_re_check(monkeypatch, name):
+    """devkit 0db0d931 / 941b7470: a sibling tree cut off another data-lake pin moved the
+    shared `../data-lake`, and `uv run` relocked `uv.lock` against it."""
+    script = load_script(name)
+    seen = []
+    monkeypatch.setitem(sys.modules, "toolchain", SimpleNamespace(align_path_sources=seen.append))
+    script.align_shared_sibling()
+    assert seen == [script.ROOT]
+
+
+@pytest.mark.parametrize("name", ["lint-all.py", "run-tests.py"])
+def test_a_vendored_toolchain_without_the_re_check_changes_nothing(monkeypatch, name):
+    script = load_script(name)
+    monkeypatch.setitem(sys.modules, "toolchain", SimpleNamespace())
+    script.align_shared_sibling()  # no AttributeError: a pre-pull copy is simply skipped
 
 
 def test_lint_all_names_the_changed_files_it_has_no_linter_for(monkeypatch, capsys):
@@ -651,6 +686,27 @@ def test_db_revision_prefers_the_environment_database_url():
     assert script.database_url({}) == script.DEFAULT_DATABASE_URL
     # 5432 is taken by another local Postgres on this machine.
     assert "5433" in script.DEFAULT_DATABASE_URL
+
+
+def test_db_revision_prefers_the_venv_interpreter_and_falls_back(tmp_path):
+    script = load_script("db-revision.py")
+    assert script.python_exe(tmp_path) == sys.executable
+    venv_python = tmp_path / ".venv" / "Scripts" / "python.exe"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_text("", encoding="utf-8")
+    assert script.python_exe(tmp_path) == str(venv_python)
+
+
+def test_db_revision_artifact_is_headed_on_failure_and_emptied_on_success(monkeypatch, tmp_path):
+    script = load_script("db-revision.py")
+    artifact = tmp_path / "artifacts" / "tasks" / "db-revision.log"
+    monkeypatch.setattr(script, "ARTIFACT", artifact)
+    script.write_artifact(["alembic exited 1", "boom"])
+    assert artifact.read_text(encoding="utf-8") == (
+        "# source: scripts/db-revision.py\nalembic exited 1\nboom"
+    )
+    script.write_artifact([])
+    assert artifact.read_text(encoding="utf-8") == ""
 
 
 def test_db_revision_reports_the_generated_file_repo_relative():
