@@ -24,6 +24,7 @@ from pathlib import Path
 from apscheduler.schedulers.blocking import BlockingScheduler
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError
+from sqlalchemy.orm import Session
 
 from ibkr_trader import job_health
 from ibkr_trader.config import Settings, get_settings
@@ -406,6 +407,24 @@ def poll_yahoo_prices() -> int:
 #: overlap heals late corrections around the boundary day.
 _FX_REFRESH_OVERLAP_DAYS = 3
 
+#: How far back :func:`_newest_fx_bar` looks before it scans the pair's whole history. An
+#: unbounded ``max(ts)`` plans over every ``price_bars`` chunk and leaves ~63 MB of catalog
+#: cache in its backend (see ``PLAN_CACHE_OPTION`` in db/session.py, which keeps this bound
+#: a plan-time constant). A pair polled on schedule always has a bar inside it.
+_FX_NEWEST_LOOKBACK = timedelta(days=45)
+
+
+def _newest_fx_bar(session: Session, pair: str, *, now: datetime | None = None) -> datetime | None:
+    """The newest stored bar of ``pair`` from any source, looking in the recent window first."""
+    query = (
+        select(func.max(PriceBar.ts))
+        .join(Instrument, Instrument.id == PriceBar.instrument_id)
+        .where(Instrument.symbol == pair)
+    )
+    cutoff = (now or datetime.now(UTC)) - _FX_NEWEST_LOOKBACK
+    recent = session.scalar(query.where(PriceBar.ts >= cutoff))
+    return recent if recent is not None else session.scalar(query)
+
 
 def poll_fx(pairs: list[str]) -> int:
     """Refresh daily FX bars from the newest stored bar forward (full history when empty).
@@ -424,11 +443,7 @@ def poll_fx(pairs: list[str]) -> int:
     total = 0
     for pair in pairs:
         with get_session() as session:
-            newest = session.scalar(
-                select(func.max(PriceBar.ts))
-                .join(Instrument, Instrument.id == PriceBar.instrument_id)
-                .where(Instrument.symbol == pair.strip().upper())
-            )
+            newest = _newest_fx_bar(session, pair.strip().upper())
         date_from = (
             (newest.date() - timedelta(days=_FX_REFRESH_OVERLAP_DAYS)).isoformat() if newest else ""
         )

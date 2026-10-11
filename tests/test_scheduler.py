@@ -920,6 +920,58 @@ def test_poll_fx_starts_from_newest_stored_bar(monkeypatch):
     assert yahoo_pairs == ["USDCAD"]  # yahoo does its own incremental bookkeeping
 
 
+def test_newest_fx_bar_answers_from_the_recent_window_before_the_whole_history():
+    """An unbounded ``max(ts)`` plans over all ~790 ``price_bars`` chunks; a pair polled on
+    schedule has a bar inside the window, so one bounded query answers it."""
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import event
+
+    from ibkr_trader.db.models import Instrument, PriceBar
+
+    now = datetime(2026, 10, 11, tzinfo=UTC)
+    scope = _sqlite_session_scope()
+    with scope() as session:
+        instrument = Instrument(symbol="USDCAD", exchange="IDEALPRO", currency="CAD")
+        session.add(instrument)
+        session.flush()
+        for age in (2, 400):
+            session.add(
+                PriceBar(
+                    instrument_id=instrument.id,
+                    ts=now - timedelta(days=age),
+                    bar_size="1 day",
+                    source="fmp",
+                    what_to_show="TRADES",
+                    open=1.3,
+                    high=1.3,
+                    low=1.3,
+                    close=1.3,
+                    volume=None,
+                )
+            )
+
+    with scope() as session:
+        selects: list[str] = []
+        event.listen(
+            session.get_bind(),
+            "before_cursor_execute",
+            lambda conn, cursor, statement, *args: selects.append(statement),
+        )
+        newest = scheduler._newest_fx_bar(session, "USDCAD", now=now)
+        assert newest is not None
+        assert newest.date() == (now - timedelta(days=2)).date()
+        assert len(selects) == 1
+        assert "price_bars.ts >=" in selects[0]
+
+        stale = scheduler._newest_fx_bar(session, "USDCAD", now=now + timedelta(days=300))
+        assert stale is not None
+        assert stale.date() == (now - timedelta(days=2)).date()
+        assert len(selects) == 3  # the bounded miss, then the whole history
+
+        assert scheduler._newest_fx_bar(session, "EURCAD", now=now) is None
+
+
 def test_poll_fx_empty_history_fetches_full_range(monkeypatch):
     from data_lake.ingestion.market.fmp_fx import FmpFxConnector
     from data_lake.ingestion.market.yahoo_fx import YahooFxConnector
