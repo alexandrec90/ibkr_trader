@@ -15,7 +15,7 @@ from pandera.errors import SchemaErrors
 
 from ibkr_trader.signals.features import FEATURE_SET_VERSION
 
-# Numeric model inputs emitted by signals.features for feature-set v2.  The dataset builder
+# Numeric model inputs emitted by signals.features for feature-set v3 (v2's columns).  The dataset builder
 # materializes every column, using NaN when a feature is unavailable for an observation.
 NUMERIC_FEATURE_COLUMNS = (
     "dividend_growth_3y",
@@ -140,6 +140,8 @@ _feature_columns: dict[str, Any] = {
         ],
         nullable=False,
     ),
+    # True when the name stopped trading inside its forward window (settled at last close).
+    "label_censored": pa.Column(bool, nullable=False),
     "sector": pa.Column(
         None,
         pa.Check(_is_string_or_null, name="sector_string_or_null"),

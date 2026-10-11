@@ -15,6 +15,7 @@ outage (the database was stopped; every run logged "executed successfully" anywa
 """
 
 import logging
+import threading
 import time
 from collections.abc import Callable, Sequence
 from datetime import UTC, date, datetime, timedelta
@@ -487,7 +488,11 @@ _TIINGO_LISTINGS_MAX_AGE = timedelta(days=7)
 
 
 def _tiingo_listings(cache_path: Path, *, now: datetime | None = None) -> dict:
-    """Tiingo's supported-ticker listings, from a weekly-refreshed local cache of the zip."""
+    """Tiingo's supported-ticker listings, from a weekly-refreshed local cache of the zip.
+
+    The index and IPO pricing jobs share the cache and fire on the same hourly beat, so a
+    refresh lands by atomic replace: a reader sees the old zip or the new one, never half.
+    """
     from data_lake.ingestion.market.tiingo import fetch_supported_tickers, parse_supported_tickers
 
     now = now or datetime.now(UTC)
@@ -496,7 +501,9 @@ def _tiingo_listings(cache_path: Path, *, now: datetime | None = None) -> dict:
     )
     if not fresh:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        cache_path.write_bytes(fetch_supported_tickers())
+        partial = cache_path.with_name(f"{cache_path.name}.{threading.get_ident()}.part")
+        partial.write_bytes(fetch_supported_tickers())
+        partial.replace(cache_path)
     return parse_supported_tickers(cache_path.read_bytes())
 
 
@@ -532,6 +539,47 @@ def poll_index_prices(settings: Settings) -> dict[str, int]:
         "failed": len(report.failed),
     }
     logger.info("index prices: %s", summary)
+    return summary
+
+
+def poll_ipo_prices(settings: Settings) -> dict[str, int]:
+    """Price the IPO cohort's listings that are not priced yet, then date every instrument.
+
+    The cohort is Finnhub's priced deals since ``ipo_universe_since`` (seed their history
+    once with ``ingest ipo --calendar-from``): live ones from Yahoo, at most
+    ``ipo_prices_max_yahoo`` probes a run, dead ones from Tiingo inside the free-tier ledger
+    it shares with ``poll_index_prices`` (the ledger file-locks itself, so the two jobs, or a
+    CLI run beside `serve`, add to each other's counts). Tiingo's public ticker list is passed
+    even without a key: it tells a dead listing from a live one, so dead ones never spend
+    Yahoo's budget. ``listed_on`` is filled afterwards, from the IPO dates just priced.
+    """
+    from data_lake.ingestion.market.ipo_pricing import resolve_ipo_prices
+    from data_lake.ingestion.market.listing_dates import resolve_listing_dates
+    from data_lake.ingestion.market.tiingo import TiingoConnector, TiingoUsage
+
+    usage_path = Path(settings.tiingo_usage_file)
+    listings = _tiingo_listings(usage_path.with_name("tiingo-supported-tickers.zip"))
+    tiingo = TiingoConnector(usage=TiingoUsage(usage_path)) if settings.tiingo_api_key else None
+    report = resolve_ipo_prices(
+        since=date.fromisoformat(settings.ipo_universe_since),
+        max_yahoo=settings.ipo_prices_max_yahoo,
+        tiingo=tiingo,
+        tiingo_listings=listings,
+    )
+    dated = resolve_listing_dates(tiingo_listings=listings)
+    summary = {
+        "already": report.already,
+        "yahoo": report.resolved_yahoo,
+        "tiingo": report.resolved_tiingo,
+        "unpriced": report.unpriced,
+        "excluded": sum(report.excluded.values()),
+        "deferred": report.deferred,
+        "failed": len(report.failed),
+        "listed_from_ipo": dated.from_ipo,
+        "listed_from_tiingo": dated.from_tiingo,
+        "listed_from_first_bar": dated.from_first_bar,
+    }
+    logger.info("ipo prices: %s", summary)
     return summary
 
 
@@ -824,11 +872,13 @@ def _register_finnhub_backfill(register: Callable[..., None], settings: Settings
 
 
 def _register_ipo_jobs(register: Callable[..., None], settings: Settings) -> None:
-    """IPO calendar + EDGAR filings, and the major-IPO alert that reads them.
+    """IPO calendar + EDGAR filings, the major-IPO alert that reads them, and the pricing of
+    the IPO cohort the models train on.
 
     The polls fire on startup so a restart catches up on filings at once. The alert runs
     hourly on its own: it only reads the database, and a separate label keeps a dead source
-    and a silent alert apart in `health`.
+    and a silent alert apart in `health`. Pricing is a resumable backfill like
+    ``index_prices`` — its cadence is the backfill's speed, near-free once it is done.
     """
     from ibkr_trader import ipo_watch
 
@@ -851,6 +901,12 @@ def _register_ipo_jobs(register: Callable[..., None], settings: Settings) -> Non
         "ipo_alerts",
         lambda: ipo_watch.alert_job(settings),
         seconds=IPO_ALERT_INTERVAL_SECONDS,
+    )
+    register(
+        "ipo_prices_poll",
+        "ipo_prices",
+        lambda: poll_ipo_prices(settings),
+        seconds=settings.poll_ipo_prices_minutes * 60,
     )
 
 

@@ -13,7 +13,6 @@ lightgbm/scikit-learn live behind the ``[ml]`` extra — this module imports wit
 fails with an install hint only when training is actually attempted. Reads Postgres only.
 """
 
-import hashlib
 import itertools
 import json
 import platform
@@ -31,8 +30,11 @@ import numpy as np
 import pandas as pd
 from sqlalchemy.orm import Session
 
+from ibkr_trader.backtest.engine import curated_provenance
 from ibkr_trader.signals.dataset import (
     LABEL_HORIZON_MONTHS,
+    TRAINING_LIMITS,
+    UniverseSource,
     build_dataset,
     feature_columns,
 )
@@ -257,9 +259,26 @@ def _library_versions() -> dict[str, str]:
     return versions
 
 
-def _universe_hash(universe: Sequence[str]) -> str:
-    canonical = "\n".join(sorted({symbol.upper() for symbol in universe}))
-    return hashlib.sha256(canonical.encode()).hexdigest()[:16]
+def _label_metadata(df: pd.DataFrame, benchmark_symbol: str) -> dict[str, Any]:
+    return {
+        "spec": (
+            f"{LABEL_HORIZON_MONTHS}-month forward total return in CAD (ADJUSTED_LAST "
+            f"bars) in excess of {benchmark_symbol}, percentile-ranked cross-sectionally "
+            "per monthly rebalance date into [0, 1]; a name that stops trading inside "
+            "the horizon settles at its last close (right-censored, kept)"
+        ),
+        "horizon_months": LABEL_HORIZON_MONTHS,
+        "benchmark": benchmark_symbol,
+        # rows whose name stopped trading inside the horizon, kept at their last close
+        "censored_rows": int(df["label_censored"].sum()) if "label_censored" in df else 0,
+    }
+
+
+def _universe_metadata(universe: Sequence[str] | Mapping[str, Any]) -> dict[str, Any]:
+    """A dataset's provenance stamp as-is; bare symbols are a curated list of survivors."""
+    if isinstance(universe, Mapping):
+        return dict(universe)
+    return curated_provenance(universe)
 
 
 def _fold_payload(results: Sequence[FoldResult], model_names: Sequence[str]) -> list[dict]:
@@ -494,14 +513,14 @@ def train_on_dataset(
     df: pd.DataFrame,
     *,
     models_dir: Path,
-    universe: Sequence[str],
+    universe: Sequence[str] | Mapping[str, Any],
     window: tuple[datetime, datetime],
     seed: int = 42,
     test_size: int = 6,
     min_train: int = 24,
     lgbm_params: dict[str, Any] | None = None,
     benchmark_symbol: str = "XEQT",
-    min_history_days: int = 252,
+    min_history_days: int = TRAINING_LIMITS.min_history_days,
     search: str = "optuna",
     n_trials: int = 50,
 ) -> TrainResult:
@@ -509,7 +528,9 @@ def train_on_dataset(
 
     Pure over the dataset frame (no DB) so tests drive it with synthetic panels. The final
     LightGBM model trains on **all** labeled rows; fold ICs are its honest out-of-sample
-    record and are stored alongside it in metadata.
+    record and are stored alongside it in metadata. ``universe`` is the dataset's
+    provenance stamp (``DatasetBuild.universe``), recorded as-is, or bare symbols, stamped
+    as a curated list.
     """
     _require_ml()
     if df.empty:
@@ -579,16 +600,8 @@ def train_on_dataset(
             column: {"encoding": "lightgbm-native-categorical", "categories": cats}
             for column, cats in final.categories.items()
         },
-        "label": {
-            "spec": (
-                f"{LABEL_HORIZON_MONTHS}-month forward total return in CAD (ADJUSTED_LAST "
-                f"bars) in excess of {benchmark_symbol}, percentile-ranked cross-sectionally "
-                "per monthly rebalance date into [0, 1]"
-            ),
-            "horizon_months": LABEL_HORIZON_MONTHS,
-            "benchmark": benchmark_symbol,
-        },
-        "universe": {"n_symbols": len(set(universe)), "sha256_16": _universe_hash(universe)},
+        "label": _label_metadata(df, benchmark_symbol),
+        "universe": _universe_metadata(universe),
         "eligibility": {"min_history_days": min_history_days},
         "train_window": {
             "requested": [window[0].isoformat(), window[1].isoformat()],
@@ -624,7 +637,7 @@ def train_on_dataset(
 
 def train_from_db(
     session: Session,
-    universe: Sequence[str],
+    universe: Sequence[str] | UniverseSource,
     start: datetime,
     end: datetime,
     *,
@@ -638,9 +651,15 @@ def train_from_db(
     search: str = "optuna",
     n_trials: int = 50,
 ) -> TrainResult:
-    """Build the dataset from Postgres and run ``train_on_dataset`` (the CLI entry point)."""
+    """Build the dataset from Postgres and run ``train_on_dataset`` (the CLI entry point).
+
+    ``universe`` is symbols (curated) or a ``UniverseSource`` such as the point-in-time
+    S&P 500 (``build_dataset``); ``limits`` defaults to ``TRAINING_LIMITS``, which keeps
+    young listings.
+    """
     _require_ml()
-    df = build_dataset(
+    limits = limits or TRAINING_LIMITS
+    dataset = build_dataset(
         session,
         universe,
         start,
@@ -649,16 +668,16 @@ def train_from_db(
         limits=limits,
     )
     return train_on_dataset(
-        df,
+        dataset.frame,
         models_dir=models_dir,
-        universe=universe,
+        universe=dataset.universe,
         window=(start, end),
         seed=seed,
         test_size=test_size,
         min_train=min_train,
         lgbm_params=lgbm_params,
         benchmark_symbol=benchmark_symbol,
-        min_history_days=(limits or EligibilityLimits()).min_history_days,
+        min_history_days=limits.min_history_days,
         search=search,
         n_trials=n_trials,
     )

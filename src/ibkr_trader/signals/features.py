@@ -5,7 +5,7 @@ predictions, feature snapshots) — no network calls in this package, so feature
 are reproducible.
 
 The heart is a **pure core + thin DB wrapper**: ``build_features_asof`` computes feature
-set v2 from in-memory inputs (no session, no network) so training (ML-03) and the backtest
+set v3 from in-memory inputs (no session, no network) so training (ML-03) and the backtest
 engine share the exact same feature code and can never disagree; ``build_daily_features``
 loads those inputs from Postgres and persists snapshots to the ``features`` table, keyed by
 ``FEATURE_SET_VERSION`` so a saved model knows what it was trained on.
@@ -28,9 +28,15 @@ from ibkr_trader.db.models import Dividend, Feature, Instrument, ShareCount
 #: Version stamp for the feature *definitions* below. Bump whenever a feature's semantics
 #: change (lookbacks, formulas, additions) — persisted snapshots and trained models carry it,
 #: so mixed-version rows never silently feed one model.
-FEATURE_SET_VERSION = "2"
+FEATURE_SET_VERSION = "3"
 
 TRADING_DAYS_PER_YEAR = 252
+
+#: Calendar days between two consecutive bars beyond which the series has a *hole* — an
+#: ingestion gap or a long halt — rather than a weekend or a holiday cluster. Lookbacks count
+#: bars, so a window spanning a hole silently covers more calendar time than its name says,
+#: and the jump across it reads as one day's return. v3: windows stop at the latest hole.
+MAX_BAR_GAP_DAYS = 10
 
 #: Trailing total-return lookbacks in trading days (a month ≈ 21 trading days). ``return_12m``
 #: must keep the exact semantics of the pre-ML-02 engine (guards the momentum_lt baseline).
@@ -79,27 +85,46 @@ class FeatureInputs:
     benchmark_closes: Sequence[float] | None = None
 
 
-def _trailing_return(closes: Sequence[float], i: int, lookback: int) -> float | None:
+def _segment_start(dates: Sequence[date], i: int) -> int:
+    """First index of the hole-free run of bars ending at ``i``.
+
+    Looks back only as far as the longest lookback reads (``TRADING_DAYS_PER_YEAR`` bars), so
+    a hole older than every window costs nothing and changes nothing.
+    """
+    lo = max(0, i - TRADING_DAYS_PER_YEAR)
+    for k in range(i, lo, -1):
+        if (dates[k] - dates[k - 1]).days > MAX_BAR_GAP_DAYS:
+            return k
+    return lo
+
+
+def _trailing_return(
+    closes: Sequence[float], i: int, lookback: int, floor: int = 0
+) -> float | None:
+    """Return over ``lookback`` bars, or None when that reaches before bar ``floor``."""
     back = i - lookback
-    if back < 0 or closes[back] <= 0:
+    if back < floor or closes[back] <= 0:
         return None
     return closes[i] / closes[back] - 1.0
 
 
 def _add_price_features(inputs: FeatureInputs, i: int, feats: dict[str, float]) -> None:
     closes = inputs.closes
+    # Every window starts at or after the latest hole: a return across one is absent, and a
+    # risk window shrinks to the bars since it (still subject to its minimum observations).
+    floor = _segment_start(inputs.dates, i)
     for name, lookback in _RETURN_LOOKBACKS.items():
-        ret = _trailing_return(closes, i, lookback)
+        ret = _trailing_return(closes, i, lookback, floor)
         if ret is not None:
             feats[name] = ret
 
     # 12-month return skipping the most recent month — momentum without short-term reversal.
     back12 = i - _RETURN_LOOKBACKS["return_12m"]
-    if back12 >= 0 and closes[back12] > 0:
+    if back12 >= floor and closes[back12] > 0:
         feats["momentum_12_1"] = closes[i - _ONE_MONTH] / closes[back12] - 1.0
 
     annualize = math.sqrt(TRADING_DAYS_PER_YEAR)
-    window = np.asarray(closes[max(0, i - TRADING_DAYS_PER_YEAR + 1) : i + 1], dtype=float)
+    window = np.asarray(closes[max(floor, i - TRADING_DAYS_PER_YEAR + 1) : i + 1], dtype=float)
     if len(window) >= _MIN_RISK_OBS:
         rets = np.diff(window) / window[:-1]
         feats["volatility"] = float(rets.std() * annualize)
@@ -108,18 +133,18 @@ def _add_price_features(inputs: FeatureInputs, i: int, feats: dict[str, float]) 
         peaks = np.maximum.accumulate(window)
         feats["max_drawdown_252d"] = float(((window - peaks) / peaks).min())
 
-    window_60 = np.asarray(closes[max(0, i - 59) : i + 1], dtype=float)
+    window_60 = np.asarray(closes[max(floor, i - 59) : i + 1], dtype=float)
     if len(window_60) >= _MIN_RISK_OBS:
         rets_60 = np.diff(window_60) / window_60[:-1]
         feats["volatility_60d"] = float(rets_60.std() * annualize)
 
-    if i + 1 >= TRADING_DAYS_PER_YEAR:
+    if i - TRADING_DAYS_PER_YEAR + 1 >= floor:
         high = max(closes[i - TRADING_DAYS_PER_YEAR + 1 : i + 1])
         if high > 0:
             feats["pct_off_52w_high"] = closes[i] / high - 1.0
 
     if inputs.volumes is not None:
-        vol_window = np.asarray(inputs.volumes[max(0, i - 59) : i + 1], dtype=float)
+        vol_window = np.asarray(inputs.volumes[max(floor, i - 59) : i + 1], dtype=float)
         if len(vol_window) >= _MIN_RISK_OBS:
             std = vol_window.std()
             zscore = (vol_window[-1] - vol_window.mean()) / std if std > 0 else 0.0
@@ -132,9 +157,12 @@ def _add_benchmark_relative(inputs: FeatureInputs, day: date, feats: dict[str, f
     j = bisect_right(inputs.benchmark_dates, day) - 1
     if j < 0:
         return
+    floor = _segment_start(inputs.benchmark_dates, j)
     for suffix in ("3m", "12m"):
         own = feats.get(f"return_{suffix}")
-        bench = _trailing_return(inputs.benchmark_closes, j, _RETURN_LOOKBACKS[f"return_{suffix}"])
+        bench = _trailing_return(
+            inputs.benchmark_closes, j, _RETURN_LOOKBACKS[f"return_{suffix}"], floor
+        )
         if own is not None and bench is not None:
             feats[f"excess_return_{suffix}"] = own - bench
 
@@ -165,12 +193,13 @@ def _add_corporate_features(
 
 
 def build_features_asof(inputs: FeatureInputs, day: date) -> dict[str, float]:
-    """Feature set v2 as-of ``day`` — the numeric dict allocators and models consume.
+    """Feature set v3 as-of ``day`` — the numeric dict allocators and models consume.
 
     No-look-ahead contract: **only data dated ≤ day influences the output**; appending later
     bars/dividends/share counts to ``inputs`` must not change the result at ``day``. Features
-    with insufficient history are simply absent (never NaN). ``return_12m`` and ``volatility``
-    keep the exact semantics of the pre-ML-02 engine so existing baselines are unchanged.
+    with insufficient history are simply absent (never NaN). On a hole-free series
+    ``return_12m`` and ``volatility`` keep the exact semantics of the pre-ML-02 engine; v3
+    only differs where a window would span a hole (``MAX_BAR_GAP_DAYS``).
     Non-finite values are dropped (degenerate inputs like zero closes), keeping payloads
     JSON-safe. The categorical ``sector`` is deliberately not here — see
     ``build_feature_payload``.
@@ -263,7 +292,7 @@ def build_daily_features(
     *,
     benchmark_symbol: str = "XEQT",
 ) -> int:
-    """Compute feature set v2 for each (instrument, date) and upsert ``features`` snapshots.
+    """Compute feature set v3 for each (instrument, date) and upsert ``features`` snapshots.
 
     Thin DB wrapper around the pure core: loads bars (via the engine's one-source-per-
     instrument loader), dividends, share counts and sector from Postgres — never the network —

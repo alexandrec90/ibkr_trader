@@ -3,6 +3,7 @@
 from collections.abc import Sequence
 from datetime import UTC, date, datetime, timedelta
 
+import pytest
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -11,14 +12,16 @@ from ibkr_trader.accounts import AccountType, get_profile
 from ibkr_trader.backtest.costs import RegisteredAccountCostModel
 from ibkr_trader.backtest.engine import (
     BacktestEngine,
+    LoadedUniverse,
     RegisteredStrategyConfig,
     Series,
     _load_series,
+    curated_provenance,
     simulate,
 )
 from ibkr_trader.db.models import BacktestRun, Base, Instrument, PriceBar
 from ibkr_trader.signals.eligibility import Candidate, EligibilityLimits
-from ibkr_trader.signals.portfolio import Allocator, Weights
+from ibkr_trader.signals.portfolio import Allocator, Weights, get_allocator
 
 # permissive screen so tiny synthetic panels pass eligibility
 OPEN_LIMITS = EligibilityLimits(
@@ -400,6 +403,58 @@ def test_engine_run_loads_bars_benchmarks_and_persists():
     assert [row[0] for row in bench_curve] == [row[0] for row in persisted.metrics["equity_curve"]]
     # the returned (non-persisted) metrics stay scalar-only — curves are a storage concern
     assert "equity_curve" not in result.metrics
+
+
+def test_engine_run_uses_a_preloaded_panel_and_stamps_its_provenance():
+    session = _sqlite_session()
+    aaa = _seed_instrument(session, "AAA", [100.0 + i for i in range(40)])
+    bbb = _seed_instrument(session, "BBB", [100.0] * 40)  # in the DB, not in the panel
+    xeqt = _seed_instrument(session, "XEQT", [50.0] * 40)
+    session.commit()
+    start, end = datetime(2020, 1, 1, tzinfo=UTC), datetime(2020, 3, 1, tzinfo=UTC)
+    panel = {
+        aaa.id: _load_series(session, "AAA", start, end),
+        xeqt.id: _load_series(session, "XEQT", start, end),
+    }
+    provenance = {
+        "source": "index-point-in-time:SP500",
+        "n_symbols": 2,
+        "sha256_16": "0123456789abcdef",
+        "survivorship": "point-in-time",
+    }
+    config = RegisteredStrategyConfig(eligibility=OPEN_LIMITS)
+
+    result = BacktestEngine(cost_model=CHEAP).run_allocator(
+        get_allocator("equal_weight"),
+        LoadedUniverse(panel, provenance),  # in place of symbols: no load, no BBB
+        start,
+        end,
+        config=config,
+        session=session,
+        persist=False,
+    )
+
+    assert result.params["universe"] == provenance
+    assert result.params["universe"] is not provenance  # a copy: runs never share the dict
+    assert result.trades >= 1
+    assert bbb.id not in panel
+
+
+def test_engine_run_on_an_empty_panel_names_its_provenance():
+    session = _sqlite_session()
+    start, end = datetime(2020, 1, 1, tzinfo=UTC), datetime(2020, 3, 1, tzinfo=UTC)
+    empty = LoadedUniverse({}, {"source": "index-point-in-time:SP500"})
+    with pytest.raises(ValueError, match="index-point-in-time:SP500"):
+        BacktestEngine(cost_model=CHEAP).run_allocator(
+            get_allocator("equal_weight"), empty, start, end, session=session, persist=False
+        )
+
+
+def test_curated_provenance_marks_requested_symbols_as_survivor_biased():
+    stamp = curated_provenance(["aaa", "AAA", "xeqt"])
+    assert stamp["n_symbols"] == 2
+    assert stamp["survivorship"] == "curated-current"
+    assert stamp == curated_provenance(["XEQT", "AAA"])  # case- and order-insensitive
 
 
 def test_load_series_uses_one_source_and_never_double_counts():

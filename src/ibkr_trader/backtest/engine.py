@@ -22,7 +22,9 @@ The pure ``simulate()`` core runs on in-memory ``Series`` panels so the guardrai
 tested without a database; ``BacktestEngine.run()`` is the thin DB-loading wrapper around it.
 """
 
+import hashlib
 from bisect import bisect_right
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 
@@ -86,6 +88,9 @@ class Series:
     #: still a member). None means "not index-gated" — always a candidate (ETFs, curated
     #: universe files). Set by the point-in-time universe loader (``backtest.universe``).
     member_ranges: tuple[tuple[date, date | None], ...] | None = None
+    #: The earliest date the security is known to have traded (``instruments.listed_on``), a
+    #: lower bound on its age; None when no source knows it. Bars may begin later than this.
+    listed_on: date | None = None
 
     def idx_asof(self, day: date) -> int:
         """Index of the latest bar on or before ``day``; -1 if none (not yet listed)."""
@@ -527,7 +532,7 @@ class BacktestEngine:
     def run_allocator(
         self,
         allocator: Allocator,
-        symbols: list[str],
+        symbols: "list[str] | LoadedUniverse",
         start: datetime,
         end: datetime,
         *,
@@ -542,6 +547,8 @@ class BacktestEngine:
 
         ``extra_params`` is merged into the persisted run's ``params`` (e.g. the OOS backtest
         pins its fold count and universe hash) — it never overrides the engine-pinned keys.
+        ``symbols`` may instead be an already-loaded ``LoadedUniverse`` (a point-in-time
+        index, ``backtest.universe.UniverseSpec.load``), whose provenance is then stamped.
         """
         config = config or RegisteredStrategyConfig()
         name = strategy_name or allocator.name
@@ -580,7 +587,7 @@ class BacktestEngine:
         session: Session,
         allocator: Allocator,
         strategy: str,
-        symbols: list[str],
+        symbols: "list[str] | LoadedUniverse",
         start: datetime,
         end: datetime,
         config: RegisteredStrategyConfig,
@@ -588,10 +595,9 @@ class BacktestEngine:
         extra_params: dict | None = None,
         validate: bool = True,
     ) -> BacktestResult:
-        universe = _load_universe(session, symbols, start, end, validate=validate)
+        panel = _resolve_panel(session, symbols, start, end, validate)
+        universe = panel.series
         fx = _load_series(session, "USDCAD", start, end, validate=validate)
-        if not universe:
-            raise ValueError(f"no daily bars found for {symbols!r} in the requested window")
 
         calendar = sorted({day for series in universe.values() for day in series.dates})
         profile = get_profile(config.account)
@@ -610,17 +616,10 @@ class BacktestEngine:
             strategy_name=strategy,
             corporate=corporate,
         )
-        # The requested list is curated from today's survivors.  Stamp its exact identity on
-        # every run (including non-persisted and OOS runs) so results cannot be separated from
-        # that limitation when they are rendered or later persisted.
-        from ibkr_trader.signals.train import _universe_hash
-
-        result.params["universe"] = {
-            "source": "requested-symbols",
-            "n_symbols": len({symbol.upper() for symbol in symbols}),
-            "sha256_16": _universe_hash(symbols),
-            "survivorship": "curated-current",
-        }
+        # Stamp the universe's exact identity — and its survivorship status — on every run
+        # (including non-persisted and OOS runs) so results cannot be separated from it when
+        # they are rendered or later persisted.
+        result.params["universe"] = dict(panel.provenance)
         if extra_params:
             result.params = {**extra_params, **result.params}
 
@@ -834,6 +833,7 @@ def load_instrument_series(
                 volumes=frame["volume"].fillna(0.0).tolist(),
                 asset_class=getattr(instrument, "asset_class", None),
                 leveraged=bool(getattr(instrument, "leveraged", False)),
+                listed_on=getattr(instrument, "listed_on", None),
             )
     return None
 
@@ -852,3 +852,49 @@ def _load_universe(
         if series is not None:
             universe[series.instrument_id] = series
     return universe
+
+
+@dataclass(frozen=True)
+class LoadedUniverse:
+    """A loaded panel plus the provenance stamp every run and model built on it carries."""
+
+    series: dict[int, Series]
+    #: ``{source, n_symbols, sha256_16, survivorship, ...}`` — ``survivorship`` is
+    #: ``curated-current`` (today's survivors, biased) or ``point-in-time``.
+    provenance: dict
+
+
+def _resolve_panel(
+    session: Session,
+    symbols: list[str] | LoadedUniverse,
+    start: datetime,
+    end: datetime,
+    validate: bool,
+) -> LoadedUniverse:
+    """A run's universe: the panel it was handed, or its symbols loaded as a curated list.
+    Raises ValueError when there is nothing to simulate."""
+    what: object
+    if isinstance(symbols, LoadedUniverse):
+        panel, what = symbols, symbols.provenance
+    else:
+        series = _load_universe(session, symbols, start, end, validate=validate)
+        panel, what = LoadedUniverse(series, curated_provenance(symbols)), symbols
+    if not panel.series:
+        raise ValueError(f"no daily bars found for {what!r} in the requested window")
+    return panel
+
+
+def _universe_hash(universe: Sequence[str]) -> str:
+    """Order- and case-insensitive 16-hex identity of a universe (runs and model artifacts)."""
+    canonical = "\n".join(sorted({symbol.upper() for symbol in universe}))
+    return hashlib.sha256(canonical.encode()).hexdigest()[:16]
+
+
+def curated_provenance(symbols: Sequence[str]) -> dict:
+    """Provenance of a requested symbol list: curated from today's survivors."""
+    return {
+        "source": "requested-symbols",
+        "n_symbols": len({symbol.upper() for symbol in symbols}),
+        "sha256_16": _universe_hash(symbols),
+        "survivorship": "curated-current",
+    }

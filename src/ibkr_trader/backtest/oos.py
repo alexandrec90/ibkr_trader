@@ -30,10 +30,18 @@ from ibkr_trader.backtest.costs import RegisteredAccountCostModel
 from ibkr_trader.backtest.engine import (
     BacktestEngine,
     BacktestResult,
+    LoadedUniverse,
     RegisteredStrategyConfig,
 )
+from ibkr_trader.backtest.universe import UniverseSpec
 from ibkr_trader.db.models import Prediction
-from ibkr_trader.signals.dataset import LABEL_HORIZON_MONTHS, build_dataset, feature_columns
+from ibkr_trader.signals.dataset import (
+    LABEL_HORIZON_MONTHS,
+    TRAINING_LIMITS,
+    DatasetBuild,
+    build_dataset,
+    feature_columns,
+)
 from ibkr_trader.signals.eligibility import Candidate
 from ibkr_trader.signals.portfolio import (
     Allocator,
@@ -42,7 +50,7 @@ from ibkr_trader.signals.portfolio import (
     get_allocator,
     normalize_weights,
 )
-from ibkr_trader.signals.train import LgbmModel, RidgeModel, _require_ml, _universe_hash
+from ibkr_trader.signals.train import LgbmModel, RidgeModel, _require_ml
 from ibkr_trader.signals.validation import Fold, SupervisedModel, walk_forward_folds
 
 #: ``params["model_version"]`` on every per-fold run — no artifact version applies, because
@@ -252,14 +260,129 @@ class OosBacktest:
     results: list[BacktestResult]
 
 
-def run_oos_backtest(
+def _training_dataset(
     session: Session,
-    universe: Sequence[str],
+    spec: UniverseSpec,
+    window: tuple[datetime, datetime],
+    config: RegisteredStrategyConfig,
+) -> DatasetBuild:
+    """The fold models' dataset: ``TRAINING_LIMITS`` history (young listings in) under the
+    account's price and liquidity floors. Holding a young name is ``config.eligibility``'s
+    call, in the simulation — learning from a fresh IPO and holding one are separate."""
+    dataset = build_dataset(
+        session,
+        spec,
+        *window,
+        benchmark_symbol=config.benchmark_symbol,
+        limits=replace(config.eligibility, min_history_days=TRAINING_LIMITS.min_history_days),
+    )
+    if dataset.frame.empty:
+        raise ValueError("dataset is empty — ingest more history or widen the window")
+    return dataset
+
+
+@dataclass(frozen=True)
+class _FoldFit:
+    """Every model family's fold models over one dataset — fitted once, simulated per config."""
+
+    folds: list[Fold]
+    features: list[str]
+    #: model name → (its fold models, their test-row predictions)
+    models: dict[str, tuple[list[FoldModel], pd.DataFrame]]
+    extra_params: dict[str, Any]
+
+    @property
+    def eval_start(self) -> date:
+        return self.folds[0].test_dates[0]
+
+    @property
+    def test_end(self) -> date:
+        return self.folds[-1].test_dates[-1]
+
+
+def _fit_folds(
+    df: pd.DataFrame,
+    dataset: DatasetBuild,
+    *,
+    seed: int,
+    test_size: int,
+    min_train: int,
+    lgbm_params: dict[str, Any] | None,
+) -> _FoldFit:
+    folds = walk_forward_folds(
+        sorted(df["date"].unique()), test_size=test_size, min_train=min_train
+    )
+    features = feature_columns(df)
+    factories: dict[str, Callable[[], SupervisedModel]] = {
+        "ml_lt_oos": lambda: LgbmModel(lgbm_params, seed=seed),
+        "ml_lt_ridge_oos": lambda: RidgeModel(seed=seed),
+    }
+    models = {}
+    for name, factory in factories.items():
+        fold_models = fit_fold_models(df, folds, factory)
+        models[name] = (fold_models, build_oos_prediction_frame(df, folds, fold_models, features))
+    extra_params = {
+        "oos_folds": len(folds),
+        "oos_test_span": [folds[0].test_dates[0].isoformat(), folds[-1].test_dates[-1].isoformat()],
+        "universe_sha256_16": dataset.universe["sha256_16"],
+        "oos_seed": seed,
+        "oos_censored_rows": int(df["label_censored"].sum()),
+    }
+    return _FoldFit(folds, features, models, extra_params)
+
+
+@dataclass(frozen=True)
+class _Simulation:
+    """What every account config's simulation shares: the panel, the bar window, the engine."""
+
+    session: Session
+    panel: LoadedUniverse
+    window: tuple[datetime, datetime]
+    engine: BacktestEngine
+    baselines: Sequence[str]
+    persist: bool
+
+    def run(self, fit: _FoldFit, config: RegisteredStrategyConfig) -> OosBacktest:
+        """Both model families and every baseline under one account config."""
+        config = replace(config, eval_start=fit.eval_start)
+
+        def run(allocator: Allocator, strategy_name: str | None = None) -> BacktestResult:
+            return self.engine.run_allocator(
+                allocator,
+                self.panel,
+                *self.window,
+                strategy_name=strategy_name,
+                config=config,
+                session=self.session,
+                persist=self.persist,
+                extra_params=fit.extra_params,
+            )
+
+        results: list[BacktestResult] = []
+        for name, (fold_models, predictions) in fit.models.items():
+            result = run(FoldSwitchingAllocator(name, fold_models, fit.features))
+            if self.persist:
+                if result.run_id is None:  # defensive: persistence must provide provenance
+                    raise RuntimeError("persisted OOS backtest did not expose its run id")
+                persist_oos_predictions(self.session, result.run_id, name, predictions)
+            results.append(result)
+        results.extend(run(get_allocator(baseline), baseline) for baseline in self.baselines)
+        return OosBacktest(
+            eval_start=fit.eval_start,
+            test_end=fit.test_end,
+            n_folds=len(fit.folds),
+            results=results,
+        )
+
+
+def run_oos_backtests(
+    session: Session,
+    universe: Sequence[str] | UniverseSpec,
     start: datetime,
     end: datetime,
     *,
+    configs: Sequence[RegisteredStrategyConfig],
     sim_start: datetime | None = None,
-    config: RegisteredStrategyConfig | None = None,
     cost_model: RegisteredAccountCostModel | None = None,
     seed: int = 42,
     test_size: int = 6,
@@ -267,88 +390,63 @@ def run_oos_backtest(
     lgbm_params: dict[str, Any] | None = None,
     baselines: Sequence[str] = BASELINE_STRATEGIES,
     persist: bool = True,
-) -> OosBacktest:
-    """The honest number: per-fold models + baselines over the stitched OOS test span.
+) -> list[OosBacktest]:
+    """The honest number: per-fold models + baselines over the stitched OOS test span, once
+    per account config in ``configs`` — the fold models are fitted once and shared.
 
     ``start``/``end`` bound the dataset exactly like ``train run``; folds come from the same
     ``walk_forward_folds`` mechanics as training, so the stitched test span matches the
     recorded fold ICs. ``sim_start`` bounds the *simulation* bar load (default: ``start``) —
     pass a later date to respect data floors like USDCAD coverage; features only need ~12
     months of bars before ``eval_start``, and no allocation happens before it either way.
-    All runs (both model families and every baseline) share the bar window, the account
-    config and ``eval_start``, so they decide on identical dates.
+    All runs (both model families and every baseline) share the bar window and
+    ``eval_start``, so they decide on identical dates. A ``UniverseSpec`` (the point-in-time
+    S&P 500) is the universe of both the dataset and the simulation. The dataset takes the
+    first config's price and liquidity floors; the configs may differ in what they *hold*
+    (``eligibility.min_history_days``) — the holding-floor experiment — never in what the
+    models learn from, which ``_training_dataset`` fixes at ``TRAINING_LIMITS``' history.
     """
     _require_ml()
-    config = config or RegisteredStrategyConfig()
-    df = build_dataset(
-        session,
-        universe,
-        start,
-        end,
-        benchmark_symbol=config.benchmark_symbol,
-        limits=config.eligibility,
+    if not configs:
+        raise ValueError("need at least one account config")
+    spec = (
+        universe
+        if isinstance(universe, UniverseSpec)
+        else UniverseSpec(tuple(symbol.upper() for symbol in universe))
     )
-    if df.empty:
-        raise ValueError("dataset is empty — ingest more history or widen the window")
-    folds = walk_forward_folds(
-        sorted(df["date"].unique()), test_size=test_size, min_train=min_train
+    dataset = _training_dataset(session, spec, (start, end), configs[0])
+    fit = _fit_folds(
+        dataset.frame,
+        dataset,
+        seed=seed,
+        test_size=test_size,
+        min_train=min_train,
+        lgbm_params=lgbm_params,
     )
-    features = feature_columns(df)
-    eval_start = folds[0].test_dates[0]
-    test_end = folds[-1].test_dates[-1]
-    config = replace(config, eval_start=eval_start)
-
-    sim_start = sim_start or start
     # decisions stop at the last test date, so the simulation must too — a cash tail (models)
     # or extra trading months (baselines) past it would skew every stitched-span metric
-    sim_end = datetime.combine(test_end, datetime.max.time(), tzinfo=UTC)
-    symbols = [symbol.upper() for symbol in universe]
-    extra_params = {
-        "oos_folds": len(folds),
-        "oos_test_span": [eval_start.isoformat(), test_end.isoformat()],
-        "universe_sha256_16": _universe_hash(universe),
-        "oos_seed": seed,
-    }
-
-    factories: dict[str, Callable[[], SupervisedModel]] = {
-        "ml_lt_oos": lambda: LgbmModel(lgbm_params, seed=seed),
-        "ml_lt_ridge_oos": lambda: RidgeModel(seed=seed),
-    }
-    engine = BacktestEngine(cost_model=cost_model)
-    results: list[BacktestResult] = []
-    for name, factory in factories.items():
-        fold_models = fit_fold_models(df, folds, factory)
-        predictions = build_oos_prediction_frame(df, folds, fold_models, features)
-        allocator = FoldSwitchingAllocator(name, fold_models, features)
-        result = engine.run_allocator(
-            allocator,
-            symbols,
-            sim_start,
-            sim_end,
-            config=config,
-            session=session,
-            persist=persist,
-            extra_params=extra_params,
-        )
-        if persist:
-            if result.run_id is None:  # defensive: engine persistence must provide provenance
-                raise RuntimeError("persisted OOS backtest did not expose its run id")
-            persist_oos_predictions(session, result.run_id, name, predictions)
-        results.append(result)
-    for baseline in baselines:
-        results.append(
-            engine.run_allocator(
-                get_allocator(baseline),
-                symbols,
-                sim_start,
-                sim_end,
-                strategy_name=baseline,
-                config=config,
-                session=session,
-                persist=persist,
-                extra_params=extra_params,
-            )
-        )
-    return OosBacktest(
-        eval_start=eval_start, test_end=test_end, n_folds=len(folds), results=results
+    window = (sim_start or start, datetime.combine(fit.test_end, datetime.max.time(), tzinfo=UTC))
+    simulation = _Simulation(
+        session,
+        # one load shared by every run, so models and baselines see the identical panel
+        spec.load(session, window, measure_from=fit.eval_start),
+        window,
+        BacktestEngine(cost_model=cost_model),
+        baselines,
+        persist,
     )
+    return [simulation.run(fit, config) for config in configs]
+
+
+def run_oos_backtest(
+    session: Session,
+    universe: Sequence[str] | UniverseSpec,
+    start: datetime,
+    end: datetime,
+    *,
+    config: RegisteredStrategyConfig | None = None,
+    **kwargs: Any,
+) -> OosBacktest:
+    """``run_oos_backtests`` under one account config (default: ``RegisteredStrategyConfig()``)."""
+    configs = (config or RegisteredStrategyConfig(),)
+    return run_oos_backtests(session, universe, start, end, configs=configs, **kwargs)[0]

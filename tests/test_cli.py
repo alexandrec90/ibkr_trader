@@ -196,31 +196,30 @@ def test_backtest_oos_flows_history_floor_into_config(monkeypatch):
         yield object()
 
     def fake_oos(session, universe, start, end, **kwargs):
-        seen["floor"] = kwargs["config"].eligibility.min_history_days
-        return SimpleNamespace(
-            n_folds=1,
-            eval_start=date(2023, 1, 31),
-            test_end=date(2023, 6, 30),
-            results=[],
-        )
+        seen["floors"] = [c.eligibility.min_history_days for c in kwargs["configs"]]
+        seen["accounts"] = {c.account for c in kwargs["configs"]}
+        return [
+            SimpleNamespace(
+                n_folds=1, eval_start=date(2023, 1, 31), test_end=date(2023, 6, 30), results=[]
+            )
+            for _ in kwargs["configs"]
+        ]
 
     monkeypatch.setattr(session_mod, "get_session", fake_session)
-    monkeypatch.setattr(oos_mod, "run_oos_backtest", fake_oos)
-    result = runner.invoke(
-        cli.app,
-        [
-            "backtest",
-            "oos",
-            "--end",
-            "2025-01-01",
-            "--symbols",
-            "AAPL",
-            "--min-history-days",
-            "63",
-        ],
-    )
-    assert result.exit_code == 0
-    assert seen["floor"] == 63
+    monkeypatch.setattr(oos_mod, "run_oos_backtests", fake_oos)
+    base = ["backtest", "oos", "--end", "2025-01-01", "--symbols", "AAPL"]
+    result = runner.invoke(cli.app, [*base, "--min-history-days", "63"])
+    assert result.exit_code == 0, _all_output(result)
+    assert seen["floors"] == [63]
+
+    # repeated floors share one fit; each prints under its own header, smallest first
+    sweep = ["--min-history-days", "252", "--min-history-days", "21", "--min-history-days", "21"]
+    result = runner.invoke(cli.app, [*base, *sweep])
+    assert result.exit_code == 0, _all_output(result)
+    assert seen["floors"] == [21, 252]
+    assert len(seen["accounts"]) == 1  # only the floor differs between the configs
+    out = _plain(_all_output(result))
+    assert out.index("holding floor 21d") < out.index("holding floor 252d")
 
 
 def test_factor_report_cli_prints_summary_and_passes_run_id(monkeypatch):
@@ -300,6 +299,88 @@ def test_train_run_flows_history_floor_into_limits(monkeypatch, tmp_path):
     assert seen["floor"] == 63
     assert seen["search"] == "grid"
     assert seen["n_trials"] == 9
+
+
+def test_model_universe_defaults_to_the_point_in_time_sp500_plus_etfs():
+    from ibkr_trader.signals.portfolio import BROAD_ETF_SYMBOLS
+
+    spec = cli._model_universe("sp500", "")
+    assert spec.index_code == "SP500"
+    assert spec.symbols == tuple(sorted(BROAD_ETF_SYMBOLS))  # ETFs only: no survivor names
+    assert not spec.ipo_cohort
+    assert cli._model_universe(" SP500 ", "").index_code == "SP500"
+    with_ipos = cli._model_universe("SP500+IPOs", "")
+    assert (with_ipos.index_code, with_ipos.symbols, with_ipos.ipo_cohort) == (
+        "SP500",
+        spec.symbols,
+        True,
+    )
+
+
+def test_model_universe_file_or_symbols_is_a_curated_list(tmp_path):
+    from ibkr_trader.backtest.universe import UniverseSpec
+
+    universe_file = tmp_path / "u.txt"
+    universe_file.write_text("msft\n")
+    assert cli._model_universe(str(universe_file), "") == UniverseSpec(("MSFT",))
+    # --symbols wins even over the sp500 default
+    assert cli._model_universe("sp500", "aapl,xeqt") == UniverseSpec(("AAPL", "XEQT"))
+
+
+def test_train_run_defaults_to_point_in_time_and_keeps_young_listings(monkeypatch, tmp_path):
+    from ibkr_trader.db import session as session_mod
+    from ibkr_trader.signals import train as train_mod
+
+    seen = {}
+
+    @contextmanager
+    def fake_session():
+        yield object()
+
+    def fake_train(session, universe, start, end, **kwargs):
+        seen["universe"] = universe
+        seen["floor"] = kwargs["limits"].min_history_days
+        return SimpleNamespace(metadata={}, artifact_dir=tmp_path / "v-test")
+
+    monkeypatch.setattr(session_mod, "get_session", fake_session)
+    monkeypatch.setattr(train_mod, "train_from_db", fake_train)
+    monkeypatch.setattr(cli, "_print_train_summary", lambda metadata: None)
+    result = runner.invoke(cli.app, ["train", "run", "--end", "2025-01-01"])
+    assert result.exit_code == 0, _all_output(result)
+    assert seen["universe"].index_code == "SP500"
+    assert seen["universe"].ipo_cohort  # fresh listings are training rows by default
+    assert "XEQT" in seen["universe"].symbols
+    assert seen["floor"] == 1
+
+
+def test_backtest_oos_defaults_to_point_in_time_and_keeps_the_holding_floor(monkeypatch):
+    from ibkr_trader.backtest import oos as oos_mod
+    from ibkr_trader.db import session as session_mod
+
+    seen = {}
+
+    @contextmanager
+    def fake_session():
+        yield object()
+
+    def fake_oos(session, universe, start, end, **kwargs):
+        seen["index_code"] = universe.index_code
+        seen["ipo_cohort"] = universe.ipo_cohort
+        (config,) = kwargs["configs"]
+        seen["floor"] = config.eligibility.min_history_days
+        return [
+            SimpleNamespace(
+                n_folds=1, eval_start=date(2023, 1, 31), test_end=date(2023, 6, 30), results=[]
+            )
+        ]
+
+    monkeypatch.setattr(session_mod, "get_session", fake_session)
+    monkeypatch.setattr(oos_mod, "run_oos_backtests", fake_oos)
+    result = runner.invoke(cli.app, ["backtest", "oos", "--end", "2025-01-01"])
+    assert result.exit_code == 0, _all_output(result)
+    assert seen["index_code"] == "SP500"
+    assert seen["ipo_cohort"]  # judged on the universe it trains on
+    assert seen["floor"] == 252  # what may be held is unchanged policy (ML-09)
 
 
 def test_train_run_can_project_artifact_to_local_mlflow(monkeypatch, tmp_path):
@@ -911,6 +992,36 @@ def test_print_train_summary_prints_folds_and_overall_ic(capsys):
     assert "1000 rows" in out
     assert "overall ridge: +0.070 ±0.080 (12)" in out
     assert "parameter search: optuna · 12.3s · 17 completed / 3 pruned" in out
+    # an artifact predating the survivorship stamp was trained on a curated list
+    assert "WARNING: curated-current universe is survivorship-biased" in out
+    assert "ipo cohort" not in out  # no cohort stamp, no cohort line
+
+
+def test_print_train_summary_shows_point_in_time_coverage_and_censoring(capsys):
+    cli._print_train_summary(
+        {
+            "label": {"censored_rows": 37},
+            "universe": {
+                "n_symbols": 700,
+                "survivorship": "point-in-time",
+                "coverage_ratio": 0.9312,
+                "ipo_cohort": {"instruments": 412, "unpriced_listings": 9, "pending_listings": 0},
+            },
+        }
+    )
+    out = capsys.readouterr().out
+    assert "universe: point-in-time · 93% of index member-days priced · 37 right-censored" in out
+    assert "ipo cohort: 412 priced listing(s) · 9 no free source could price · 0 not priced" in out
+    assert "WARNING" not in out
+
+
+def test_print_train_summary_warns_while_ipo_listings_await_pricing(capsys):
+    cohort = {"instruments": 300, "unpriced_listings": 9, "pending_listings": 240}
+    universe = {"survivorship": "point-in-time", "coverage_ratio": 0.93, "ipo_cohort": cohort}
+    cli._print_train_summary({"universe": universe})
+    out = capsys.readouterr().out
+    assert "240 not priced yet" in out
+    assert "IPO cohort leans towards survivors" in out
 
 
 # --- archive commands (local backend in tmp_path + in-memory DB) ------------------------
@@ -1463,6 +1574,22 @@ def test_ingest_ipo_without_since_lets_the_connector_resume(monkeypatch):
     assert seen == [None]
 
 
+def test_ingest_ipo_calendar_from_seeds_the_deal_history_through_today(monkeypatch):
+    windows = []
+
+    def calendar(self, date_from="", date_to=""):
+        windows.append((date_from, date_to))
+        return 6671
+
+    _patch_ipo_connectors(monkeypatch, calendar, lambda self, since=None: 0)
+    result = runner.invoke(cli.app, ["ingest", "ipo", "--calendar-from", "2013-01-01"])
+    assert result.exit_code == 0, _all_output(result)
+    assert windows == [("2013-01-01", date.today().isoformat())]
+    assert "upserted 6671 deals" in result.output
+    assert runner.invoke(cli.app, ["ingest", "ipo"]).exit_code == 0
+    assert windows[-1] == ("", "")  # no flag: the connector's own rolling window
+
+
 def test_ingest_ipo_runs_edgar_even_when_the_calendar_fails(monkeypatch):
     def no_key(self):
         raise RuntimeError("FINNHUB_KEY is not set")
@@ -1491,6 +1618,38 @@ def test_index_ingest_commands_are_wired_under_ingest():
     commands = {c.name: c.callback for c in cli.ingest_app.registered_commands}
     assert commands["index-membership"] is cli.ingest_index_membership
     assert commands["index-prices"] is cli.ingest_index_prices
+    assert commands["ipo-prices"] is cli.ingest_ipo_prices
+
+
+def test_ingest_ipo_prices_flows_the_yahoo_cap_and_notes_a_missing_key(monkeypatch):
+    from ibkr_trader import config, scheduler
+
+    seen = {}
+
+    def fake_poll(settings):
+        seen["max_yahoo"] = settings.ipo_prices_max_yahoo
+        return {"yahoo": 12, "excluded": 4, "listed_from_ipo": 12}
+
+    monkeypatch.setattr(scheduler, "poll_ipo_prices", fake_poll)
+    monkeypatch.setattr(config, "get_settings", lambda: config.Settings(tiingo_api_key=""))
+    result = runner.invoke(cli.app, ["ingest", "ipo-prices", "--max-yahoo", "25"])
+    assert result.exit_code == 0, _all_output(result)
+    assert seen["max_yahoo"] == 25
+    assert "yahoo 12, excluded 4, listed_from_ipo 12" in result.output
+    assert "delisted IPOs stay unpriced" in result.output
+
+
+def test_ingest_ipo_prices_systemic_failure_exits_nonzero(monkeypatch):
+    from ibkr_trader import config, scheduler
+
+    def outage(settings):
+        raise RuntimeError("every attempted listing failed")
+
+    monkeypatch.setattr(scheduler, "poll_ipo_prices", outage)
+    monkeypatch.setattr(config, "get_settings", lambda: config.Settings(tiingo_api_key="k"))
+    result = runner.invoke(cli.app, ["ingest", "ipo-prices"])
+    assert result.exit_code == 1
+    assert "every attempted listing failed" in _all_output(result)
 
 
 def test_ingest_index_membership_reports_the_span_count(monkeypatch):

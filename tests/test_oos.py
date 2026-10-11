@@ -2,6 +2,7 @@
 and an end-to-end smoke on a synthetic panel (that one skips without the [ml] extra)."""
 
 import math
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 
 import numpy as np
@@ -192,7 +193,7 @@ def _seed_instrument(session, symbol, closes, *, sector=None):
         session.add(
             PriceBar(
                 instrument_id=instrument.id,
-                ts=datetime(2020, 1, 1, tzinfo=UTC) + timedelta(days=i),
+                ts=datetime(2019, 1, 1, tzinfo=UTC) + timedelta(days=i),
                 bar_size="1 day",
                 source="yahoo",
                 what_to_show="ADJUSTED_LAST",
@@ -206,12 +207,11 @@ def _seed_instrument(session, symbol, closes, *, sector=None):
     return instrument
 
 
-def test_oos_backtest_end_to_end_smoke_on_synthetic_panel():
-    pytest.importorskip("lightgbm")
-    pytest.importorskip("sklearn")
-
+def _seeded_panel() -> Session:
     session = _sqlite_session()
-    n = 1130  # ~37 months of bars → ~25 labeled monthly dates → 3 small folds
+    # a year of warm-up bars before the 2020 dataset start (a series that begins with the
+    # data waits a year before it is a row), then ~37 months → ~25 labeled monthly dates
+    n = 1130 + 365
     sectors = ("Technology", "Financials", "Energy", None)
     for iid in range(1, 5):
         closes = [
@@ -221,6 +221,53 @@ def test_oos_backtest_end_to_end_smoke_on_synthetic_panel():
         _seed_instrument(session, f"S{iid}", closes, sector=sectors[iid % len(sectors)])
     _seed_instrument(session, "XEQT", [50.0 * math.exp(0.0002 * i) for i in range(n)])
     session.commit()
+    return session
+
+
+def test_holding_floors_share_one_fit_and_differ_only_in_what_is_held(monkeypatch):
+    pytest.importorskip("lightgbm")
+    pytest.importorskip("sklearn")
+    from ibkr_trader.backtest import oos as oos_mod
+
+    fits = []
+    real_fit = oos_mod.fit_fold_models
+    monkeypatch.setattr(
+        oos_mod, "fit_fold_models", lambda *a, **k: fits.append(1) or real_fit(*a, **k)
+    )
+    session = _seeded_panel()
+    base = RegisteredStrategyConfig(account=AccountType.TFSA, eligibility=OPEN_LIMITS)
+    seasoned = replace(OPEN_LIMITS, min_history_days=252)
+
+    runs = oos_mod.run_oos_backtests(
+        session,
+        ["S1", "S2", "S3", "S4", "XEQT"],
+        datetime(2020, 1, 1, tzinfo=UTC),
+        datetime(2023, 3, 1, tzinfo=UTC),
+        configs=[base, replace(base, eligibility=seasoned)],
+        cost_model=CHEAP,
+        seed=7,
+        test_size=3,
+        min_train=6,
+        lgbm_params={"n_estimators": 40, "min_child_samples": 5},
+        persist=False,
+    )
+
+    assert len(fits) == 2  # one per model family, not per floor
+    assert [{r.params["min_history_days"] for r in run.results} for run in runs] == [{1}, {252}]
+    assert {(run.eval_start, run.test_end, run.n_folds) for run in runs} == {
+        (runs[0].eval_start, runs[0].test_end, runs[0].n_folds)
+    }
+    with pytest.raises(ValueError, match="at least one account config"):
+        oos_mod.run_oos_backtests(
+            session, ["S1"], datetime(2020, 1, 1), datetime(2021, 1, 1), configs=[]
+        )
+
+
+def test_oos_backtest_end_to_end_smoke_on_synthetic_panel():
+    pytest.importorskip("lightgbm")
+    pytest.importorskip("sklearn")
+
+    session = _seeded_panel()
 
     config = RegisteredStrategyConfig(account=AccountType.TFSA, eligibility=OPEN_LIMITS)
     oos = run_oos_backtest(
@@ -252,6 +299,8 @@ def test_oos_backtest_end_to_end_smoke_on_synthetic_panel():
         assert result.params["oos_folds"] == oos.n_folds
         assert result.params["min_history_days"] == 1
         assert "universe_sha256_16" in result.params
+        assert result.params["universe"]["survivorship"] == "curated-current"
+        assert result.params["oos_censored_rows"] == 0
     by_name = {r.strategy: r for r in oos.results}
     assert by_name["ml_lt_oos"].params["model_version"] == OOS_MODEL_VERSION
     assert by_name["ml_lt_ridge_oos"].params["model_version"] == OOS_MODEL_VERSION

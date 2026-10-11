@@ -114,11 +114,14 @@ def test_train_writes_a_versioned_artifact_and_report_reads_it_back(tmp_path: Pa
 
     # metadata records what a saved model must know about itself
     assert metadata["feature_set_version"] == FEATURE_SET_VERSION
-    assert metadata["eligibility"]["min_history_days"] == 252
+    assert metadata["eligibility"]["min_history_days"] == 1  # young listings are rows
     assert metadata["feature_columns"] == feature_columns(df)
+    assert "label_censored" not in metadata["feature_columns"]
     assert metadata["label"]["horizon_months"] == 12
     assert "percentile-ranked" in metadata["label"]["spec"]
+    assert metadata["label"]["censored_rows"] == int(df["label_censored"].sum())
     assert metadata["universe"]["n_symbols"] == 8
+    assert metadata["universe"]["survivorship"] == "curated-current"  # no provenance passed
     assert metadata["categorical"]["sector"]["encoding"] == "lightgbm-native-categorical"
     assert set(metadata["categorical"]["sector"]["categories"]) == {
         "Technology",
@@ -183,6 +186,26 @@ def test_second_run_bumps_the_version_and_moves_latest(tmp_path: Path):
     assert (tmp_path / "ml_lt" / "latest").read_text() == "v2"
     assert load_latest_metadata(tmp_path)["version"] == "v2"
     assert (tmp_path / "ml_lt" / "v1" / MODEL_FILE).exists()  # old artifacts are kept
+
+
+def test_dataset_universe_provenance_is_recorded_verbatim(tmp_path: Path):
+    provenance = {
+        "source": "index-point-in-time:SP500",
+        "n_symbols": 612,
+        "sha256_16": "0123456789abcdef",
+        "survivorship": "point-in-time",
+        "coverage_ratio": 0.93,
+    }
+    result = train_on_dataset(
+        _dataset(),
+        models_dir=tmp_path,
+        universe=provenance,  # DatasetBuild.universe, in place of bare symbols
+        window=WINDOW,
+        test_size=6,
+        min_train=12,
+        lgbm_params=FAST_LGBM,
+    )
+    assert result.metadata["universe"] == provenance
 
 
 def test_ridge_artifact_round_trip_preserves_predictions(tmp_path: Path):
