@@ -32,6 +32,20 @@ def test_postgres_closes_this_process_s_idle_connections():
     assert kwargs["pool_pre_ping"] is True
 
 
+def test_postgres_plans_every_statement_with_its_parameters():
+    """2026-10-11: the 768m db container was OOM-killed three more times in 30 minutes
+    after the idle timeout shipped, with four busy backends at 66-188 MB private memory.
+    A ``ts``-bounded ``price_bars`` query stays at 2 MB per backend only while Postgres plans
+    it with the bound's value. Once psycopg prepares a statement, a generic plan opens all
+    ~790 chunks and the backend jumps to 79 MB. That happened on the eleventh run of the
+    same lookup, and a price job runs its lookups once per symbol."""
+    kwargs = session_mod.engine_kwargs(make_url("postgresql+psycopg://u:p@db:5432/ibkr_trader"))
+    options = kwargs["connect_args"]["options"]
+    assert "plan_cache_mode=force_custom_plan" in options
+    assert CAP in options
+    assert f"idle_session_timeout={session_mod.IDLE_SESSION_TIMEOUT_MS}" in options
+
+
 def test_the_idle_timeout_outlasts_a_job_s_gap_between_sessions():
     """The yahoo/tiingo connectors open a session, download for up to a minute, then open
     another. A timeout shorter than that gap makes every symbol rebuild a cold backend,
