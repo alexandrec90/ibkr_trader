@@ -85,6 +85,26 @@ def test_configure_lake_passes_both_arguments_by_keyword(monkeypatch):
     assert recorded["session_factory"] is db_session.get_session
 
 
+def test_settings_satisfies_every_member_of_the_lake_protocol():
+    """`Settings` meets `LakeSettings` structurally, with no import of it in config.py, so a
+    member data-lake adds (as it did `fred_api_key`) breaks only mypy until this fails too.
+    Naming the gaps beats a bare `isinstance`: the nightly run then says which field to add.
+    data-lake declares every member as a read-only property, which is what is listed here."""
+    settings = config.Settings()
+    members = {
+        name
+        for protocol in (data_lake.IngestionSettings, data_lake.ArchiveSettings)
+        for name, value in vars(protocol).items()
+        if isinstance(value, property)
+    }
+    missing = sorted(name for name in members if not hasattr(settings, name))
+
+    assert "fred_api_key" in members  # the listing found the protocol's members at all
+
+    assert missing == []
+    assert isinstance(settings, data_lake.LakeSettings)
+
+
 def test_an_unconfigured_package_refuses_rather_than_inventing_a_default():
     """The failure this seam exists to prevent, so the assertion above is not vacuous."""
     data_lake.reset()
