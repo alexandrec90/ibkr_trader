@@ -47,7 +47,15 @@ way with `. .venv/bin/activate` if you prefer.
 ## ML training
 
 Install the ML extra with `uv sync --extra ml`, then run `ibkr-trader train run --end
-YYYY-MM-DD`. LightGBM capacity selection defaults to deterministic Optuna TPE search with
+YYYY-MM-DD`. The dataset defaults to `--universe sp500+ipos`: the S&P 500 as it stood on
+each date, later-delisted members included, plus every IPO listing the data-lake priced
+(failures included) from its first bar, plus the broad ETFs. `--universe sp500` drops the
+IPOs; a file or `--symbols` gives a curated, survivor-biased list instead. A name that stops
+trading inside its 12-month label window is kept at its last close and flagged
+`label_censored`; young listings are training rows from their first month
+(`--min-history-days 1`), dated by `instruments.listed_on` where the bars agree with it and by
+their first bar otherwise, while the backtest's 252-day floor still decides what may be held.
+`backtest oos` takes the same `--universe`. LightGBM capacity selection defaults to deterministic Optuna TPE search with
 median pruning (`--search optuna --n-trials 50`). Use `--search grid` to run the original
 exhaustive capacity grid. Each artifact's `metadata.json` records the strategy, search space,
 trial outcomes, winning fold IC, and elapsed search time; `ibkr-trader train report` displays

@@ -84,7 +84,6 @@ src/ibkr_trader/backtest/metrics.py::calmar
 src/ibkr_trader/backtest/metrics.py::sortino
 src/ibkr_trader/backtest/metrics.py::total_return
 src/ibkr_trader/backtest/oos.py::OosBacktest
-src/ibkr_trader/backtest/oos.py::fit_fold_models
 src/ibkr_trader/backtest/oos.py::persist_oos_predictions
 src/ibkr_trader/backtest/snapshot.py::SnapshotReportRow
 src/ibkr_trader/cli.py::TrainSearch

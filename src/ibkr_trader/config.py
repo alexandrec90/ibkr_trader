@@ -128,6 +128,11 @@ class Settings(BaseSettings):
     # "Jane Doe jane@example.com". Empty => the EDGAR filings poll fails loudly in `health`.
     sec_user_agent: str = ""
     poll_ipo_hours: int = 6
+    # The IPO cohort models train on: Finnhub's priced deals since this date, priced like the
+    # index universe (Yahoo probes per run; dead names from Tiingo under its shared ledger).
+    ipo_universe_since: str = "2013-01-01"
+    poll_ipo_prices_minutes: int = 60
+    ipo_prices_max_yahoo: int = 60
     # A watched name alerts at every stage; anything else alerts only when the IPO calendar puts
     # the deal at IPO_ALERT_MIN_DEAL_USD or more (0 turns the size rule off). Names match on
     # whole words, so list the legal name too when it differs from the brand.

@@ -48,6 +48,9 @@ def _settings(**overrides):
         gateway_watch_enabled=False,
         gateway_check_minutes=5,
         poll_ipo_hours=6,
+        ipo_universe_since="2013-01-01",
+        poll_ipo_prices_minutes=60,
+        ipo_prices_max_yahoo=60,
         poll_fundamentals_hours=24,
         fundamentals_rotation_days=7,
         poll_earnings_calendar_hours=24,
@@ -81,12 +84,14 @@ def test_build_scheduler_registers_all_jobs_with_configured_intervals():
         "ipo_calendar_poll",
         "ipo_filings_poll",
         "ipo_alerts",
+        "ipo_prices_poll",
         "fundamentals_poll",
         "earnings_calendar_poll",
         "macro_poll",
         "buybacks_poll",
     }
     assert jobs["social_poll"].trigger.interval == timedelta(minutes=30)
+    assert jobs["ipo_prices_poll"].trigger.interval == timedelta(minutes=60)
     assert jobs["fundamentals_poll"].trigger.interval == timedelta(hours=24)
     assert jobs["earnings_calendar_poll"].trigger.interval == timedelta(hours=24)
     assert jobs["macro_poll"].trigger.interval == timedelta(hours=24)
@@ -1594,6 +1599,63 @@ def test_poll_index_prices_with_a_key_uses_tiingo_and_its_ledger(monkeypatch, tm
     assert seen["tiingo_listings"] == {"TWTR": ["listing"]}
 
 
+def _patch_ipo_pricing(monkeypatch, report, seen, order):
+    def fake_resolve(**kwargs):
+        order.append("prices")
+        seen["prices"] = kwargs
+        return report
+
+    def fake_dates(**kwargs):
+        order.append("dates")
+        seen["dates"] = kwargs
+        return SimpleNamespace(from_ipo=5, from_tiingo=40, from_first_bar=2)
+
+    monkeypatch.setattr("data_lake.ingestion.market.ipo_pricing.resolve_ipo_prices", fake_resolve)
+    monkeypatch.setattr(
+        "data_lake.ingestion.market.listing_dates.resolve_listing_dates", fake_dates
+    )
+    monkeypatch.setattr(scheduler, "_tiingo_listings", lambda path: {"CDAKQ": ["listing"]})
+
+
+def test_poll_ipo_prices_prices_the_cohort_then_dates_every_listing(monkeypatch):
+    seen, order = {}, []
+    report = _fake_report(resolved_yahoo=6, unpriced=1, excluded={"spac": 3, "unit": 2})
+    _patch_ipo_pricing(monkeypatch, report, seen, order)
+
+    summary = scheduler.poll_ipo_prices(_settings(ipo_prices_max_yahoo=9))
+
+    assert order == ["prices", "dates"]  # listed_on reads the IPO dates just priced
+    assert summary == {
+        "already": 0,
+        "yahoo": 6,
+        "tiingo": 0,
+        "unpriced": 1,
+        "excluded": 5,
+        "deferred": 0,
+        "failed": 0,
+        "listed_from_ipo": 5,
+        "listed_from_tiingo": 40,
+        "listed_from_first_bar": 2,
+    }
+    assert str(seen["prices"]["since"]) == "2013-01-01"
+    assert seen["prices"]["max_yahoo"] == 9
+    assert seen["prices"]["tiingo"] is None  # no key: no Tiingo bars ...
+    # ... but the public ticker list still tells dead listings from live ones
+    assert seen["prices"]["tiingo_listings"] == {"CDAKQ": ["listing"]}
+    assert seen["dates"]["tiingo_listings"] == {"CDAKQ": ["listing"]}
+
+
+def test_poll_ipo_prices_with_a_key_uses_the_shared_tiingo_ledger(monkeypatch, tmp_path):
+    from data_lake.ingestion.market import tiingo as tiingo_mod
+
+    seen, order = {}, []
+    _patch_ipo_pricing(monkeypatch, _fake_report(excluded={}), seen, order)
+    usage_file = tmp_path / "logs" / "tiingo-usage.json"
+    scheduler.poll_ipo_prices(_settings(tiingo_api_key="k", tiingo_usage_file=str(usage_file)))
+    connector = seen["prices"]["tiingo"]
+    assert isinstance(connector, tiingo_mod.TiingoConnector)
+
+
 def test_tiingo_listings_are_cached_and_refreshed_weekly(monkeypatch, tmp_path):
     from data_lake.ingestion.market import tiingo as tiingo_mod
 
@@ -1613,6 +1675,8 @@ def test_tiingo_listings_are_cached_and_refreshed_weekly(monkeypatch, tmp_path):
     assert len(downloads) == 1  # served from the cache inside the week
     scheduler._tiingo_listings(cache, now=now + timedelta(days=8))
     assert len(downloads) == 2
+    # the refresh lands by replace: no partial download is ever left beside the cache
+    assert [p.name for p in cache.parent.iterdir()] == [cache.name]
 
 
 # --- market events: fundamentals rotation, earnings calendar, macro, buybacks ------------------

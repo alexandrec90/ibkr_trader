@@ -4,9 +4,15 @@ import csv
 import sys
 from enum import StrEnum
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import typer
+
+if TYPE_CHECKING:  # the CLI imports its heavy modules lazily, per command
+    from ibkr_trader.accounts import AccountType
+    from ibkr_trader.backtest.engine import RegisteredStrategyConfig
+    from ibkr_trader.backtest.universe import UniverseSpec
+    from ibkr_trader.config import Settings
 
 # Output uses "→"/"·", which legacy Windows consoles (cp1252) can't encode — degrade those
 # characters to "?" there instead of crashing. UTF-8 terminals are unaffected.
@@ -66,6 +72,42 @@ def _read_universe(universe_file: str, symbols: str) -> list[str]:
     if not universe:
         raise typer.BadParameter("empty universe")
     return universe
+
+
+#: Help for the model commands' ``--universe``, shared so ``train run`` and ``backtest oos``
+#: cannot drift apart on what they train and judge a model on.
+_MODEL_UNIVERSE_HELP = (
+    "'sp500+ipos' = the S&P 500 as it stood on each date (incl. later-delisted members), "
+    "every priced IPO listing from its first bar (incl. failures) and the broad ETFs; "
+    "'sp500' = the same without the IPOs; or a one-symbol-per-line file of today's names "
+    "(survivor-biased)"
+)
+
+#: The named ``--universe`` values of the model commands → whether each adds the IPO cohort.
+_MODEL_UNIVERSES = {"sp500": False, "sp500+ipos": True}
+
+
+_HOLDING_FLOOR_HELP = (
+    "minimum as-of listing history in trading days before a name may be HELD "
+    "(the fold models still train on young listings)"
+)
+
+
+def _model_universe(universe: str, symbols: str) -> "UniverseSpec":
+    """The universe behind a model command's ``--universe``/``--symbols``.
+
+    ``sp500`` → the point-in-time index with the broad ETFs loaded ungated beside it, and
+    ``sp500+ipos`` → that plus the IPO cohort; a file or ``--symbols`` → that curated list as
+    the whole universe.
+    """
+    from ibkr_trader.backtest.universe import SP500, UniverseSpec
+    from ibkr_trader.signals.portfolio import BROAD_ETF_SYMBOLS
+
+    named = universe.strip().lower()
+    if not symbols.strip() and named in _MODEL_UNIVERSES:
+        etfs = tuple(sorted(BROAD_ETF_SYMBOLS))
+        return UniverseSpec(etfs, SP500, ipo_cohort=_MODEL_UNIVERSES[named])
+    return UniverseSpec(tuple(_read_universe(universe, symbols)))
 
 
 @app.command("check-data")
@@ -355,21 +397,31 @@ def ingest_ipo(
     since: str = typer.Option(
         "", help="EDGAR: first filing day, YYYY-MM-DD (default: resume from the newest row)"
     ),
+    calendar_from: str = typer.Option(
+        "",
+        help="calendar: first deal day, YYYY-MM-DD, through today (default: the rolling "
+        "week back / 90 days out); 2013-01-01 seeds the IPO cohort the models train on",
+    ),
 ):
     """Upsert the Finnhub IPO calendar and EDGAR registration filings (S-1/F-1/DRS, 424B4, RW).
 
     The `serve` jobs run both every POLL_IPO_HOURS; pass --since a few weeks back once to seed
-    the filings history. EDGAR needs SEC_USER_AGENT; the calendar needs FINNHUB_KEY. Each
-    source runs even if the other fails, and the exit code is non-zero if either did.
+    the filings history, and --calendar-from once to seed the deal history `ingest ipo-prices`
+    prices. EDGAR needs SEC_USER_AGENT; the calendar needs FINNHUB_KEY. Each source runs even
+    if the other fails, and the exit code is non-zero if either did.
     """
+    from datetime import date
+
     from data_lake.ingestion.market.finnhub_ipo import FinnhubIpoCalendarConnector
     from data_lake.ingestion.market.sec_edgar import EdgarRegistrationConnector
 
+    window = {"date_from": calendar_from, "date_to": date.today().isoformat()}
     # Missing credentials and provider failures are RuntimeErrors (the connectors' provider
     # errors subclass it); anything else is a bug and should surface as a traceback.
     failed = False
     try:
-        typer.echo(f"ipo calendar: upserted {FinnhubIpoCalendarConnector().fetch()} deals")
+        count = FinnhubIpoCalendarConnector().fetch(**(window if calendar_from else {}))
+        typer.echo(f"ipo calendar: upserted {count} deals")
     except (RuntimeError, ValueError) as exc:
         typer.echo(f"ipo calendar error: {exc}", err=True)
         failed = True
@@ -425,6 +477,35 @@ def ingest_index_prices(
     typer.echo(", ".join(f"{key} {value}" for key, value in summary.items()))
     if not settings.tiingo_api_key:
         typer.echo("note: TIINGO_API_KEY is unset, so delisted members stay unpriced")
+
+
+@ingest_app.command("ipo-prices")
+def ingest_ipo_prices(
+    max_yahoo: int = typer.Option(
+        0, min=0, help="Yahoo probes this run (0 = the IPO_PRICES_MAX_YAHOO setting)"
+    ),
+):
+    """Price the IPO cohort (Finnhub's priced deals since IPO_UNIVERSE_SINCE, failures
+    included), then fill every instrument's listing date.
+
+    Seed the deals once with `ingest ipo --calendar-from 2013-01-01`. Resumable: each run
+    continues where the last stopped; dead listings need TIINGO_API_KEY and share its
+    free-tier ledger with `ingest index-prices`. The `serve` job runs it hourly.
+    """
+    from ibkr_trader.config import get_settings
+    from ibkr_trader.scheduler import poll_ipo_prices
+
+    settings = get_settings()
+    if max_yahoo:
+        settings = settings.model_copy(update={"ipo_prices_max_yahoo": max_yahoo})
+    try:
+        summary = poll_ipo_prices(settings)
+    except Exception as exc:  # every attempted listing failed: an outage, not a quiet run
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(", ".join(f"{key} {value}" for key, value in summary.items()))
+    if not settings.tiingo_api_key:
+        typer.echo("note: TIINGO_API_KEY is unset, so delisted IPOs stay unpriced")
 
 
 @ingest_app.command("social")
@@ -917,15 +998,17 @@ def backtest_oos(
         help="simulation bar-load start YYYY-MM-DD (USDCAD coverage starts 2003-09-17; "
         "owner policy floor for decisions is 2010)",
     ),
-    universe_file: str = typer.Option("tickers.txt", help="one symbol per line"),
-    symbols: str = typer.Option("", help="comma-separated symbols (overrides --universe-file)"),
+    universe: str = typer.Option("sp500+ipos", help=_MODEL_UNIVERSE_HELP),
+    symbols: str = typer.Option("", help="comma-separated symbols (overrides --universe)"),
     account: str = typer.Option("", help="rrsp|tfsa|fhsa|lira|nonreg (default: config)"),
     start_capital: float = typer.Option(100_000.0, help="starting capital (CAD)"),
     seed: int = typer.Option(42, help="random seed for LightGBM/ridge"),
     test_size: int = typer.Option(6, help="months per walk-forward test block"),
     min_train: int = typer.Option(24, help="months of history before the first test block"),
-    min_history_days: int = typer.Option(
-        252, min=1, help="minimum as-of listing history in trading days"
+    min_history_days: list[int] = typer.Option(
+        [252],
+        min=1,
+        help=_HOLDING_FLOOR_HELP + "; repeat it to compare floors on one set of fold models",
     ),
     no_persist: bool = typer.Option(False, "--no-persist", help="don't write backtest_runs rows"),
 ):
@@ -936,27 +1019,19 @@ def backtest_oos(
 
     from ibkr_trader.accounts import AccountType
     from ibkr_trader.backtest.costs import RegisteredAccountCostModel
-    from ibkr_trader.backtest.engine import RegisteredStrategyConfig
-    from ibkr_trader.backtest.oos import run_oos_backtest
+    from ibkr_trader.backtest.oos import run_oos_backtests
     from ibkr_trader.config import get_settings
     from ibkr_trader.db.session import get_session
-    from ibkr_trader.signals.eligibility import EligibilityLimits
 
     settings = get_settings()
     account_type = AccountType((account or settings.default_account).lower())
-    universe = _read_universe(universe_file, symbols)
+    spec = _model_universe(universe, symbols)
 
     start_dt = datetime.strptime(start, "%Y-%m-%d").replace(tzinfo=UTC)
     end_dt = datetime.strptime(end, "%Y-%m-%d").replace(tzinfo=UTC)
     sim_start_dt = datetime.strptime(sim_start, "%Y-%m-%d").replace(tzinfo=UTC)
-    config = RegisteredStrategyConfig(
-        account=account_type,
-        start_capital=start_capital,
-        annual_trade_budget=settings.annual_trade_budget,
-        rebalance_band=settings.rebalance_band,
-        benchmark_symbol=settings.benchmark_symbol,
-        eligibility=EligibilityLimits(min_history_days=min_history_days),
-    )
+    floors = sorted(set(min_history_days))
+    configs = _holding_floor_configs(settings, account_type, start_capital, floors)
     cost_model = RegisteredAccountCostModel(
         churn_penalty_bps=settings.churn_penalty_bps,
         fx_conversion_bps=settings.fx_conversion_bps,
@@ -965,13 +1040,13 @@ def backtest_oos(
 
     try:
         with get_session() as session:
-            oos = run_oos_backtest(
+            runs = run_oos_backtests(
                 session,
-                universe,
+                spec,
                 start_dt,
                 end_dt,
+                configs=configs,
                 sim_start=sim_start_dt,
-                config=config,
                 cost_model=cost_model,
                 seed=seed,
                 test_size=test_size,
@@ -982,13 +1057,34 @@ def backtest_oos(
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1) from None
 
-    typer.echo(
-        f"\nper-fold OOS backtest · {oos.n_folds} folds · decisions "
-        f"{oos.eval_start} → {oos.test_end} · every decision from a model that never saw "
-        f"its own test months"
-    )
-    for result in oos.results:
-        _print_backtest_result(result, account_type.value)
+    for floor, oos in zip(floors, runs, strict=True):
+        typer.echo(
+            f"\nper-fold OOS backtest · holding floor {floor}d · {oos.n_folds} folds · "
+            f"decisions {oos.eval_start} → {oos.test_end} · every decision from a model that "
+            f"never saw its own test months"
+        )
+        for result in oos.results:
+            _print_backtest_result(result, account_type.value)
+
+
+def _holding_floor_configs(
+    settings: "Settings", account: "AccountType", start_capital: float, floors: list[int]
+) -> "list[RegisteredStrategyConfig]":
+    """One ``RegisteredStrategyConfig`` per holding floor, identical in everything else."""
+    from ibkr_trader.backtest.engine import RegisteredStrategyConfig
+    from ibkr_trader.signals.eligibility import EligibilityLimits
+
+    return [
+        RegisteredStrategyConfig(
+            account=account,
+            start_capital=start_capital,
+            annual_trade_budget=settings.annual_trade_budget,
+            rebalance_band=settings.rebalance_band,
+            benchmark_symbol=settings.benchmark_symbol,
+            eligibility=EligibilityLimits(min_history_days=floor),
+        )
+        for floor in floors
+    ]
 
 
 @backtest_app.command("factor-report")
@@ -1097,14 +1193,17 @@ def backtest_compare(
 def train_run(
     start: str = typer.Option("2015-01-01", help="training window start YYYY-MM-DD"),
     end: str = typer.Option(..., help="training window end YYYY-MM-DD (labels stop 12m earlier)"),
-    universe_file: str = typer.Option("tickers.txt", help="one symbol per line"),
-    symbols: str = typer.Option("", help="comma-separated symbols (overrides --universe-file)"),
+    universe: str = typer.Option("sp500+ipos", help=_MODEL_UNIVERSE_HELP),
+    symbols: str = typer.Option("", help="comma-separated symbols (overrides --universe)"),
     models_dir: str = typer.Option("models", help="artifact root (models/ml_lt/<version>/)"),
     seed: int = typer.Option(42, help="random seed for LightGBM/ridge"),
     test_size: int = typer.Option(6, help="months per walk-forward test block"),
     min_train: int = typer.Option(24, help="months of history before the first test block"),
     min_history_days: int = typer.Option(
-        252, min=1, help="minimum as-of listing history in trading days"
+        1,
+        min=1,
+        help="minimum as-of listing history in trading days for a training row (default 1: "
+        "fresh IPOs and spinoffs are learned from; holding them is the backtest's floor)",
     ),
     search: TrainSearch = typer.Option(
         TrainSearch.optuna, help="capacity search strategy (optuna is deterministic TPE)"
@@ -1129,11 +1228,12 @@ def train_run(
 
     start_dt = datetime.strptime(start, "%Y-%m-%d").replace(tzinfo=UTC)
     end_dt = datetime.strptime(end, "%Y-%m-%d").replace(tzinfo=UTC)
+    spec = _model_universe(universe, symbols)  # a bad --universe fails before any DB work
     try:
         with get_session() as session:
             result = train_from_db(
                 session,
-                _read_universe(universe_file, symbols),
+                spec,
                 start_dt,
                 end_dt,
                 models_dir=Path(models_dir),
@@ -1189,6 +1289,27 @@ def _print_train_summary(metadata: dict) -> None:
         f"dates ({dates[0]}→{dates[1]}) · {universe.get('n_symbols', '?')} symbols "
         f"(hash {universe.get('sha256_16', '?')})"
     )
+    survivorship = universe.get("survivorship", "curated-current")
+    coverage = universe.get("coverage_ratio")
+    typer.echo(
+        f"  universe: {survivorship}"
+        + (f" · {coverage * 100:.0f}% of index member-days priced" if coverage is not None else "")
+        + f" · {metadata.get('label', {}).get('censored_rows', 0)} right-censored label(s)"
+    )
+    ipos = universe.get("ipo_cohort")
+    if ipos is not None:
+        pending = ipos.get("pending_listings", 0)
+        typer.echo(
+            f"  ipo cohort: {ipos['instruments']} priced listing(s) · "
+            f"{ipos['unpriced_listings']} no free source could price · {pending} not priced yet"
+        )
+        if pending:
+            typer.echo(
+                "  WARNING: unpriced-yet listings are mostly delisted names awaiting Tiingo "
+                "budget; until they are priced the IPO cohort leans towards survivors"
+            )
+    if survivorship == "curated-current":
+        typer.echo("  WARNING: curated-current universe is survivorship-biased")
 
     validation = metadata.get("validation", {})
     folds = validation.get("folds", [])

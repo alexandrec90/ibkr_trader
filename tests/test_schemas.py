@@ -83,6 +83,7 @@ def _feature_frame() -> pd.DataFrame:
         "date": [date(2025, 1, 31)],
         "fwd_excess_return": [0.1],
         "label": [0.5],
+        "label_censored": [False],
         "sector": [None],
     }
     data.update({column: [np.nan] for column in NUMERIC_FEATURE_COLUMNS})

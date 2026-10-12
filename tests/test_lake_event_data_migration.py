@@ -27,6 +27,10 @@ TOUCHED = (*NEW_TABLES, EarningsEvent, IpoEvent)
 #: What ``earnings_events`` looked like before this revision (c2d3e4f5a6b7).
 EARNINGS_BEFORE = {"id", "instrument_id", "report_ts", "source"}
 
+#: Columns of a model that a later revision adds, so this one rightly lacks them.
+#: tests/test_ipo_events_migration.py checks ``ipo_events`` matches the model at head.
+ADDED_LATER = {"ipo_events": {"instrument_id", "resolution", "resolved_at"}}  # e2f3a4b5c6d7
+
 
 def _run(module, step, monkeypatch, connection):
     migration = import_module(module)
@@ -62,7 +66,8 @@ def _schema(connection, table):
 
 def _declared(model):
     table = model.__table__
-    columns = {c.name: c.nullable for c in table.columns if c.name != "id"}
+    later = ADDED_LATER.get(table.name, set())
+    columns = {c.name: c.nullable for c in table.columns if c.name not in later | {"id"}}
     indexes = {i.name for i in table.indexes}
     uniques = {
         tuple(c.name for c in constraint.columns)

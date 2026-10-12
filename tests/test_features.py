@@ -141,13 +141,14 @@ def test_young_listing_exposes_history_days_while_long_lookbacks_stay_absent():
 
 
 def test_v2_adds_only_history_days_to_v1_feature_semantics():
-    """The v2 addition must not alter any value that existed in feature set v1."""
+    """The v2 addition must not alter any value that existed in feature set v1, and v3 (the
+    hole-aware windows) adds no column at all."""
     inputs = _inputs(400)
     day = inputs.dates[380]
     v2 = build_features_asof(inputs, day)
     history_days = v2.pop("history_days")
 
-    assert FEATURE_SET_VERSION == "2"
+    assert FEATURE_SET_VERSION == "3"
     assert history_days == 381.0
     # Existing parity/value tests below cover the complete pre-v2 feature set. This explicit
     # key assertion prevents a later v2 change from silently adding or dropping a v1 feature.
@@ -169,6 +170,69 @@ def test_v2_adds_only_history_days_to_v1_feature_semantics():
         "dividend_growth_3y",
         "log_market_cap",
     }
+
+
+# --- holes in the bar history (v3) -------------------------------------------------------------
+
+
+def _with_hole(n_before: int, hole_days: int, n_after: int) -> tuple[list[date], list[float]]:
+    """Daily bars, then ``hole_days`` calendar days with none, then daily bars again."""
+    before = _dates(n_before)
+    after = _dates(n_after, start=before[-1] + timedelta(days=hole_days + 1))
+    return before + after, _wavy(n_before + n_after)
+
+
+def test_windows_never_reach_across_a_hole():
+    dates, closes = _with_hole(300, 45, 100)
+    gapped = FeatureInputs(dates=dates, closes=closes, volumes=[1e6 + i for i in range(400)])
+    # the same post-hole bars alone: every window must see exactly these
+    post = FeatureInputs(dates=dates[300:], closes=closes[300:], volumes=list(gapped.volumes[300:]))
+    day = dates[-1]
+
+    across = build_features_asof(gapped, day)
+    alone = build_features_asof(post, day)
+
+    assert across.pop("history_days") == 400.0  # bars still count: the name is not young
+    alone.pop("history_days")
+    assert across == alone
+    # 100 bars since the hole: the 1m/3m returns and the 60-bar windows exist, nothing longer
+    assert {"return_1m", "return_3m", "volatility", "volatility_60d"} <= set(across)
+    assert not {"return_6m", "return_12m", "momentum_12_1", "pct_off_52w_high"} & set(across)
+
+
+def test_a_hole_older_than_every_window_changes_nothing():
+    dates, closes = _with_hole(100, 45, 300)
+    gapped = FeatureInputs(dates=dates, closes=closes)
+    post = FeatureInputs(dates=dates[100:], closes=closes[100:])
+    day = dates[-1]
+
+    across = build_features_asof(gapped, day)
+    alone = build_features_asof(post, day)
+    across.pop("history_days")
+    alone.pop("history_days")
+    assert across == alone
+    assert "return_12m" in across  # 300 bars since the hole cover the full year
+
+
+def test_weekend_and_holiday_gaps_are_not_holes():
+    """A gap of ``MAX_BAR_GAP_DAYS`` calendar days (a long holiday close) keeps every window."""
+    dates, closes = _with_hole(200, features_mod.MAX_BAR_GAP_DAYS - 1, 200)
+    assert (dates[200] - dates[199]).days == features_mod.MAX_BAR_GAP_DAYS
+    feats = build_features_asof(FeatureInputs(dates=dates, closes=closes), dates[-1])
+    assert closes[399] / closes[399 - 252] - 1.0 == feats["return_12m"]
+
+
+def test_a_hole_in_the_benchmark_drops_only_the_excess_returns_it_spans():
+    n = 400
+    bench_dates, bench_closes = _with_hole(300, 45, 100)
+    own = _dates(n, start=bench_dates[0])
+    inputs = FeatureInputs(
+        dates=own, closes=_wavy(n), benchmark_dates=bench_dates, benchmark_closes=bench_closes
+    )
+    feats = build_features_asof(inputs, bench_dates[-1])
+    assert "return_12m" in feats  # the instrument itself is hole-free
+    assert "excess_return_3m" in feats  # 100 benchmark bars since its hole cover 63
+    assert "excess_return_12m" not in feats
 
 
 def test_flat_series_features_are_all_zero():
