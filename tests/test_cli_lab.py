@@ -103,6 +103,15 @@ def test_backtest_lab_is_wired_under_backtest():
     assert commands["lab"] is cli.backtest_lab
 
 
+@pytest.mark.parametrize("command", [["backtest", "lab"], ["report"]])
+def test_plotly_commands_help_names_the_extra_they_need(command):
+    """2026-10-12: the help read "Needs the  extra" — Rich took ``[report]`` for markup and
+    dropped it, so a container without plotly gave no hint which extra to install."""
+    result = runner.invoke(cli.app, [*command, "--help"], terminal_width=200)
+    assert result.exit_code == 0
+    assert "report extra" in " ".join(result.output.split())
+
+
 def test_backtest_lab_writes_the_report(monkeypatch, tmp_path):
     pytest.importorskip("plotly")
     _patch_db(monkeypatch, _synthetic_inputs())

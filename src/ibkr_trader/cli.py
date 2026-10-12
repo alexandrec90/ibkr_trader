@@ -781,7 +781,8 @@ def backtest_lab(
     """Compare the registered-account strategies over fresh-start windows weighted to recent
     data (since --full-start, last 5y/3y/1y) and write a static HTML report with charts.
 
-    Read-only on the database (nothing persisted). Needs the [report] extra.
+    Read-only on the database (nothing persisted). Needs the report extra
+    (uv sync --extra report).
     """
     import importlib.util
     import webbrowser
@@ -1654,7 +1655,7 @@ def report(
 ):
     """Render persisted backtest_runs to a self-contained static HTML report — leaderboard plus
     interactive Plotly equity/drawdown charts, no server. Runs briefly and exits (nothing stays
-    resident), so it's laptop-friendly. Needs the [report] extra (uv sync --extra report).
+    resident), so it's laptop-friendly. Needs the report extra (uv sync --extra report).
 
     Run new backtests with `ibkr-trader backtest run`, then regenerate this to view them.
     """
