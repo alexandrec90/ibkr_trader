@@ -1556,7 +1556,14 @@ def report(
 
 
 @app.command()
-def serve():
+def serve(
+    migrate: bool = typer.Option(
+        False,
+        "--migrate",
+        help="run `alembic upgrade head` once the database answers, before any job starts "
+        "(the deployed container passes this; a failed migration exits non-zero)",
+    ),
+):
     """Long-running mode: APScheduler jobs for periodic ingestion, scoring and raw pruning.
 
     Polls social posts / Finnhub news / NewsAPI / Google Trends on the cadence in Settings, backfills
@@ -1570,7 +1577,7 @@ def serve():
     """
     from ibkr_trader.scheduler import serve as run_scheduler
 
-    run_scheduler()
+    run_scheduler(migrate=migrate)
 
 
 @app.command("notify-test")

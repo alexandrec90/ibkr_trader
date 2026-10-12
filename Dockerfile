@@ -35,4 +35,6 @@ RUN useradd --create-home appuser \
     && chown appuser:appuser /app/logs
 USER appuser
 
-CMD ["ibkr-trader", "serve"]
+# --migrate: the image carries alembic.ini and migrations/ so it can bring the database to
+# head before serving -- a deploy is only a rebuild, and nothing else runs the upgrade.
+CMD ["ibkr-trader", "serve", "--migrate"]

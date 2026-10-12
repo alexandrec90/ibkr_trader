@@ -165,6 +165,33 @@ def test_the_image_installs_the_archive_extra_serve_needs():
         assert "--extra archive" in line or "--all-extras" in line, line
 
 
+def test_the_deployed_scheduler_migrates_before_it_serves():
+    """A redeploy is `docker compose up -d --build` and nothing else: devkit's collectors.py
+    rebuilds `app` onto merged code that way. Nothing in that path ran `alembic upgrade head`,
+    so merged migration c0d1e2f3a4b5 never reached the database (2026-10-11) and the container
+    ran models ahead of its schema. Both the compose command and the image's own CMD migrate.
+    """
+    import yaml
+
+    compose = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    cmds = [line for line in dockerfile.splitlines() if line.startswith("CMD")]
+
+    assert compose["services"]["app"]["command"] == ["ibkr-trader", "serve", "--migrate"]
+    assert cmds == ['CMD ["ibkr-trader", "serve", "--migrate"]']
+
+
+def test_the_image_carries_the_migrations_serve_runs():
+    """`--migrate` resolves the chain beside `src/` (db/migrate.py), so the image must copy
+    `migrations/` next to `src/`, and the build-context allowlist must let it in."""
+    dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    ignore = (REPO_ROOT / "Dockerfile.dockerignore").read_text(encoding="utf-8")
+
+    assert "COPY ibkr_trader/migrations ./migrations" in dockerfile
+    assert "COPY ibkr_trader/src ./src" in dockerfile
+    assert "!ibkr_trader/migrations" in ignore.splitlines()
+
+
 def test_db_only_teardown_leaves_the_profiled_services_alone():
     assert docker_down.compose_argv(()) == ["docker", "compose", "down"]
 

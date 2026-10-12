@@ -1410,6 +1410,57 @@ def test_wait_for_database_gives_up_at_the_timeout(monkeypatch):
     assert scheduler.wait_for_database(10.0, sleep=fake_sleep, now=fake_now) is False
 
 
+def test_prepare_database_without_migrate_only_waits():
+    calls = []
+
+    scheduler.prepare_database(
+        30.0,
+        migrate=False,
+        wait=lambda seconds: calls.append(("wait", seconds)) or True,
+        upgrade=lambda: calls.append("upgrade"),
+    )
+
+    assert calls == [("wait", 30.0)]
+
+
+def test_prepare_database_migrates_once_the_database_answers():
+    """The upgrade needs the database up, so it runs after the wait, never before."""
+    calls = []
+
+    scheduler.prepare_database(
+        30.0,
+        migrate=True,
+        wait=lambda seconds: calls.append("wait") or True,
+        upgrade=lambda: calls.append("upgrade"),
+    )
+
+    assert calls == ["wait", "upgrade"]
+
+
+def test_prepare_database_lets_a_failed_migration_stop_serve():
+    """Serving against a schema behind the models is the failure this exists to end, so a
+    migration that fails exits `serve` (the container restarts) rather than being logged."""
+
+    def broken_upgrade():
+        raise RuntimeError("relation already exists")
+
+    with pytest.raises(RuntimeError, match="relation already exists"):
+        scheduler.prepare_database(1.0, migrate=True, wait=lambda _s: True, upgrade=broken_upgrade)
+
+
+def test_prepare_database_still_tries_the_migration_after_a_failed_wait(caplog):
+    """A wait that times out is logged, not fatal -- the migration is what decides."""
+    calls = []
+
+    with caplog.at_level(logging.ERROR, logger=scheduler.__name__):
+        scheduler.prepare_database(
+            1.0, migrate=True, wait=lambda _s: False, upgrade=lambda: calls.append("upgrade")
+        )
+
+    assert calls == ["upgrade"]
+    assert "starting anyway" in caplog.text
+
+
 def test_wait_for_database_never_raises(monkeypatch):
     """A surprising error here must not stop `serve` from starting — jobs retry anyway."""
     from contextlib import contextmanager

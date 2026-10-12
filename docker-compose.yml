@@ -122,7 +122,10 @@ services:
       # as "never-run" for a full cadence afterwards. Named (not bind-mounted) so the
       # directory keeps the image's appuser ownership — see the chown in the Dockerfile.
       - applogs:/app/logs
-    command: ["ibkr-trader", "serve"]
+    # --migrate: `alembic upgrade head` before any job starts. A redeploy is `up -d --build`
+    # (devkit's collectors.py, or by hand) and nothing else in that path migrates, so without
+    # it a merged migration never reaches the database and the jobs run ahead of the schema.
+    command: ["ibkr-trader", "serve", "--migrate"]
     # Every service on the machine shares one 4 GB WSL VM (with 2 GB swap), and `serve` had
     # no cap: 2026-10-09 it held 2.4 GB resident ten minutes after a restart, ran the VM out
     # of memory and swap, and the frozen VM took Docker's engine and every other project's
