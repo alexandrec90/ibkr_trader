@@ -22,8 +22,12 @@ from collections.abc import Callable, Sequence
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import TypeVar
+from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.blocking import BlockingScheduler
+from apscheduler.triggers.base import BaseTrigger
+from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.date import DateTrigger
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError
 from sqlalchemy.orm import Session
@@ -55,6 +59,15 @@ CATCH_UP_DELAY_SECONDS = 300
 #: fire in the same second; after every Docker VM boot on 2026-10-09 that burst took `serve`
 #: to 1.65 GiB within minutes, and with nothing capping it, ran the 4 GB VM out of memory.
 STARTUP_STAGGER_SECONDS = 180
+
+#: The wall clock a daily ``at=`` job keeps: the US (and TSX) session closes at 16:00 here.
+#: `prices` used to run every 24 h from whenever `serve` started, which on 2026-10-08 and
+#: 2026-10-12 was mid-session — each day's newest bar was an unfinished snapshot.
+DAILY_JOB_TIMEZONE = ZoneInfo("America/New_York")
+
+#: A daily job owed a run at startup leaves it to its slot when that is this close, so two runs
+#: of one label never overlap (a full price refresh is throttled per symbol and runs long).
+DAILY_CATCH_UP_MIN_LEAD = timedelta(hours=2)
 
 _Item = TypeVar("_Item")
 
@@ -396,10 +409,10 @@ def backfill_finnhub_news(
 def poll_yahoo_prices() -> int:
     """Incremental Yahoo daily-bar refresh for every instrument Yahoo already tracks.
 
-    The connector fetches only bars newer than the newest stored one (returning 0 without a
-    request when already current) and throttles itself, so a machine that was off for days
-    simply catches up on the next run and a same-day rerun is nearly free. A failing symbol
-    is logged and skipped.
+    The connector fetches from the newest stored day onward — that day included, so a bar
+    stored mid-session is replaced by the settled one — and throttles itself, so a machine
+    that was off for days simply catches up on the next run. Every symbol costs one request
+    per run, current or not. A failing symbol is logged and skipped.
     """
     from data_lake.ingestion.market.yahoo import YahooConnector
     from data_lake.ingestion.market.yahoo_common import tracked_yahoo_symbols
@@ -951,16 +964,18 @@ def wait_for_database(
 def _register_market_data_jobs(register: Callable[..., None], settings: Settings) -> None:
     """Daily bars, plus the point-in-time S&P 500 universe, through ``register``.
 
-    ``prices`` and ``index_membership`` fire on startup: bars go stale whenever the machine
-    was off (the incremental fetch makes a current run nearly free), and ``index_prices``
-    has nothing to price until membership spans exist.
+    ``prices`` runs daily after the close (``poll_prices_at``, New York time) and on startup
+    only when a slot passed without a success: bars go stale whenever the machine was off,
+    but a routine restart mid-session would only store an unfinished day. ``index_membership``
+    fires on startup, since ``index_prices`` has nothing to price until membership spans exist.
     """
     register(
         "prices_poll",
         "prices",
         lambda: poll_prices_job(settings),
-        seconds=settings.poll_prices_hours * 3600,
+        seconds=24 * 3600,
         start_now=True,
+        at=settings.poll_prices_at,
     )
     register(
         "index_membership_poll",
@@ -1125,6 +1140,51 @@ def _first_run(label: str, *, start_now: bool = False, now: datetime | None = No
     return earliest if due is None else max(due, earliest)
 
 
+def _parse_daily_at(at: str) -> tuple[int, int]:
+    """``"HH:MM"`` (24 h) → ``(hour, minute)``; anything else is refused, naming the setting."""
+    hour, sep, minute = at.strip().partition(":")
+    if sep and hour.isdigit() and minute.isdigit() and len(minute) == 2:
+        if int(hour) < 24 and int(minute) < 60:
+            return int(hour), int(minute)
+    raise ValueError(f"POLL_PRICES_AT must be HH:MM (24 h, New York time), got {at!r}")
+
+
+def _daily_trigger(at: str) -> CronTrigger:
+    hour, minute = _parse_daily_at(at)
+    return CronTrigger(hour=hour, minute=minute, timezone=DAILY_JOB_TIMEZONE)
+
+
+def _previous_daily_slot(at: str, *, now: datetime) -> datetime:
+    """The latest ``at`` on the New York wall clock at or before ``now``, in UTC.
+
+    Stepping back a day happens on the wall clock (an aware ``datetime`` adds days that way),
+    so the slot keeps its local time across a DST change.
+    """
+    hour, minute = _parse_daily_at(at)
+    local = now.astimezone(DAILY_JOB_TIMEZONE)
+    slot = local.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if slot > local:
+        slot -= timedelta(days=1)
+    return slot.astimezone(UTC)
+
+
+def _daily_catch_up_due(label: str, at: str, *, now: datetime | None = None) -> bool:
+    """Whether a daily ``at`` job owes a run at startup: its last slot passed with no success
+    after it (or it never succeeded), and the next slot is not close enough to cover it."""
+    moment = now or datetime.now(UTC)
+    previous = _previous_daily_slot(at, now=moment)
+    upcoming = (previous.astimezone(DAILY_JOB_TIMEZONE) + timedelta(days=1)).astimezone(UTC)
+    if upcoming - moment < DAILY_CATCH_UP_MIN_LEAD:
+        return False
+    last_success = job_health.snapshot()["jobs"].get(label, {}).get("last_success")
+    if not last_success:
+        return True
+    try:
+        return datetime.fromisoformat(last_success) < previous
+    except (TypeError, ValueError):
+        return True
+
+
 def _stagger(
     first_runs: Sequence[datetime], spacing: float = STARTUP_STAGGER_SECONDS
 ) -> list[datetime]:
@@ -1168,18 +1228,31 @@ def _add_interval_job(
     )
 
 
-#: A guarded job queued by ``build_scheduler``: (job, job id, interval seconds, first run).
-_PendingJob = tuple[Callable[[], None], str, float, datetime]
+#: A guarded job queued by ``build_scheduler``: (job, job id, interval seconds or a trigger,
+#: first run).
+_PendingJob = tuple[Callable[[], None], str, float | BaseTrigger, datetime]
 
 
 def _add_staggered(scheduler: BlockingScheduler, pending: Sequence[_PendingJob]) -> None:
     """Add the queued jobs, their first runs staggered against each other (see ``_stagger``).
 
     Queued rather than added as registered, because the stagger needs every job's first run.
+    A trigger (a daily slot, a one-shot catch-up) gets the same misfire handling as an
+    interval job.
     """
     first_runs = _stagger([first_run for *_, first_run in pending])
-    for (guarded, job_id, seconds, _), first_run in zip(pending, first_runs, strict=True):
-        _add_interval_job(scheduler, guarded, job_id, seconds, first_run)
+    for (guarded, job_id, cadence, _), first_run in zip(pending, first_runs, strict=True):
+        if isinstance(cadence, BaseTrigger):
+            scheduler.add_job(
+                guarded,
+                cadence,
+                id=job_id,
+                next_run_time=first_run,
+                misfire_grace_time=None,
+                coalesce=True,
+            )
+        else:
+            _add_interval_job(scheduler, guarded, job_id, cadence, first_run)
 
 
 def build_scheduler(
@@ -1210,12 +1283,25 @@ def build_scheduler(
         *,
         seconds: float,
         start_now: bool = False,
+        at: str = "",
     ) -> None:
-        """Queue one guarded interval job, and tell ``job_health`` what cadence to expect."""
+        """Queue one guarded job, and tell ``job_health`` what cadence to expect.
+
+        An interval job by default. With ``at`` (``HH:MM``, New York time) it runs daily at
+        that wall-clock slot instead, ``seconds`` being the cadence `health` judges it by, and
+        ``start_now`` becomes a one-shot ``<job_id>_catch_up`` only when a slot was missed.
+        """
         job_health.record_schedule(label, seconds)
         scheduled.add(label)
         guarded = _guard(job, label, scheduler=scheduler, artifact_path=artifact_path)
-        pending.append((guarded, job_id, seconds, _first_run(label, start_now=start_now)))
+        if not at:
+            pending.append((guarded, job_id, seconds, _first_run(label, start_now=start_now)))
+            return
+        now = datetime.now(UTC)
+        trigger = _daily_trigger(at)
+        pending.append((guarded, job_id, trigger, trigger.get_next_fire_time(None, now)))
+        if start_now and _daily_catch_up_due(label, at, now=now):
+            pending.append((guarded, f"{job_id}_catch_up", DateTrigger(run_date=now), now))
 
     register("social_poll", "social", poll_social_job, seconds=settings.poll_social_minutes * 60)
     register(
