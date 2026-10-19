@@ -147,3 +147,24 @@ def test_load_mood_panel_reads_one_model_and_halves_social_weight():
     _, total, weight = panel.daily["AAPL"][0]
     assert weight == pytest.approx(1.5)  # one vader article + one half-weight post
     assert total == pytest.approx(0.6 - 0.1)
+
+
+def test_load_mood_panel_streams_rows_instead_of_buffering_the_tables(monkeypatch):
+    """2026-10-18: `backtest lab` was OOM-killed twice (1.5 GiB, then 3 GiB) right after the
+    price load, its memory jumping by >1.5 GiB in one 20 s sample. Both reads ran without
+    streaming, so psycopg buffered every scored news article and social post (millions of
+    rows) client-side before ``build_panel`` saw one. Both reads must stream in batches."""
+    session = _session()
+    seen = []
+    execute = session.execute
+
+    def recording_execute(statement, *args, **kwargs):
+        seen.append(statement)
+        return execute(statement, *args, **kwargs)
+
+    monkeypatch.setattr(session, "execute", recording_execute)
+    load_mood_panel(session, model="vader")
+
+    assert len(seen) == 2  # news, then social
+    for statement in seen:
+        assert statement.get_execution_options().get("yield_per", 0) > 0

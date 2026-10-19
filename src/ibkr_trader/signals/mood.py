@@ -31,6 +31,11 @@ from ibkr_trader.db.models import NewsArticle, SocialPost
 #: High enough that a handful of sparse early social posts can't masquerade as a signal.
 MIN_NAMES_FOR_Z = 10
 
+#: Rows per server-side fetch when reading the scored tables. Unbatched, psycopg buffered
+#: every scored post client-side before aggregation began, and `backtest lab` was OOM-killed
+#: at 3 GiB on 2026-10-18; the panel itself is only per-(symbol, day) sums.
+READ_BATCH_ROWS = 10_000
+
 
 @dataclass
 class MoodPanel:
@@ -117,17 +122,22 @@ def load_mood_panel(
     """Build the panel from scored news + social rows of one sentiment ``model``.
 
     Mixing models would mix scales (VADER and FinBERT disagree on what 0.3 means), so rows
-    scored by any other model are ignored.
+    scored by any other model are ignored. Both tables are streamed in ``READ_BATCH_ROWS``
+    batches, so memory stays at the aggregate's size, not the tables'.
     """
 
     def items():
-        news = select(NewsArticle.published_at, NewsArticle.symbols, NewsArticle.sentiment).where(
-            NewsArticle.sentiment.is_not(None), NewsArticle.sentiment_model == model
+        news = (
+            select(NewsArticle.published_at, NewsArticle.symbols, NewsArticle.sentiment)
+            .where(NewsArticle.sentiment.is_not(None), NewsArticle.sentiment_model == model)
+            .execution_options(yield_per=READ_BATCH_ROWS)
         )
         for ts, symbols, sentiment in session.execute(news):
             yield ts, symbols, sentiment, 1.0
-        social = select(SocialPost.created_at, SocialPost.symbols, SocialPost.sentiment).where(
-            SocialPost.sentiment.is_not(None), SocialPost.sentiment_model == model
+        social = (
+            select(SocialPost.created_at, SocialPost.symbols, SocialPost.sentiment)
+            .where(SocialPost.sentiment.is_not(None), SocialPost.sentiment_model == model)
+            .execution_options(yield_per=READ_BATCH_ROWS)
         )
         for ts, symbols, sentiment in session.execute(social):
             yield ts, symbols, sentiment, social_weight
