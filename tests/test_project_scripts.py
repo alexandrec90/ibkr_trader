@@ -108,6 +108,22 @@ def test_the_db_caps_the_memory_timescaledb_tune_would_claim():
     assert "maintenance_work_mem=${DB_MAINTENANCE_WORK_MEM:-128MB}" in command
 
 
+def test_one_query_over_every_price_bars_chunk_fits_the_db_cap():
+    """price_bars has ~790 monthly chunks, and a backend holds executor state for each one a
+    query touches. Parallel workers each hold their own copy, and chunkwise aggregation adds a
+    hash table per chunk: an unbounded `GROUP BY` over the table peaked at 405 MiB anonymous
+    on top of ~285 MiB of shared memory, and on 2026-10-19 one OOM-killed Postgres under the
+    768m cap mid-snapshot. With both off the same query peaks at 147 MiB.
+    """
+    import yaml
+
+    compose = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    command = compose["services"]["db"]["command"]
+
+    assert "max_parallel_workers_per_gather=${DB_MAX_PARALLEL_WORKERS_PER_GATHER:-0}" in command
+    assert "timescaledb.enable_chunkwise_aggregation=${DB_CHUNKWISE_AGGREGATION:-off}" in command
+
+
 def test_the_app_is_capped_inside_the_shared_vm_without_swap():
     """`serve` shares one 4 GB WSL VM with every project's containers. Uncapped, it ran the
     VM out of memory and swap on 2026-10-09 and froze Docker's engine for all of them. The

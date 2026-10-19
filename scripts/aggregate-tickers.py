@@ -40,7 +40,8 @@ def main(workspace: pathlib.Path | None = None) -> int:
 
     symbols = sorted(first_seen)
     output = workspace / OUTPUT_FILE
-    output.write_text("\n".join(symbols) + "\n", encoding="utf-8")
+    # LF as committed: a platform newline is CRLF on Windows and dirties the checkout.
+    output.write_text("\n".join(symbols) + "\n", encoding="utf-8", newline="\n")
     print(f"wrote {len(symbols)} symbols to {output}")
 
     if collisions:
