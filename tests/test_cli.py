@@ -750,6 +750,59 @@ def test_ingest_prices_batch_flows_into_fetch_universe(monkeypatch, tmp_path):
     assert seen["budget"] == 20  # free tier is ~25/day — leave headroom
 
 
+def test_ingest_prices_date_from_refetches_from_that_day(monkeypatch):
+    """The resume point is the newest stored day, so an older partial bar never heals on
+    its own: `--date-from` re-reads a range and the upsert replaces what is there."""
+    from data_lake.ingestion.market import yahoo
+
+    seen = {}
+
+    def fake_fetch(self, symbol="", **kwargs):
+        seen.update(symbol=symbol, **kwargs)
+        return 9
+
+    monkeypatch.setattr(yahoo.YahooConnector, "__init__", lambda self: None)
+    monkeypatch.setattr(yahoo.YahooConnector, "fetch", fake_fetch)
+    result = runner.invoke(
+        cli.app, ["ingest", "prices", "THC", "--source", "yahoo", "--date-from", "2026-09-28"]
+    )
+    assert result.exit_code == 0, _all_output(result)
+    assert "upserted 9 bars" in result.output
+    assert seen == {"symbol": "THC", "date_from": "2026-09-28"}
+
+
+def test_ingest_prices_without_date_from_resumes_as_before(monkeypatch):
+    from data_lake.ingestion.market import yahoo
+
+    seen = {}
+    monkeypatch.setattr(yahoo.YahooConnector, "__init__", lambda self: None)
+    monkeypatch.setattr(
+        yahoo.YahooConnector, "fetch", lambda self, **kwargs: seen.update(kwargs) or 1
+    )
+    result = runner.invoke(cli.app, ["ingest", "prices", "THC", "--source", "yahoo"])
+    assert result.exit_code == 0, _all_output(result)
+    assert seen == {"symbol": "THC"}
+
+
+@pytest.mark.parametrize("source", ["alpha_vantage", "ibkr"])
+def test_ingest_prices_date_from_is_refused_where_the_connector_ignores_it(source):
+    """Those connectors take `**kwargs`, so a date would be swallowed and the run would
+    look like a heal while re-reading nothing."""
+    result = runner.invoke(
+        cli.app, ["ingest", "prices", "THC", "--source", source, "--date-from", "2026-09-28"]
+    )
+    assert result.exit_code == 2
+    assert "--date-from is fmp/yahoo-only" in _plain(_all_output(result))
+
+
+def test_ingest_prices_date_from_must_be_a_date():
+    result = runner.invoke(
+        cli.app, ["ingest", "prices", "THC", "--source", "yahoo", "--date-from", "28/09/2026"]
+    )
+    assert result.exit_code == 2
+    assert "YYYY-MM-DD" in _plain(_all_output(result))
+
+
 def test_ingest_prices_requires_symbol_or_file():
     result = runner.invoke(cli.app, ["ingest", "prices"])
     assert result.exit_code != 0
