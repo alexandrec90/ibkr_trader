@@ -30,11 +30,20 @@ services:
       - shared_buffers=${DB_SHARED_BUFFERS:-256MB}
       - -c
       - maintenance_work_mem=${DB_MAINTENANCE_WORK_MEM:-128MB}
+      # A query over every price_bars chunk (~790 monthly ones) holds executor state per
+      # chunk, once per parallel worker, plus a hash table per chunk under chunkwise
+      # aggregation. An ad-hoc `GROUP BY` over the table took 405 MiB with both on -- and
+      # OOM-killed the server mid-snapshot on 2026-10-19 -- and 147 MiB with both off.
+      - -c
+      - max_parallel_workers_per_gather=${DB_MAX_PARALLEL_WORKERS_PER_GATHER:-0}
+      - -c
+      - timescaledb.enable_chunkwise_aggregation=${DB_CHUNKWISE_AGGREGATION:-off}
     # Capped like `app` below, for the same shared VM: 657 MiB resident minutes after a VM
     # boot on 2026-10-09, uncapped. 768m is shared_buffers plus room for the backends, which
-    # only holds while idle ones disconnect (`IDLE_SESSION_TIMEOUT_MS` in db/session.py) and
+    # only holds while idle ones disconnect (`IDLE_SESSION_TIMEOUT_MS` in db/session.py),
     # busy ones never plan over every price_bars chunk (`PLAN_CACHE_OPTION` there, and the
-    # bounded newest-bar lookups in data-lake's ingestion/market/bars.py).
+    # bounded newest-bar lookups in data-lake's ingestion/market/bars.py), and one that does
+    # scan them all runs serially (the two `-c` lines above).
     mem_limit: ${DB_MEM_LIMIT:-768m}
     memswap_limit: ${DB_MEM_LIMIT:-768m}
     environment:

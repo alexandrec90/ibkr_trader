@@ -107,3 +107,13 @@ def test_main_defaults_to_the_repo_root(aggregate):
     assert inspect.signature(aggregate.main).parameters["workspace"].default is None
     assert (REPO_ROOT / "tickers-fmp.txt").is_file()
     assert (REPO_ROOT / "tickers-yahoo.txt").is_file()
+
+
+def test_main_writes_lf_line_endings_on_every_platform(aggregate, tmp_path):
+    """`tickers.txt` is committed LF (`.gitattributes`). A platform-newline write made it
+    CRLF on Windows, so every scheduled snapshot run left the checkout dirty."""
+    _seed(tmp_path, fmp="MSFT\n", yahoo="AAPL\n")
+
+    aggregate.main(tmp_path)
+
+    assert (tmp_path / "tickers.txt").read_bytes() == b"AAPL\nMSFT\n"
