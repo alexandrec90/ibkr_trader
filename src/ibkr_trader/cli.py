@@ -591,9 +591,23 @@ def ingest_prices(
     max_requests: int = typer.Option(
         20, help="batch mode: fetch budget per run (Alpha Vantage free tier is ~25/day)"
     ),
+    date_from: str = typer.Option(
+        "",
+        help="YYYY-MM-DD (fmp/yahoo): re-read from this day instead of the newest stored one, "
+        "replacing stored bars -- heals a partial bar older than the newest day",
+    ),
 ):
     """Upsert daily bars for one SYMBOL, or --universe-file to batch a list through Alpha
     Vantage under its tiny free budget (fresh symbols are skipped, quota errors abort)."""
+    if date_from:
+        from datetime import datetime
+
+        if source not in ("fmp", "yahoo"):
+            raise typer.BadParameter("--date-from is fmp/yahoo-only (the others ignore it)")
+        try:
+            datetime.strptime(date_from, "%Y-%m-%d")
+        except ValueError:
+            raise typer.BadParameter("--date-from must be YYYY-MM-DD") from None
     if universe_file:
         if source != "alpha_vantage":
             raise typer.BadParameter(
@@ -626,7 +640,8 @@ def ingest_prices(
     module_path, class_name = connectors[source].split(":")
     module = __import__(module_path, fromlist=[class_name])
     try:
-        count = getattr(module, class_name)().fetch(symbol=symbol)
+        kwargs = {"date_from": date_from} if date_from else {}
+        count = getattr(module, class_name)().fetch(symbol=symbol, **kwargs)
     except RuntimeError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1) from None
