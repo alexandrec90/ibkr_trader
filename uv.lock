@@ -960,8 +960,8 @@ research = [
 
 [package.metadata]
 requires-dist = [
-    { name = "boto3", marker = "extra == 'archive'", specifier = ">=1.43.110" },
-    { name = "duckdb", marker = "extra == 'research'", specifier = ">=1.5.6" },
+    { name = "boto3", marker = "extra == 'archive'", specifier = ">=1.34" },
+    { name = "duckdb", marker = "extra == 'research'", specifier = ">=1.0" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "pandas", specifier = ">=2.2" },
     { name = "pyarrow", marker = "extra == 'archive'", specifier = ">=17" },
@@ -974,10 +974,10 @@ provides-extras = ["archive", "research"]
 [package.metadata.requires-dev]
 dev = [
     { name = "mypy", specifier = ">=2.4.0" },
-    { name = "pre-commit", specifier = ">=4.6.2" },
+    { name = "pre-commit", specifier = ">=4.7.0" },
     { name = "pytest", specifier = ">=9.1" },
     { name = "pytest-cov", specifier = ">=6" },
-    { name = "ruff", specifier = ">=0.16.10" },
+    { name = "ruff", specifier = ">=0.17.1" },
 ]
 
 [[package]]
