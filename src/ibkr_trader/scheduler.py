@@ -1015,6 +1015,45 @@ def _register_archive_jobs(register: Callable[..., None], settings: Settings) ->
     )
 
 
+def _register_text_jobs(register: Callable[..., None], settings: Settings) -> None:
+    """The text pipeline -- social and news polls, raw pruning, the Finnhub backfill and
+    sentiment scoring -- through `build_scheduler`'s ``register``, in that order."""
+    register("social_poll", "social", poll_social_job, seconds=settings.poll_social_minutes * 60)
+    register(
+        "finnhub_news_poll",
+        "finnhub_news",
+        lambda: poll_finnhub_news(
+            settings.news_universe_file, settings.finnhub_request_spacing_seconds
+        ),
+        seconds=settings.poll_finnhub_news_hours * 3600,
+    )
+    register(
+        "newsapi_poll",
+        "newsapi",
+        lambda: poll_newsapi_job(settings),
+        seconds=settings.poll_newsapi_hours * 3600,
+    )
+    register(
+        "trends_poll",
+        "trends",
+        lambda: poll_trends_job(settings),
+        seconds=settings.poll_trends_hours * 3600,
+    )
+    register(
+        "prune_raw",
+        "prune",
+        lambda: run_prune(settings.prune_raw_min_age_days),
+        seconds=settings.prune_raw_hours * 3600,
+    )
+    _register_finnhub_backfill(register, settings)
+    register(
+        "sentiment_score",
+        "sentiment",
+        run_sentiment_scoring,
+        seconds=settings.score_sentiment_minutes * 60,
+    )
+
+
 def _register_finnhub_backfill(register: Callable[..., None], settings: Settings) -> None:
     """The Finnhub history backfill, through `build_scheduler`'s ``register``.
 
@@ -1303,40 +1342,7 @@ def build_scheduler(
         if start_now and _daily_catch_up_due(label, at, now=now):
             pending.append((guarded, f"{job_id}_catch_up", DateTrigger(run_date=now), now))
 
-    register("social_poll", "social", poll_social_job, seconds=settings.poll_social_minutes * 60)
-    register(
-        "finnhub_news_poll",
-        "finnhub_news",
-        lambda: poll_finnhub_news(
-            settings.news_universe_file, settings.finnhub_request_spacing_seconds
-        ),
-        seconds=settings.poll_finnhub_news_hours * 3600,
-    )
-    register(
-        "newsapi_poll",
-        "newsapi",
-        lambda: poll_newsapi_job(settings),
-        seconds=settings.poll_newsapi_hours * 3600,
-    )
-    register(
-        "trends_poll",
-        "trends",
-        lambda: poll_trends_job(settings),
-        seconds=settings.poll_trends_hours * 3600,
-    )
-    register(
-        "prune_raw",
-        "prune",
-        lambda: run_prune(settings.prune_raw_min_age_days),
-        seconds=settings.prune_raw_hours * 3600,
-    )
-    _register_finnhub_backfill(register, settings)
-    register(
-        "sentiment_score",
-        "sentiment",
-        run_sentiment_scoring,
-        seconds=settings.score_sentiment_minutes * 60,
-    )
+    _register_text_jobs(register, settings)
     _register_market_data_jobs(register, settings)
     _register_archive_jobs(register, settings)
     _register_gateway_job(register, settings)

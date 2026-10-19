@@ -1531,6 +1531,28 @@ def test_register_market_data_jobs_wires_bars_and_the_index_universe():
     }
 
 
+def test_register_text_jobs_wires_the_text_pipeline_in_order():
+    seen = {}
+
+    def record(job_id, label, job, *, seconds, start_now=False, at=""):
+        seen[job_id] = (label, seconds, start_now)
+
+    settings = _settings(poll_social_minutes=5, score_sentiment_minutes=10)
+    scheduler._register_text_jobs(record, settings)
+    assert list(seen) == [
+        "social_poll",
+        "finnhub_news_poll",
+        "newsapi_poll",
+        "trends_poll",
+        "prune_raw",
+        "finnhub_backfill",
+        "sentiment_score",
+    ]
+    assert seen["social_poll"] == ("social", 5 * 60, False)
+    assert seen["sentiment_score"] == ("sentiment", 10 * 60, False)
+    assert seen["finnhub_backfill"][2] is True
+
+
 def test_prices_poll_runs_daily_after_the_us_close_not_on_the_process_clock():
     """2026-10-08 and 2026-10-12: `prices` ran every 24 h from whenever `serve` started, which
     fell inside US trading hours, so each day's newest bar was a mid-session snapshot (CBOE's
