@@ -80,8 +80,9 @@ class Settings(BaseSettings):
     # unlocks raw-payload pruning, so this indirectly bounds disk usage.
     score_sentiment_minutes: int = 60
     # Daily-bar refresh: incremental Yahoo fetch for every yahoo-tracked instrument plus FX
-    # pairs from FMP. Runs at startup too, so bars catch up after the machine was off.
-    poll_prices_hours: int = 24
+    # pairs from FMP. Runs daily at this HH:MM New York time — after the 16:00 US/TSX close,
+    # so the newest stored bar is a finished session — and at startup only when a slot was missed.
+    poll_prices_at: str = "18:00"
     fx_pairs: list[str] = ["USDCAD"]
     # NewsAPI batch poll. Free tier is ~100 requests/day with articles delayed 24 h, so a 12 h
     # cadence is the useful maximum: the per-symbol freshness skip means a second daily run

@@ -28,7 +28,7 @@ def _settings(**overrides):
         finnhub_backfill_chunk_days=30,
         finnhub_backfill_max_requests=2000,
         score_sentiment_minutes=60,
-        poll_prices_hours=24,
+        poll_prices_at="18:00",
         fx_pairs=["USDCAD"],
         trends_keywords=[],
         trends_mapping_file="",
@@ -67,7 +67,8 @@ def _settings(**overrides):
 def test_build_scheduler_registers_all_jobs_with_configured_intervals():
     sched = scheduler.build_scheduler(settings=_settings())
     jobs = {job.id: job for job in sched.get_jobs()}
-    assert set(jobs) == {
+    # The prices catch-up is a one-shot that exists only after a missed slot (tested below).
+    assert set(jobs) - {"prices_poll_catch_up"} == {
         "social_poll",
         "finnhub_news_poll",
         "newsapi_poll",
@@ -105,8 +106,7 @@ def test_build_scheduler_registers_all_jobs_with_configured_intervals():
     assert jobs["prune_raw"].trigger.interval == timedelta(hours=24)
     assert jobs["finnhub_backfill"].trigger.interval == timedelta(hours=24)
     assert jobs["sentiment_score"].trigger.interval == timedelta(minutes=60)
-    assert jobs["prices_poll"].trigger.interval == timedelta(hours=24)
-    assert jobs["prices_poll"].next_run_time is not None  # bars catch up on startup
+    assert str(jobs["prices_poll"].trigger.timezone) == "America/New_York"
     assert jobs["archive_bars"].trigger.interval == timedelta(hours=24)
     assert jobs["archive_raw"].trigger.interval == timedelta(hours=24)
 
@@ -218,11 +218,12 @@ def test_add_staggered_adds_each_queued_job_on_its_staggered_first_run():
     assert jobs["b"].trigger.interval == timedelta(hours=1)
 
 
-def test_no_two_jobs_first_fire_together_after_a_boot():
+def test_no_two_jobs_first_fire_together_after_a_boot(monkeypatch):
     """2026-10-09: every Docker VM boot fired prices, index membership, the Finnhub backfill and
     both IPO polls in the same second; `serve` reached 1.65 GiB within minutes and, uncapped,
     ran the shared 4 GB VM out of memory. The startup jobs now come up one at a time."""
     job_health.reset()
+    monkeypatch.setattr(scheduler, "_daily_catch_up_due", lambda label, at, **kw: True)
     before = datetime.now(UTC)
     sched = scheduler.build_scheduler(settings=_settings())
     jobs = sched.get_jobs()
@@ -233,7 +234,7 @@ def test_no_two_jobs_first_fire_together_after_a_boot():
         assert later - earlier >= gap
     # Staggered, still on startup: each start_now job fires within the window.
     window = before + len(jobs) * gap
-    for job_id in ("finnhub_backfill", "prices_poll", "index_membership_poll"):
+    for job_id in ("finnhub_backfill", "prices_poll_catch_up", "index_membership_poll"):
         assert {j.id: j for j in jobs}[job_id].next_run_time <= window
 
 
@@ -1518,15 +1519,129 @@ def test_poll_newsapi_job_unset_mapping_file_is_noop():
 def test_register_market_data_jobs_wires_bars_and_the_index_universe():
     seen = {}
 
-    def record(job_id, label, job, *, seconds, start_now=False):
+    def record(job_id, label, job, *, seconds, start_now=False, at=""):
+        seen[job_id] = (label, seconds, start_now, at)
+
+    settings = _settings(poll_index_prices_minutes=30, poll_prices_at="18:30")
+    scheduler._register_market_data_jobs(record, settings)
+    assert seen == {
+        "prices_poll": ("prices", 24 * 3600, True, "18:30"),
+        "index_membership_poll": ("index_membership", 24 * 3600, True, ""),
+        "index_prices_poll": ("index_prices", 30 * 60, False, ""),
+    }
+
+
+def test_register_text_jobs_wires_the_text_pipeline_in_order():
+    seen = {}
+
+    def record(job_id, label, job, *, seconds, start_now=False, at=""):
         seen[job_id] = (label, seconds, start_now)
 
-    scheduler._register_market_data_jobs(record, _settings(poll_index_prices_minutes=30))
-    assert seen == {
-        "prices_poll": ("prices", 24 * 3600, True),
-        "index_membership_poll": ("index_membership", 24 * 3600, True),
-        "index_prices_poll": ("index_prices", 30 * 60, False),
-    }
+    settings = _settings(poll_social_minutes=5, score_sentiment_minutes=10)
+    scheduler._register_text_jobs(record, settings)
+    assert list(seen) == [
+        "social_poll",
+        "finnhub_news_poll",
+        "newsapi_poll",
+        "trends_poll",
+        "prune_raw",
+        "finnhub_backfill",
+        "sentiment_score",
+    ]
+    assert seen["social_poll"] == ("social", 5 * 60, False)
+    assert seen["sentiment_score"] == ("sentiment", 10 * 60, False)
+    assert seen["finnhub_backfill"][2] is True
+
+
+def test_prices_poll_runs_daily_after_the_us_close_not_on_the_process_clock():
+    """2026-10-08 and 2026-10-12: `prices` ran every 24 h from whenever `serve` started, which
+    fell inside US trading hours, so each day's newest bar was a mid-session snapshot (CBOE's
+    close sat below its low; 617 of 620 bars on 10-12 changed once re-fetched). It now fires at
+    a New York wall-clock time after the 16:00 close, DST included."""
+    job_health.reset()
+    sched = scheduler.build_scheduler(settings=_settings(poll_prices_at="18:00"))
+    job = {j.id: j for j in sched.get_jobs()}["prices_poll"]
+
+    summer = job.trigger.get_next_fire_time(None, datetime(2026, 10, 13, 15, 0, tzinfo=UTC))
+    winter = job.trigger.get_next_fire_time(None, datetime(2026, 11, 2, 15, 0, tzinfo=UTC))
+    assert summer.astimezone(UTC) == datetime(2026, 10, 13, 22, 0, tzinfo=UTC)  # 18:00 EDT
+    assert winter.astimezone(UTC) == datetime(2026, 11, 2, 23, 0, tzinfo=UTC)  # 18:00 EST
+    # Every day, weekends too: a weekday-only slot leaves Friday→Monday at 72 h, past the
+    # 2.5 x 24 h that `health` reads as stale.
+    sunday = job.trigger.get_next_fire_time(None, datetime(2026, 10, 18, 12, 0, tzinfo=UTC))
+    assert sunday.astimezone(UTC) == datetime(2026, 10, 18, 22, 0, tzinfo=UTC)
+    assert job.misfire_grace_time is None and job.coalesce is True
+    assert job_health.snapshot()["jobs"]["prices"]["interval_seconds"] == 24 * 3600
+
+
+@pytest.mark.parametrize(
+    ("now", "previous"),
+    [
+        # after today's slot → today's
+        (datetime(2026, 10, 13, 23, 0, tzinfo=UTC), datetime(2026, 10, 13, 22, 0, tzinfo=UTC)),
+        # before today's slot → yesterday's
+        (datetime(2026, 10, 13, 15, 0, tzinfo=UTC), datetime(2026, 10, 12, 22, 0, tzinfo=UTC)),
+        # the morning after DST ends: yesterday's slot was already on EST
+        (datetime(2026, 11, 2, 12, 0, tzinfo=UTC), datetime(2026, 11, 1, 23, 0, tzinfo=UTC)),
+    ],
+)
+def test_previous_daily_slot_is_on_the_new_york_wall_clock(now, previous):
+    assert scheduler._previous_daily_slot("18:00", now=now) == previous
+
+
+@pytest.mark.parametrize("at", ["", "18", "24:00", "18:60", "6pm", "-1:00"])
+def test_a_bad_daily_time_is_refused_naming_the_setting(at):
+    with pytest.raises(ValueError, match="POLL_PRICES_AT"):
+        scheduler._parse_daily_at(at)
+
+
+def _record_prices_success(monkeypatch, at: datetime) -> None:
+    job_health.reset()
+    with monkeypatch.context() as patch:
+        patch.setattr(job_health, "_now", at.isoformat)
+        job_health.record_success("prices", 1)
+
+
+def test_daily_catch_up_runs_when_it_never_ran():
+    job_health.reset()
+    now = datetime(2026, 10, 13, 15, 0, tzinfo=UTC)  # 11:00 EDT, slot seven hours away
+    assert scheduler._daily_catch_up_due("prices", "18:00", now=now) is True
+
+
+def test_daily_catch_up_runs_when_the_last_slot_passed_without_a_success(monkeypatch):
+    """The host was off over yesterday's 18:00: bars are a day behind until tonight."""
+    _record_prices_success(monkeypatch, datetime(2026, 10, 11, 22, 5, tzinfo=UTC))
+    now = datetime(2026, 10, 13, 15, 0, tzinfo=UTC)
+    assert scheduler._daily_catch_up_due("prices", "18:00", now=now) is True
+
+
+def test_a_restart_after_a_kept_slot_does_not_catch_up(monkeypatch):
+    """The usual restart (a rebuild at 11:00): last night's run happened, so nothing is owed,
+    and a run now would only store today's unfinished session."""
+    _record_prices_success(monkeypatch, datetime(2026, 10, 12, 22, 5, tzinfo=UTC))
+    now = datetime(2026, 10, 13, 15, 0, tzinfo=UTC)
+    assert scheduler._daily_catch_up_due("prices", "18:00", now=now) is False
+
+
+def test_daily_catch_up_leaves_it_to_a_slot_that_is_close():
+    """Two runs of one label must not overlap; the slot is near enough to do the work."""
+    job_health.reset()
+    now = datetime(2026, 10, 13, 21, 0, tzinfo=UTC)  # 17:00 EDT, slot in an hour
+    assert scheduler._daily_catch_up_due("prices", "18:00", now=now) is False
+
+
+@pytest.mark.parametrize("due", [True, False])
+def test_build_scheduler_adds_the_prices_catch_up_only_when_due(monkeypatch, due):
+    job_health.reset()
+    monkeypatch.setattr(scheduler, "_daily_catch_up_due", lambda label, at, **kw: due)
+    before = datetime.now(UTC)
+    jobs = {j.id: j for j in scheduler.build_scheduler(settings=_settings()).get_jobs()}
+
+    assert ("prices_poll_catch_up" in jobs) is due
+    if due:
+        catch_up = jobs["prices_poll_catch_up"]
+        assert catch_up.next_run_time <= before + timedelta(hours=1)  # on startup, staggered
+        assert catch_up.trigger.get_next_fire_time(catch_up.next_run_time, before) is None
 
 
 def test_poll_index_membership_runs_the_membership_connector(monkeypatch):
