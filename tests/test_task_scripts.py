@@ -59,6 +59,7 @@ CONTRACT_ENTRYPOINTS = (
     "snapshot-monthly.py",  # Snapshot: Run Monthly
     "backtest-task.py",  # Backtest: Run / Backtest: OOS
     "report-task.py",  # Report: Open Model & Strategy Views / Report: Run Strategy Lab
+    "questrade-task.py",  # Questrade: Recommend Orders
     "db-revision.py",  # DB: New Migration (Autogenerate)
     # Not a task: devkit's fix pass runs it every half hour (`fix_migrate.py` there).
     "db-upgrade.py",
@@ -538,6 +539,51 @@ def test_report_summary_runs_the_three_terminal_views():
         ["train", "report"],
         ["snapshot", "report"],
     ]
+
+
+def test_questrade_plan_passes_the_picked_strategy_and_writes_under_reports():
+    script = load_script("questrade-task.py")
+    args = script.parse_args(["plan", "--strategy", "core_satellite"])
+    assert script.cli_command(args) == [
+        "questrade",
+        "plan",
+        "--strategy",
+        "core_satellite",
+        "--csv",
+        str(script.REPO_ROOT / "reports" / "questrade-plan.csv"),
+    ]
+    assert script.cli_command(script.parse_args(["check"])) == ["questrade", "check"]
+
+
+def test_questrade_plan_requires_a_strategy():
+    """Defaulted, a task that stopped passing one would trade a book nobody chose."""
+    script = load_script("questrade-task.py")
+    with pytest.raises(SystemExit):
+        script.parse_args(["plan"])
+
+
+def test_questrade_runner_uses_uv_or_falls_back_to_the_venv(tmp_path):
+    script = load_script("questrade-task.py")
+    assert script.runner("uv") == ["uv", "run", "python"]
+    assert script.runner(None, tmp_path) == [script.python_exe(tmp_path)] == [sys.executable]
+
+
+def test_questrade_main_runs_the_cli_from_the_repo_root(monkeypatch):
+    """The single-use token is rewritten in ./.env, so the working directory must be the
+    checkout whose .env holds it."""
+    script = load_script("questrade-task.py")
+    seen = []
+    monkeypatch.setattr(script.shutil, "which", lambda _: None)
+    monkeypatch.setattr(
+        script.subprocess,
+        "run",
+        lambda argv, **kwargs: seen.append((argv, kwargs)) or SimpleNamespace(returncode=3),
+    )
+
+    assert script.main(["check"]) == 3
+    argv, kwargs = seen[0]
+    assert argv[-4:] == ["-m", "ibkr_trader.cli", "questrade", "check"]
+    assert kwargs == {"cwd": script.REPO_ROOT, "check": False}
 
 
 def test_report_models_is_not_a_cli_view():
