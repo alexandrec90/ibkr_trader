@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     finnhub_key: str = ""
     alpha_vantage_key: str = ""
     fmp_key: str = ""
+    # Questrade personal-app refresh token (advisory/questrade.py). Single-use: each run
+    # redeems it and rewrites this line of .env with the replacement, so it must live in
+    # .env, not only in the shell environment. Read-only access; nothing places orders.
+    questrade_token: str = ""
 
     # Ingestion defaults. Social posts (Reddit, X) need no credentials here: social-scraper
     # collects them and exports to the archive, which the `social` poll reads back.

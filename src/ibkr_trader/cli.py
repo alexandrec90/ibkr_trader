@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING, cast
 
 import typer
 
+from ibkr_trader.advisory.commands import questrade_app
+
 if TYPE_CHECKING:  # the CLI imports its heavy modules lazily, per command
     from ibkr_trader.accounts import AccountType
     from ibkr_trader.backtest.engine import RegisteredStrategyConfig
@@ -37,6 +39,7 @@ archive_app = typer.Typer(
 app.add_typer(archive_app, name="archive")
 sentiment_app = typer.Typer(help="Manage local sentiment models and re-score stored text.")
 app.add_typer(sentiment_app, name="sentiment")
+app.add_typer(questrade_app, name="questrade")
 
 
 @app.callback()
