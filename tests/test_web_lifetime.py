@@ -9,14 +9,25 @@ import subprocess
 import sys
 import threading
 
-from ibkr_trader.web.lifetime import wait_for_exit, watch_process
+from ibkr_trader.web.lifetime import _state_from_stat, wait_for_exit, watch_process
 
 
 def _sleeper() -> subprocess.Popen:
     return subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
 
 
+def test_state_from_stat_reads_the_field_after_the_command_name():
+    assert _state_from_stat("4242 (python) S 1 4242 4242 0 -1") == "S"
+    assert _state_from_stat("4242 (python) Z 1 4242 4242 0 -1\n") == "Z"
+
+
+def test_state_from_stat_survives_a_command_name_with_spaces_and_parens():
+    assert _state_from_stat("7 (a b) c) Z 1 7 7") == "Z"
+
+
 def test_watch_fires_when_the_launcher_is_killed():
+    """Killed but not yet reaped -- `launcher.wait()` runs only in `finally` -- so on Linux
+    the launcher is a zombie here, which signal 0 still finds. It has ended all the same."""
     launcher = _sleeper()
     fired = threading.Event()
     try:

@@ -28,14 +28,30 @@ _SYNCHRONIZE = 0x0010_0000
 _INFINITE = 0xFFFF_FFFF
 
 
+def _state_from_stat(stat: str) -> str:
+    """The one-letter state field of a ``/proc/<pid>/stat`` line.
+
+    The command name is parenthesised and may itself hold spaces or ``)``, so the state is
+    the first field after the *last* ``)``.
+    """
+    return stat.rpartition(")")[2].split()[0]
+
+
 def _alive_posix(pid: int) -> bool:
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:  # exists, owned by someone else
+        pass
+    # An exited process its parent has not reaped yet is a zombie: signal 0 still finds it,
+    # but it has ended. Linux exposes the state in /proc; without /proc (macOS) the signal
+    # probe is all there is, and a launcher's zombie lasts only until its parent reaps it.
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8", errors="replace") as fh:
+            return _state_from_stat(fh.read()) not in ("Z", "X")
+    except OSError:
         return True
-    return True
 
 
 def wait_for_exit(pid: int, *, poll: float = POLL_SECONDS) -> None:
