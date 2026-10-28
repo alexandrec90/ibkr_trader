@@ -47,6 +47,8 @@ def _settings(**overrides):
         # be one refactor away from a real socket.
         gateway_watch_enabled=False,
         gateway_check_minutes=5,
+        paper_trading_enabled=False,  # same reason: never one refactor away from an order
+        paper_check_minutes=15,
         poll_ipo_hours=6,
         ipo_universe_since="2013-01-01",
         poll_ipo_prices_minutes=60,
@@ -82,6 +84,7 @@ def test_build_scheduler_registers_all_jobs_with_configured_intervals():
         "archive_bars",
         "archive_raw",
         "gateway_watch",
+        "paper_trading",
         "ipo_calendar_poll",
         "ipo_filings_poll",
         "ipo_alerts",
@@ -92,6 +95,7 @@ def test_build_scheduler_registers_all_jobs_with_configured_intervals():
         "buybacks_poll",
     }
     assert jobs["social_poll"].trigger.interval == timedelta(minutes=30)
+    assert jobs["paper_trading"].trigger.interval == timedelta(minutes=15)
     assert jobs["ipo_prices_poll"].trigger.interval == timedelta(minutes=60)
     assert jobs["fundamentals_poll"].trigger.interval == timedelta(hours=24)
     assert jobs["earnings_calendar_poll"].trigger.interval == timedelta(hours=24)

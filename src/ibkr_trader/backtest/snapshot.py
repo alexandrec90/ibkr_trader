@@ -4,9 +4,10 @@ The snapshot path is deliberately DB-only. It records today's target weights bef
 bars exist, then reports them only after their horizon has elapsed.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 
+from pandera.errors import SchemaErrors
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -18,12 +19,12 @@ from ibkr_trader.backtest.engine import (
     _features_asof,
     _fx_to_cad,
     _load_series,
-    _load_universe,
 )
 from ibkr_trader.db.models import Instrument, PriceBar, StrategySnapshot
-from ibkr_trader.signals.eligibility import screen
+from ibkr_trader.signals.eligibility import Candidate, screen
 from ibkr_trader.signals.features import FEATURE_SET_VERSION, load_corporate_inputs
 from ibkr_trader.signals.portfolio import available, get_allocator
+from ibkr_trader.signals.schemas import format_schema_errors
 
 MAX_BACKFILL_DAYS = 1
 STALE_BAR_DAYS = 7
@@ -35,6 +36,8 @@ class SnapshotRunResult:
     skipped: dict[str, str]
     latest_bar_date: date
     stale_days: int
+    #: Symbols left out of the universe because their bars failed validation, with why.
+    invalid: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -86,18 +89,55 @@ def _all_bar_symbols(session: Session) -> list[str]:
     )
 
 
-def run_snapshots(
+@dataclass(frozen=True)
+class DecisionInputs:
+    """Everything an allocator decides from at ``asof``, built from bars ≤ ``asof`` only."""
+
+    universe: dict[int, Series]
+    fx: Series | None
+    eligible: list[Candidate]
+    features: dict[int, dict[str, float]]
+    latest_bar_date: date
+    stale_days: int
+    #: Symbols left out because their bars failed ``price_frame`` validation, with why.
+    invalid: dict[str, str] = field(default_factory=dict)
+
+
+def load_valid_universe(
+    session: Session, symbols: list[str], start: datetime, end: datetime
+) -> tuple[dict[int, Series], dict[str, str]]:
+    """Load each symbol's series, setting aside the ones whose bars fail validation.
+
+    One malformed bar (a provider's partial or placeholder row) must not stop a decision
+    over a thousand other names: the bad series is left out and reported, never repaired.
+    """
+    universe: dict[int, Series] = {}
+    invalid: dict[str, str] = {}
+    for symbol in symbols:
+        try:
+            series = _load_series(session, symbol, start, end)
+        except SchemaErrors as exc:
+            invalid[symbol] = "; ".join(format_schema_errors(exc)[:3])
+            continue
+        if series is not None:
+            universe[series.instrument_id] = series
+    return universe, invalid
+
+
+def decision_inputs(
     session: Session,
+    asof: date,
+    config: RegisteredStrategyConfig,
     *,
-    strategies: list[str] | None = None,
-    asof: date | None = None,
-    today: date | None = None,
-    config: RegisteredStrategyConfig | None = None,
-) -> SnapshotRunResult:
-    """Build and upsert forward target weights using only bars available by ``asof``."""
-    today = today or datetime.now(tz=UTC).date()
-    asof = asof or today
-    assert_snapshot_date(asof, today=today)
+    lookback_days: int | None = None,
+) -> DecisionInputs:
+    """Load the universe, screen it and compute features as-of ``asof`` (the snapshot path).
+
+    ``lookback_days`` bounds the bars loaded to that many calendar days before ``asof``; the
+    default loads every bar ever stored, which for ~800 instruments is gigabytes of Python
+    objects. A bounded load also caps ``history_days`` at the window, exactly as
+    ``signals.features.build_daily_features`` does with its own buffer.
+    """
     latest_ts = session.scalar(
         select(func.max(PriceBar.ts)).where(
             PriceBar.bar_size == "1 day", PriceBar.ts < _midnight(asof) + timedelta(days=1)
@@ -109,13 +149,16 @@ def run_snapshots(
     stale_days = (asof - latest_day).days
 
     symbols = _all_bar_symbols(session)
-    start = datetime(1900, 1, 1, tzinfo=UTC)
+    start = (
+        datetime(1900, 1, 1, tzinfo=UTC)
+        if lookback_days is None
+        else _midnight(asof - timedelta(days=lookback_days))
+    )
     end = _midnight(asof) + timedelta(days=1) - timedelta(microseconds=1)
-    universe = _load_universe(session, symbols, start, end)
+    universe, invalid = load_valid_universe(session, symbols, start, end)
     if not universe:
         raise ValueError("no usable adjusted or trade daily bars found")
     fx = _load_series(session, "USDCAD", start, end)
-    config = config or RegisteredStrategyConfig()
     candidates = _build_candidates(universe, fx, asof, config)
     screened = screen(candidates, config.eligibility)
     benchmark = next(
@@ -130,16 +173,68 @@ def run_snapshots(
         benchmark=benchmark,
         corporate=corporate,
     )
+    return DecisionInputs(
+        universe, fx, list(screened.eligible), features, latest_day, stale_days, invalid
+    )
+
+
+def upsert_snapshot(
+    session: Session,
+    *,
+    strategy: str,
+    asof: date,
+    model_version: str,
+    weights: dict[int, float],
+    params: dict,
+) -> StrategySnapshot:
+    """Insert or overwrite the ``(strategy, asof)`` snapshot row."""
+    snapshot_ts = _midnight(asof)
+    row = session.scalar(
+        select(StrategySnapshot).where(
+            StrategySnapshot.strategy == strategy, StrategySnapshot.ts == snapshot_ts
+        )
+    )
+    if row is None:
+        row = StrategySnapshot(
+            strategy=strategy,
+            model_version=model_version,
+            feature_set_version=FEATURE_SET_VERSION,
+            ts=snapshot_ts,
+            weights={},
+            params={},
+            created_at=datetime.now(tz=UTC),
+        )
+        session.add(row)
+    row.model_version = model_version
+    row.feature_set_version = FEATURE_SET_VERSION
+    row.weights = {str(iid): weight for iid, weight in weights.items()}
+    row.params = params
+    return row
+
+
+def run_snapshots(
+    session: Session,
+    *,
+    strategies: list[str] | None = None,
+    asof: date | None = None,
+    today: date | None = None,
+    config: RegisteredStrategyConfig | None = None,
+) -> SnapshotRunResult:
+    """Build and upsert forward target weights using only bars available by ``asof``."""
+    today = today or datetime.now(tz=UTC).date()
+    asof = asof or today
+    assert_snapshot_date(asof, today=today)
+    config = config or RegisteredStrategyConfig()
+    inputs = decision_inputs(session, asof, config)
 
     names = strategies or available()
     saved: list[StrategySnapshot] = []
     skipped: dict[str, str] = {}
-    snapshot_ts = _midnight(asof)
     for name in names:
         try:
             allocator = get_allocator(name)
             allocator.asof(asof)
-            weights = allocator.allocate(screened.eligible, features)
+            weights = allocator.allocate(inputs.eligible, inputs.features)
         except (KeyError, RuntimeError, FileNotFoundError, ValueError) as exc:
             if strategies is not None:
                 raise ValueError(f"cannot resolve strategy {name!r}: {exc}") from exc
@@ -147,33 +242,25 @@ def run_snapshots(
             continue
         params = {
             "benchmark": config.benchmark_symbol,
-            "bar_asof": latest_day.isoformat(),
-            "eligible_names": len(screened.eligible),
-            "universe_names": len(universe),
+            "bar_asof": inputs.latest_bar_date.isoformat(),
+            "eligible_names": len(inputs.eligible),
+            "universe_names": len(inputs.universe),
+            "invalid_series": sorted(inputs.invalid),
         }
-        row = session.scalar(
-            select(StrategySnapshot).where(
-                StrategySnapshot.strategy == name, StrategySnapshot.ts == snapshot_ts
+        saved.append(
+            upsert_snapshot(
+                session,
+                strategy=name,
+                asof=asof,
+                model_version=allocator.version,
+                weights=weights,
+                params=params,
             )
         )
-        if row is None:
-            row = StrategySnapshot(
-                strategy=name,
-                model_version=allocator.version,
-                feature_set_version=FEATURE_SET_VERSION,
-                ts=snapshot_ts,
-                weights={},
-                params={},
-                created_at=datetime.now(tz=UTC),
-            )
-            session.add(row)
-        row.model_version = allocator.version
-        row.feature_set_version = FEATURE_SET_VERSION
-        row.weights = {str(iid): weight for iid, weight in weights.items()}
-        row.params = params
-        saved.append(row)
     session.flush()
-    return SnapshotRunResult(saved, skipped, latest_day, stale_days)
+    return SnapshotRunResult(
+        saved, skipped, inputs.latest_bar_date, inputs.stale_days, inputs.invalid
+    )
 
 
 def _return_over_horizon(series: Series, fx: Series | None, start: date, end: date) -> float | None:

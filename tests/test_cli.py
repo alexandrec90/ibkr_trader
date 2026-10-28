@@ -446,11 +446,355 @@ def test_train_report_without_artifact_exits_nonzero(tmp_path):
     assert "no trained model found" in _all_output(result)
 
 
-def test_stub_commands_exit_nonzero():
-    """Skeleton commands must fail loudly, not pretend success."""
-    for args in (["ibkr-check"],):
-        result = runner.invoke(cli.app, args)
-        assert result.exit_code == 1, args
+class _FakeCheckBroker:
+    """Stands in for IbkrBroker in `ibkr-check`; class attributes steer one test."""
+
+    connect_error: Exception | None = None
+    quote_error: Exception | None = None
+    quote_last = 101.5
+    instances: list["_FakeCheckBroker"] = []  # the fixture's subclass gets its own list
+
+    def __init__(self):
+        self.account_id = ""
+        self.connected_readonly = None
+        self.disconnected = False
+        self.quoted = None
+        type(self).instances.append(self)
+
+    def connect(self, *, readonly=True):
+        self.connected_readonly = readonly
+        if self.connect_error is not None:
+            raise self.connect_error
+        self.account_id = "DU1234567"
+
+    def disconnect(self):
+        self.disconnected = True
+
+    def server_time(self):
+        return datetime(2026, 10, 26, 14, 0, tzinfo=UTC)
+
+    def managed_accounts(self):
+        return ["DU1234567"]
+
+    def account_summary(self):
+        return {
+            "NetLiquidation:CAD": "1000000",
+            "CashBalance:CAD": "5",
+            "AccountType": "INDIVIDUAL",
+        }
+
+    def positions(self):
+        return []
+
+    def delayed_quote(self, symbol, currency="USD"):
+        from ibkr_trader.execution.ibkr_broker import Quote
+
+        self.quoted = (symbol, currency)
+        if self.quote_error is not None:
+            raise self.quote_error
+        nan = float("nan")
+        return Quote(symbol, currency, nan, nan, self.quote_last, nan, 3)
+
+
+@pytest.fixture
+def check_broker(monkeypatch):
+    class Broker(_FakeCheckBroker):
+        instances: list[_FakeCheckBroker] = []
+
+    monkeypatch.setattr("ibkr_trader.execution.ibkr_broker.IbkrBroker", Broker)
+    return Broker
+
+
+def test_ibkr_check_prints_the_session_without_full_account_ids(check_broker):
+    result = runner.invoke(cli.app, ["ibkr-check"])
+
+    assert result.exit_code == 0, result.output
+    (broker,) = check_broker.instances
+    assert broker.connected_readonly is True
+    assert broker.disconnected
+    assert broker.quoted == ("SPY", "USD")
+    assert "2026-10-26T14:00:00+00:00" in result.output
+    assert "DU…567" in result.output
+    assert "DU1234567" not in result.output
+    assert "NetLiquidation:CAD" in result.output
+    assert "CashBalance" not in result.output  # only the headline tags
+    assert "positions:        0" in result.output
+    assert "quote SPY (USD, market data type 3)" in result.output
+    assert "last 101.50" in result.output
+    assert "bid n/a" in result.output
+
+
+def test_ibkr_check_passes_symbol_and_currency(check_broker):
+    result = runner.invoke(cli.app, ["ibkr-check", "--symbol", "XIU", "--currency", "CAD"])
+
+    assert result.exit_code == 0, result.output
+    assert check_broker.instances[0].quoted == ("XIU", "CAD")
+
+
+def test_ibkr_check_fails_with_the_gateway_advice(check_broker):
+    from ibkr_trader.gateway_watch import GatewayNotLoggedIn
+
+    check_broker.connect_error = GatewayNotLoggedIn("no API handshake with gw:4004: TimeoutError")
+
+    result = runner.invoke(cli.app, ["ibkr-check"])
+
+    assert result.exit_code == 1
+    assert "Paper gateway not logged in" in result.output
+    assert "TimeoutError" in result.output
+    assert "IBKR Mobile" in result.output
+    assert not check_broker.instances[0].disconnected  # nothing was opened
+
+
+def test_ibkr_check_fails_on_a_config_refusal(check_broker):
+    check_broker.connect_error = RuntimeError("IBKR_PAPER_ACCOUNT is not configured.")
+
+    result = runner.invoke(cli.app, ["ibkr-check"])
+
+    assert result.exit_code == 1
+    assert "IBKR_PAPER_ACCOUNT is not configured" in result.output
+
+
+@pytest.mark.parametrize(
+    ("attr", "value", "warning"),
+    [
+        ("quote_error", RuntimeError("IBKR could not resolve NOPE (USD) to one stock."), "NOPE"),
+        ("quote_last", float("nan"), "no delayed price for SPY"),
+    ],
+)
+def test_ibkr_check_missing_quote_is_only_a_warning(check_broker, attr, value, warning):
+    setattr(check_broker, attr, value)
+
+    result = runner.invoke(cli.app, ["ibkr-check"])
+
+    assert result.exit_code == 0, result.output
+    assert "warning:" in result.output
+    assert warning in result.output
+    assert check_broker.instances[0].disconnected
+
+
+class _FakePaperBroker:
+    def __init__(self):
+        self.disconnected = False
+        self.cancelled = []
+
+    def disconnect(self):
+        self.disconnected = True
+
+    def sync_orders(self):
+        return SimpleNamespace(orders_updated=1, executions_added=2, working=0, unmatched=0)
+
+    def cancel_order(self, order_id):
+        if order_id == 404:
+            raise ValueError("no order 404")
+        self.cancelled.append(order_id)
+
+
+def _plan():
+    from ibkr_trader.paper import PaperPlan, PlannedTrade
+
+    trade = PlannedTrade(
+        instrument_id=1,
+        symbol="AAPL",
+        currency="USD",
+        side="BUY",
+        quantity=178,
+        price=100.0,
+        price_cad=140.0,
+        target_weight=0.2,
+        current_weight=0.0,
+    )
+    return PaperPlan(
+        strategy="momentum_lt",
+        model_version="1",
+        asof=date(2026, 10, 27),
+        latest_bar_date=date(2026, 10, 26),
+        stale_days=1,
+        cash_cad=100_000.0,
+        value_cad=100_000.0,
+        weights={1: 0.2},
+        trades=[trade],
+        unmapped_positions=["ZZZZ (USD)"],
+        invalid_series={"JUNK": "row 3: frame failed close_within_high_low"},
+    )
+
+
+@pytest.fixture
+def paper_broker(monkeypatch):
+    broker = _FakePaperBroker()
+    seen = {}
+
+    def connect(*, readonly):
+        seen["readonly"] = readonly
+        return broker
+
+    monkeypatch.setattr(cli, "_connect_or_exit", connect)
+    broker.seen = seen
+    return broker
+
+
+def test_the_paper_group_exposes_its_commands():
+    commands = {
+        c.name or c.callback.__name__: c.callback for c in cli.paper_app.registered_commands
+    }
+
+    assert commands == {
+        "plan": cli.paper_plan,
+        "rebalance": cli.paper_rebalance,
+        "sync": cli.paper_sync,
+        "cancel": cli.paper_cancel,
+        "halt": cli.paper_halt,
+        "resume": cli.paper_resume,
+    }
+
+
+def test_paper_sync_lists_working_orders(monkeypatch, paper_broker):
+    row = SimpleNamespace(
+        id=7,
+        side=SimpleNamespace(value="BUY"),
+        quantity=178.0,
+        raw={"symbol": "AAPL"},
+        instrument_id=1,
+        status="Submitted",
+        filled_quantity=None,
+    )
+    monkeypatch.setattr("ibkr_trader.db.session.get_session", _fake_session)
+    monkeypatch.setattr("ibkr_trader.execution.ledger.working_orders", lambda s, env: [row])
+
+    result = runner.invoke(cli.app, ["paper", "sync"])
+
+    assert result.exit_code == 0, result.output
+    assert paper_broker.seen["readonly"] is False
+    assert "synced: 1 order(s) updated, 2 fill(s) recorded" in result.output
+    assert "#7 BUY 178 AAPL Submitted (filled 0)" in result.output
+    assert paper_broker.disconnected
+
+
+@contextmanager
+def _fake_session():
+    yield SimpleNamespace()
+
+
+def test_paper_plan_is_a_read_only_dry_run(monkeypatch, paper_broker):
+    from ibkr_trader import paper
+
+    calls = {}
+
+    def fake_run(broker, settings, **kwargs):
+        calls.update(kwargs)
+        return paper.RebalanceResult("dry-run", "1 trade(s) planned", _plan())
+
+    monkeypatch.setattr(paper, "run_rebalance", fake_run)
+
+    result = runner.invoke(cli.app, ["paper", "plan"])
+
+    assert result.exit_code == 0, result.output
+    assert paper_broker.seen["readonly"] is True
+    assert calls["dry_run"] is True and calls["force"] is True
+    assert "BUY     178 AAPL" in result.output
+    assert "20% invested" in result.output
+    assert "ZZZZ (USD) matches no stored instrument" in result.output
+    assert "left out JUNK, its bars failed validation" in result.output
+    assert paper_broker.disconnected
+
+
+def test_paper_plan_reports_a_blocked_plan(monkeypatch, paper_broker):
+    from ibkr_trader import paper
+
+    def blocked(*args, **kwargs):
+        raise paper.PaperTradingBlocked("newest daily bar is 9 days old")
+
+    monkeypatch.setattr(paper, "run_rebalance", blocked)
+
+    result = runner.invoke(cli.app, ["paper", "plan"])
+
+    assert result.exit_code == 1
+    assert "9 days old" in result.output
+    assert paper_broker.disconnected
+
+
+def test_paper_rebalance_syncs_then_trades(monkeypatch, paper_broker):
+    from ibkr_trader import paper
+
+    calls = {}
+
+    def fake_run(broker, settings, **kwargs):
+        calls.update(kwargs)
+        return paper.RebalanceResult("rebalanced", "1 order(s) sent, 0 refused", _plan(), [7])
+
+    monkeypatch.setattr(paper, "run_rebalance", fake_run)
+
+    result = runner.invoke(cli.app, ["paper", "rebalance", "--force"])
+
+    assert result.exit_code == 0, result.output
+    assert paper_broker.seen["readonly"] is False
+    assert calls["force"] is True
+    assert "synced: 1 order(s) updated, 2 fill(s) recorded" in result.output
+    assert "rebalanced: 1 order(s) sent" in result.output
+
+
+def test_paper_rebalance_fails_loudly_on_a_refusal(monkeypatch, paper_broker):
+    from ibkr_trader import paper
+
+    def refused(*args, **kwargs):
+        raise paper.PaperRebalanceIncomplete("1 order(s) sent, 1 refused")
+
+    monkeypatch.setattr(paper, "run_rebalance", refused)
+
+    result = runner.invoke(cli.app, ["paper", "rebalance"])
+
+    assert result.exit_code == 1
+    assert "1 refused" in result.output
+    assert paper_broker.disconnected
+
+
+def test_paper_cancel(paper_broker):
+    assert runner.invoke(cli.app, ["paper", "cancel", "7"]).exit_code == 0
+    assert paper_broker.cancelled == [7]
+
+    result = runner.invoke(cli.app, ["paper", "cancel", "404"])
+    assert result.exit_code == 1
+    assert "no order 404" in result.output
+
+
+def test_paper_halt_and_resume_toggle_the_halt_file(monkeypatch, tmp_path):
+    from ibkr_trader.config import Settings
+
+    halt = tmp_path / "logs" / "TRADING_HALT"
+    monkeypatch.setattr(
+        "ibkr_trader.config.get_settings",
+        lambda: Settings(_env_file=None, trading_halt_file=str(halt)),
+    )
+
+    assert runner.invoke(cli.app, ["paper", "halt"]).exit_code == 0
+    assert halt.exists()
+    result = runner.invoke(cli.app, ["paper", "resume"])
+    assert result.exit_code == 0
+    assert not halt.exists()
+    assert "still true" not in result.output
+    assert runner.invoke(cli.app, ["paper", "resume"]).exit_code == 0  # idempotent
+
+
+def test_paper_resume_warns_when_the_env_flag_still_halts(monkeypatch, tmp_path):
+    from ibkr_trader.config import Settings
+
+    monkeypatch.setattr(
+        "ibkr_trader.config.get_settings",
+        lambda: Settings(
+            _env_file=None, trading_halted=True, trading_halt_file=str(tmp_path / "H")
+        ),
+    )
+
+    result = runner.invoke(cli.app, ["paper", "resume"])
+
+    assert "TRADING_HALTED is still true" in result.output
+
+
+@pytest.mark.parametrize(
+    ("account", "masked"),
+    [("DU1234567", "DU…567"), ("U12345678", "U1…678"), ("DU12", "…"), ("", "…")],
+)
+def test_mask_account(account, masked):
+    assert cli._mask_account(account) == masked
 
 
 def test_serve_starts_the_scheduler(monkeypatch):

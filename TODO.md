@@ -116,18 +116,36 @@ those horizons mature). Automating this cadence in `serve` is a follow-up, not p
 
 **Code:**
 
-- [ ] `ibkr-check` CLI — connect, print server time, managed accounts, one delayed quote
-- [ ] `IbkrBroker` ([ibkr_broker.py](src/ibkr_trader/execution/ibkr_broker.py)) — connect
+- [x] ~~*`ibkr-check` CLI — connect, print server time, managed accounts, one delayed quote*~~
+      [2026-10-26] — read-only; masks account IDs; exits 1 with the gateway-watch advice when
+      the gateway is stopped / logged out / on the wrong account; a missing quote only warns.
+      `--symbol` / `--currency` pick the quote (default SPY USD). Tested (`tests/test_cli.py`).
+- [x] ~~*`IbkrBroker` ([ibkr_broker.py](src/ibkr_trader/execution/ibkr_broker.py)) — connect
       (fail loudly if account isn't `DU…` while `ENVIRONMENT=paper`), positions,
-      account_summary
-- [ ] Order placement: qualify contract → `whatIf` preflight → place → persist `orders` row
-      (orderId + permId) — keep `assert_trading_allowed()` + `RiskChecker.check()` in the path
-- [ ] Fill/consistency loop: `execDetails`/`commissionReport` → `executions` rows; periodic
-      reconcile vs. `reqOpenOrders`/`reqPositions` (orderStatus callbacks aren't guaranteed)
-- [ ] Implement the real `RiskChecker` checks ([risk.py](src/ibkr_trader/execution/risk.py)):
-      notional via live quote, daily cap from `orders`, position cap, trading-hours, halt flag
-- [ ] Paper trading loop in `serve`: predictions → target positions → orders (only after §3
-      shows something worth trading)
+      account_summary*~~ [2026-10-26] — connects only in `ENVIRONMENT=paper`, only when the
+      login's accounts are all `DU…` and include `IBKR_PAPER_ACCOUNT`; positions/summary are
+      scoped to that account; `delayed_quote()` uses `reqMarketDataType(3)`. Order placement
+      and `cancel_order` still stubbed. Tested against a fake `IB` (`tests/test_ibkr_broker.py`).
+- [x] ~~*Order placement: qualify contract → `whatIf` preflight → place → persist `orders` row
+      (orderId + permId) — keep `assert_trading_allowed()` + `RiskChecker.check()` in the path*~~
+      [2026-10-26] — `IbkrBroker.place_order`: gate → paper account → risk → whatIf → DAY
+      order → `orders` row (notional, quote, FX, preflight in `raw`). Tested against a fake IB.
+- [x] ~~*Fill/consistency loop: `execDetails`/`commissionReport` → `executions` rows; periodic
+      reconcile vs. `reqOpenOrders`/`reqPositions` (orderStatus callbacks aren't guaranteed)*~~
+      [2026-10-26] — [reconcile.py](src/ibkr_trader/execution/reconcile.py), matched on permId
+      then (orderId, clientId); each fill keeps its day's USDCAD. `paper sync` + the serve job.
+- [x] ~~*Implement the real `RiskChecker` checks ([risk.py](src/ibkr_trader/execution/risk.py)):
+      notional via live quote, daily cap from `orders`, position cap, trading-hours, halt flag*~~
+      [2026-10-26] — plus USD-only (IBKR Canada/CIRO bar on Canadian listings), quote-vs-plan
+      wrong-contract check, no short sales. Paper caps from `PAPER_MAX_*` settings.
+- [x] ~~*Paper trading loop in `serve`: predictions → target positions → orders*~~
+      [2026-10-26] — [paper.py](src/ibkr_trader/paper.py): `momentum_lt`, US listings only,
+      100k CAD sleeve, monthly in 10:00–15:30 NY, recorded as `paper:<strategy>` snapshots.
+      Off by default (`PAPER_TRADING_ENABLED`); runbook
+      [paper-trading.md](docs/operations/paper-trading.md).
+- [ ] Owner: set `READ_ONLY_API=no`, recreate the gateway, run `paper plan`, then the first
+      `paper rebalance` in market hours; enable the `serve` job once it looks right
+- [ ] Exchange-holiday calendar for the rebalance window (orders on a holiday wait a session)
 
 ## 5 · Cloud deployment (after paper loop works locally)
 

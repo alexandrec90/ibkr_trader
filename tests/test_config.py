@@ -116,6 +116,21 @@ def test_execution_account_refuses_live_routing_even_when_old_ack_gate_is_true()
         settings.ibkr_execution_account("tfsa")
 
 
+def test_paper_trading_settings_are_part_of_settings_and_read_from_the_environment(monkeypatch):
+    from ibkr_trader.config import PaperTradingSettings, Settings
+
+    monkeypatch.setenv("PAPER_CAPITAL_CAD", "25000")
+    monkeypatch.setenv("TRADING_HALTED", "true")
+    settings = Settings(_env_file=None)
+
+    assert isinstance(settings, PaperTradingSettings)
+    assert settings.paper_capital_cad == 25_000.0
+    assert settings.trading_halted is True
+    assert settings.paper_trading_enabled is False  # off unless switched on
+    assert settings.paper_strategy == "momentum_lt"
+    assert settings.environment == "paper"
+
+
 def test_settings_declares_each_field_once():
     """Two branches adding the same field merge cleanly when they add it in different places,
     and Python keeps the last one silently -- comment, default and all."""
@@ -126,7 +141,13 @@ def test_settings_declares_each_field_once():
     from ibkr_trader import config
 
     tree = ast.parse(inspect.getsource(config))
-    body = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "Settings").body
+    # Settings and its base: a field re-declared in the subclass would shadow the base's.
+    body = [
+        node
+        for cls in tree.body
+        if isinstance(cls, ast.ClassDef) and cls.name in {"Settings", "PaperTradingSettings"}
+        for node in cls.body
+    ]
     names = Counter(
         n.target.id for n in body if isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name)
     )

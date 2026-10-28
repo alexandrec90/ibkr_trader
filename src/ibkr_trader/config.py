@@ -13,7 +13,35 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from ibkr_trader.accounts import AccountType
 
 
-class Settings(BaseSettings):
+class PaperTradingSettings(BaseSettings):
+    """The paper-trading loop (serve job "paper", see paper.py) and its risk limits.
+
+    A base of ``Settings``, so every field is read the same way (``PAPER_CAPITAL_CAD`` …).
+    """
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    # Off by default: it transmits orders to the DU paper account, and needs the gateway
+    # running with READ_ONLY_API=no.
+    paper_trading_enabled: bool = False
+    paper_strategy: str = "momentum_lt"
+    # The book the strategy manages inside the (much larger) paper account, in CAD. The
+    # per-order / per-day / per-position caps below are sized from it: change them together.
+    paper_capital_cad: float = 100_000.0
+    paper_check_minutes: int = 15
+    # Refuse to rebalance on bars older than this (calendar days): a stopped ingestion job must
+    # not quietly trade last week's prices. 4 covers a long weekend.
+    paper_max_bar_age_days: int = 4
+    paper_max_order_cad: float = 25_000.0  # one order; 20% cap of 100k plus drift room
+    paper_max_daily_cad: float = 210_000.0  # all orders in a UTC day; a full turnover is 200k
+    paper_max_position_cad: float = 30_000.0  # one symbol after the order fills
+    # Emergency stop for every order path: either the flag or the file's existence refuses all
+    # orders. In the app container the file is /app/logs/TRADING_HALT (the applogs volume).
+    trading_halted: bool = False
+    trading_halt_file: str = "logs/TRADING_HALT"
+
+
+class Settings(PaperTradingSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     environment: Literal["dev", "paper", "live"] = "paper"
@@ -113,7 +141,7 @@ class Settings(BaseSettings):
     # Gateway login watch (serve job, see gateway_watch.py): a read-only probe of the IB Gateway
     # that pushes a phone notification through ntfy when the login needs a human. The client ID
     # must differ from IBKR_CLIENT_ID, or the probe would kick the trading connection off.
-    # Off by default: nothing in `serve` trades yet (IbkrBroker.connect is a skeleton), so the
+    # Off by default: nothing in `serve` trades yet (IbkrBroker places no orders), so the
     # gateway container is left stopped to save ~300 MB of the shared Docker VM, and a watch
     # against a stopped gateway would hold `health` red. Turn it on with the gateway.
     gateway_watch_enabled: bool = False

@@ -1164,6 +1164,22 @@ def _register_gateway_job(register: Callable[..., None], settings: Settings) -> 
     )
 
 
+def _register_paper_job(register: Callable[..., None], settings: Settings) -> None:
+    """The paper-trading loop (``paper.paper_trading_job``), through ``register``.
+
+    Registered unconditionally like the gateway watch: switched off, it records why it never
+    trades instead of leaving a stale health entry. It connects only in US market hours.
+    """
+    from ibkr_trader.paper import paper_trading_job
+
+    register(
+        "paper_trading",
+        "paper",
+        paper_trading_job(settings),
+        seconds=settings.paper_check_minutes * 60,
+    )
+
+
 def _first_run(label: str, *, start_now: bool = False, now: datetime | None = None) -> datetime:
     """When a freshly registered job should first fire: its cadence carries over a restart.
 
@@ -1346,6 +1362,7 @@ def build_scheduler(
     _register_market_data_jobs(register, settings)
     _register_archive_jobs(register, settings)
     _register_gateway_job(register, settings)
+    _register_paper_job(register, settings)
     _register_ipo_jobs(register, settings)
     _register_event_jobs(register, settings)
     _add_staggered(scheduler, pending)

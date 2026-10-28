@@ -134,9 +134,10 @@ Prefer `stop` over `down` so the `pgdata` volume and its schema survive.
     `data_lake` import this package, which is the one thing it must never do —
     `tests/test_lake_seam.py::test_package_never_imports_a_consumer` over there fails on
     it by filename. **The split, not the move, is the work.** The `gateway` job
-    (`ibkr_trader.gateway_watch`: read-only IB Gateway login probe → ntfy phone alert) and
-    the `ipo_alerts` job (`ibkr_trader.ipo_watch`: major-IPO ntfy alert over `ipo_events`)
-    are trading-side too and stay here in any split.
+    (`ibkr_trader.gateway_watch`: read-only IB Gateway login probe → ntfy phone alert), the
+    `ipo_alerts` job (`ibkr_trader.ipo_watch`: major-IPO ntfy alert over `ipo_events`) and
+    the `paper` job (`ibkr_trader.paper`: the paper-trading loop, reading the
+    `PaperTradingSettings` fields) are trading-side too and stay here in any split.
   - The real cost is config, not code: `build_scheduler()` and its jobs read thirty-nine
     fields off `Settings` (`poll_*`, `newsapi_*`, `finnhub_backfill_*`, `prune_raw_*`,
     `score_sentiment_minutes`, `news_universe_file`, `trends_*`, `fx_pairs`,
@@ -168,7 +169,10 @@ Prefer `stop` over `down` so the `pgdata` volume and its schema survive.
 - `src/ibkr_trader/backtest/` — engine (costs are first-class, no look-ahead) + metrics.
   DB only, no network.
 - `src/ibkr_trader/execution/` — `Broker` ABC → `IbkrBroker` (ib_async), `risk.py` pre-trade
-  checks.
+  checks, `ledger.py`/`reconcile.py` (the `orders`/`executions` trail and its sync).
+  `src/ibkr_trader/paper.py` is the monthly paper loop over them — **US listings only**:
+  IBKR Canada bars API orders on Canadian-marketplace products, so `RiskChecker` refuses
+  non-USD orders. Runbook: [docs/operations/paper-trading.md](docs/operations/paper-trading.md).
 - `src/ibkr_trader/db/` — `trading_models.py` (orders, executions, predictions, backtests,
   strategy state — **never** leave this repo) declared against the *package's* `Base`, so one
   `Base.metadata` still covers the whole database. `models.py` re-exports both halves; import
