@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     # redeems it and rewrites this line of .env with the replacement, so it must live in
     # .env, not only in the shell environment. Read-only access; nothing places orders.
     questrade_token: str = ""
+    # `ibkr-trader ui` (web/app.py) listens on 127.0.0.1 only, on this port. 8001 is the
+    # `app` base (8000) plus this checkout's slot (1) in devkit's ports.toml registry.
+    ui_port: int = 8001
 
     # Ingestion defaults. Social posts (Reddit, X) need no credentials here: social-scraper
     # collects them and exports to the archive, which the `social` poll reads back.

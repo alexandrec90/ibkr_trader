@@ -13,10 +13,12 @@ from typer.testing import CliRunner
 from ibkr_trader import cli
 from ibkr_trader.backtest.engine import RegisteredStrategyConfig
 from ibkr_trader.backtest.snapshot import (
+    SnapshotOutcome,
     SnapshotRunResult,
     assert_snapshot_date,
     build_snapshot_report,
     run_snapshots,
+    snapshot_outcomes,
 )
 from ibkr_trader.db.models import Base, Instrument, PriceBar, StrategySnapshot
 from ibkr_trader.signals.eligibility import EligibilityLimits
@@ -121,6 +123,23 @@ def test_report_uses_only_bars_strictly_after_snapshot(session: Session):
     assert len(rows) == 1
     assert rows[0].mean_excess == pytest.approx(0.10)
     assert rows[0].hit_rate == 1.0
+
+    (outcome,) = snapshot_outcomes(session, horizon_months=1, asof=date(2026, 2, 10))
+    assert isinstance(outcome, SnapshotOutcome)
+    assert (outcome.strategy, outcome.asof, outcome.horizon_end) == (
+        "test",
+        snapshot_day,
+        date(2026, 2, 10),
+    )
+    assert outcome.portfolio_return == pytest.approx(0.10)
+    assert outcome.benchmark_return == pytest.approx(0.0)
+    assert outcome.cost_return == 0.0  # the first snapshot has nothing to turn over from
+    assert outcome.excess == pytest.approx(0.10)
+
+
+def test_outcomes_refuse_a_horizon_under_one_month(session: Session):
+    with pytest.raises(ValueError, match="at least 1"):
+        snapshot_outcomes(session, horizon_months=0)
 
 
 def test_empty_db_behavior(session: Session):

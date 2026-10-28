@@ -1475,6 +1475,103 @@ def test_report_writes_html_file(monkeypatch, tmp_path):
     assert f"wrote {out}" in result.output
 
 
+# --- ui ---------------------------------------------------------------------------------
+
+
+def test_ui_refuses_without_the_ui_extra(monkeypatch):
+    import importlib.util
+
+    real_find_spec = importlib.util.find_spec
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda name: None if name == "fastapi" else real_find_spec(name),
+    )
+    result = runner.invoke(cli.app, ["ui", "--no-open"])
+    assert result.exit_code == 1
+    assert "uv sync --extra ui" in _all_output(result)
+
+
+class _FakeServer:
+    """Stands in for uvicorn.Server: records its config, serves nothing."""
+
+    instances: list["_FakeServer"] = []
+
+    def __init__(self, config):
+        self.config = config
+        self.should_exit = False
+        _FakeServer.instances.append(self)
+
+    def run(self):
+        pass
+
+
+@pytest.fixture
+def fake_uvicorn(monkeypatch):
+    pytest.importorskip("fastapi")
+    import uvicorn
+
+    _FakeServer.instances = []
+    monkeypatch.setattr(uvicorn, "Server", _FakeServer)
+    return _FakeServer.instances
+
+
+@pytest.mark.parametrize(("args", "port"), [([], 8001), (["--port", "8123"], 8123)])
+def test_ui_serves_on_loopback_only(monkeypatch, fake_uvicorn, args, port):
+    from ibkr_trader.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "ui_port", 8001)  # whatever this machine's .env says
+
+    result = runner.invoke(cli.app, ["ui", "--no-open", *args])
+
+    assert result.exit_code == 0, _all_output(result)
+    (server,) = fake_uvicorn
+    assert server.config.host == "127.0.0.1"
+    assert server.config.port == port
+    assert f"http://127.0.0.1:{port}/" in result.output
+
+
+def test_ui_stops_itself_when_its_launcher_is_gone(monkeypatch, fake_uvicorn):
+    from ibkr_trader.web import lifetime
+
+    watched = []
+    monkeypatch.setattr(
+        lifetime, "watch_process", lambda pid, on_exit: watched.append(pid) or on_exit()
+    )
+
+    result = runner.invoke(cli.app, ["ui", "--no-open", "--exit-with-pid", "4242"])
+
+    assert result.exit_code == 0, _all_output(result)
+    assert watched == [4242]
+    assert fake_uvicorn[0].should_exit is True
+
+
+def test_ui_watches_nothing_without_a_launcher_pid(monkeypatch, fake_uvicorn):
+    from ibkr_trader.web import lifetime
+
+    monkeypatch.setattr(lifetime, "watch_process", pytest.fail)
+    assert runner.invoke(cli.app, ["ui", "--no-open"]).exit_code == 0
+
+
+def test_ui_called_directly_opens_the_browser_once_serving(monkeypatch, fake_uvicorn):
+    import threading
+
+    timers = []
+
+    class FakeTimer:
+        def __init__(self, delay, fn, args):
+            timers.append((fn, args))
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(threading, "Timer", FakeTimer)
+
+    cli.ui(port=8124, open_browser=True, exit_with_pid=None)
+
+    assert timers[0][1] == ["http://127.0.0.1:8124/"]
+
+
 # --- health -----------------------------------------------------------------------------
 # `serve` swallows job failures by design; this command is the only thing that reports them.
 

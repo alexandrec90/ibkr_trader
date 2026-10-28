@@ -58,6 +58,13 @@ sentiment = [
 report = [
     "plotly>=5.22",
 ]
+# Local web UI (`ibkr-trader ui`, src/ibkr_trader/web/). Same guarded-import pattern:
+# web/views.py stays importable without it; only web/app.py needs fastapi. A foreground
+# loopback server that ends with its terminal, not a resident one.
+ui = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+]
 
 [tool.uv.sources]
 torch = [{ index = "pytorch-cpu" }]

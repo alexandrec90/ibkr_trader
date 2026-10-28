@@ -1696,6 +1696,59 @@ def report(
 
 
 @app.command()
+def ui(
+    port: int | None = typer.Option(
+        None, min=1, max=65535, help="loopback port (default: UI_PORT from .env, else 8001)"
+    ),
+    open_browser: bool = typer.Option(
+        True, "--open/--no-open", help="open the UI in the default browser once it answers"
+    ),
+    exit_with_pid: int | None = typer.Option(
+        None,
+        "--exit-with-pid",
+        min=1,
+        help="stop when this process ends (scripts/ui-task.py passes its launcher's PID)",
+    ),
+):
+    """Serve the local UI — backtest/model comparison, Questrade order recommendations and
+    paper (forward-shadow) decisions — on 127.0.0.1 until Ctrl-C or the terminal closes.
+
+    Nothing stays resident and nothing transmits an order. Needs the ui extra
+    (`uv sync --extra ui`) and a built frontend (`python scripts/ui-task.py` builds it).
+    `--exit-with-pid` is what makes "until the terminal closes" true under the VS Code
+    task, whose terminal close never reaches this process (web/lifetime.py says why).
+    """
+    import importlib.util
+    import threading
+    import webbrowser
+
+    if importlib.util.find_spec("fastapi") is None or importlib.util.find_spec("uvicorn") is None:
+        typer.echo("error: fastapi/uvicorn are not installed — run `uv sync --extra ui`", err=True)
+        raise typer.Exit(code=1)
+
+    import uvicorn
+
+    from ibkr_trader.config import get_settings
+    from ibkr_trader.web.app import FRONTEND_DIST, create_app
+
+    port = port or get_settings().ui_port
+    url = f"http://127.0.0.1:{port}/"
+    if not (FRONTEND_DIST / "index.html").is_file():
+        typer.echo(f"warning: {FRONTEND_DIST} is not built; {url} will say how to build it")
+    typer.echo(f"ibkr-trader UI at {url} — Ctrl-C or close the terminal to stop")
+    if open_browser:
+        threading.Timer(1.5, webbrowser.open, [url]).start()
+    server = uvicorn.Server(
+        uvicorn.Config(create_app(), host="127.0.0.1", port=port, log_level="warning")
+    )
+    if exit_with_pid:
+        from ibkr_trader.web.lifetime import watch_process
+
+        watch_process(exit_with_pid, lambda: setattr(server, "should_exit", True))
+    server.run()
+
+
+@app.command()
 def serve(
     migrate: bool = typer.Option(
         False,

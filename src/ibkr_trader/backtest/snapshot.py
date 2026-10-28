@@ -38,6 +38,22 @@ class SnapshotRunResult:
 
 
 @dataclass(frozen=True)
+class SnapshotOutcome:
+    """One mature snapshot's realized CAD return over its horizon, net of turnover costs."""
+
+    strategy: str
+    asof: date
+    horizon_end: date
+    portfolio_return: float
+    cost_return: float
+    benchmark_return: float
+
+    @property
+    def excess(self) -> float:
+        return self.portfolio_return - self.cost_return - self.benchmark_return
+
+
+@dataclass(frozen=True)
 class SnapshotReportRow:
     strategy: str
     horizon_months: int
@@ -243,21 +259,23 @@ def _turnover_cost_return(
     return cost / notional_cad
 
 
-def build_snapshot_report(
+def snapshot_outcomes(
     session: Session,
     *,
     horizon_months: int = 1,
     asof: date | None = None,
     cost_model: RegisteredAccountCostModel | None = None,
-) -> list[SnapshotReportRow]:
-    """Score mature snapshots against XEQT using strictly post-snapshot daily bars."""
+) -> list[SnapshotOutcome]:
+    """Realized outcome of every snapshot mature at ``asof``, oldest first.
+
+    Only strictly post-snapshot daily bars enter a return. A snapshot whose holdings or
+    benchmark cannot be priced over the horizon is left out rather than scored as zero.
+    """
     if horizon_months < 1:
         raise ValueError("horizon_months must be at least 1")
     asof = asof or datetime.now(tz=UTC).date()
     cost_model = cost_model or RegisteredAccountCostModel()
     snapshots = list(session.scalars(select(StrategySnapshot).order_by(StrategySnapshot.ts)))
-    if not snapshots:
-        return []
     snapshots = [row for row in snapshots if _add_months(row.ts.date(), horizon_months) <= asof]
     if not snapshots:
         return []
@@ -267,7 +285,7 @@ def build_snapshot_report(
     if benchmark is None:
         raise ValueError("XEQT daily bars are required for snapshot reporting")
 
-    excess_by_strategy: dict[str, list[float]] = {}
+    outcomes: list[SnapshotOutcome] = []
     previous_by_strategy: dict[str, StrategySnapshot] = {}
     for snapshot in snapshots:
         horizon_end = _add_months(snapshot.ts.date(), horizon_months)
@@ -280,10 +298,32 @@ def build_snapshot_report(
         if outcome is None or benchmark_return is None:
             continue
         portfolio_return, holdings = outcome
-        cost_return = _turnover_cost_return(snapshot, previous, holdings, cost_model, fx=fx)
-        excess_by_strategy.setdefault(snapshot.strategy, []).append(
-            portfolio_return - cost_return - benchmark_return
+        outcomes.append(
+            SnapshotOutcome(
+                strategy=snapshot.strategy,
+                asof=snapshot.ts.date(),
+                horizon_end=horizon_end,
+                portfolio_return=portfolio_return,
+                cost_return=_turnover_cost_return(snapshot, previous, holdings, cost_model, fx=fx),
+                benchmark_return=benchmark_return,
+            )
         )
+    return outcomes
+
+
+def build_snapshot_report(
+    session: Session,
+    *,
+    horizon_months: int = 1,
+    asof: date | None = None,
+    cost_model: RegisteredAccountCostModel | None = None,
+) -> list[SnapshotReportRow]:
+    """Score mature snapshots against XEQT using strictly post-snapshot daily bars."""
+    excess_by_strategy: dict[str, list[float]] = {}
+    for outcome in snapshot_outcomes(
+        session, horizon_months=horizon_months, asof=asof, cost_model=cost_model
+    ):
+        excess_by_strategy.setdefault(outcome.strategy, []).append(outcome.excess)
     return [
         SnapshotReportRow(
             strategy=strategy,

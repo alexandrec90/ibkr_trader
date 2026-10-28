@@ -31,6 +31,28 @@ updates:
           - "minor"
           - "patch"
 
+  # The local UI's frontend (frontend/package-lock.json). Same shape as the Python entry:
+  # lockfile bumps, minors and patches batched, majors individual; PR Gate's `frontend`
+  # job builds and tests each one.
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    versioning-strategy: lockfile-only
+    labels:
+      - "dependencies"
+      - "javascript"
+    assignees:
+      - "alexandrec90"
+    groups:
+      npm-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+
   # GitHub Actions used by workflows (no-op until a workflow lands under .github/workflows/).
   - package-ecosystem: "github-actions"
     directory: "/"
