@@ -13,7 +13,8 @@ scratch notes belong in the ignored `artifacts/` and `.local/` directories.
 - [Sentiment scoring](sentiment.md) — VADER vs FinBERT, score range, provenance column
 - [Plans](plans/) — active and completed session-sized plans
 - [Operations](operations/) — running the stack: cold-data archive, parallel worktrees,
-  [moving the collector between PCs](operations/collector-handoff.md)
+  [moving the collector between PCs](operations/collector-handoff.md),
+  [paper trading](operations/paper-trading.md)
 - [Reference](reference/) — external-system and regulatory research: data sources, Québec
   legal context, IBKR API notes
 

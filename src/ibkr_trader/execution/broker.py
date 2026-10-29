@@ -14,6 +14,14 @@ class OrderRequest:
     order_type: str = "MKT"  # MKT | LMT
     limit_price: float | None = None
     account: AccountType | str | None = None  # logical wrapper; paper still routes to DU account
+    currency: str = "USD"  # listing currency; RiskChecker refuses Canadian listings
+    sec_type: str = "STK"
+    # The ``instruments`` row the order is for: the ``orders`` audit trail needs it.
+    instrument_id: int | None = None
+    # The price the caller planned with (e.g. the last stored close), in ``currency``.
+    # RiskChecker refuses an order whose live quote strays too far from it, which is how a
+    # symbol resolving to the wrong company is caught before anything is sent.
+    reference_price: float | None = None
 
 
 @dataclass
@@ -21,6 +29,7 @@ class Position:
     symbol: str
     quantity: float
     avg_cost: float
+    currency: str = "USD"
 
 
 class Broker(abc.ABC):
