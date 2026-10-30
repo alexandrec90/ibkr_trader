@@ -125,7 +125,6 @@ src/ibkr_trader/db/trading_models.py::OrderSide
 src/ibkr_trader/db/trading_models.py::Prediction
 src/ibkr_trader/db/trading_models.py::StrategySnapshot
 src/ibkr_trader/execution/broker.py::Broker
-src/ibkr_trader/execution/broker.py::Position
 src/ibkr_trader/scheduler.py::poll_prices_job
 src/ibkr_trader/signals/eligibility.py::ScreenResult
 src/ibkr_trader/signals/features.py::extract_tickers

@@ -241,7 +241,8 @@ def shadow_performance(
 def paper_orders(session: Session, *, limit: int = 200) -> dict[str, Any]:
     """IBKR orders this service recorded, newest first, with their fill totals.
 
-    Empty until the paper loop in ``serve`` exists (TODO.md §4); the page says so.
+    Empty until the paper loop (``paper.py``, off by default) places its first order; the page
+    says so.
     """
     fills = (
         select(

@@ -196,9 +196,9 @@ function Orders({ orders }: { orders: PaperOrder[] }) {
   if (!orders.length) {
     return (
       <p className="empty">
-        No IBKR paper orders recorded. The paper loop in <code>serve</code> (predictions → target
-        positions → orders) is not built yet (TODO.md §4); until it is, the forward shadow above is
-        the paper record.
+        No IBKR paper orders recorded. The paper loop (<code>ibkr-trader paper</code>, or the{' '}
+        <code>serve</code> job once <code>PAPER_TRADING_ENABLED=true</code>) has not placed an
+        order yet; until it does, the forward shadow above is the paper record.
       </p>
     )
   }

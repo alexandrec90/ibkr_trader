@@ -13,10 +13,13 @@ from typer.testing import CliRunner
 from ibkr_trader import cli
 from ibkr_trader.backtest.engine import RegisteredStrategyConfig
 from ibkr_trader.backtest.snapshot import (
+    DecisionInputs,
     SnapshotOutcome,
     SnapshotRunResult,
     assert_snapshot_date,
     build_snapshot_report,
+    decision_inputs,
+    load_valid_universe,
     run_snapshots,
     snapshot_outcomes,
 )
@@ -85,6 +88,98 @@ def test_snapshot_upsert_is_idempotent_per_strategy_and_day(session: Session):
     assert len(first.snapshots) == len(second.snapshots) == 1
     assert session.scalar(select(func.count()).select_from(StrategySnapshot)) == 1
     assert second.snapshots[0].weights == {str(xeqt.id): 0.25}
+
+
+def test_decision_inputs_use_only_bars_up_to_the_decision_day(session: Session):
+    today = date(2026, 7, 10)
+    xeqt = _instrument(session, "XEQT")
+    for offset in range(260):
+        _bar(session, xeqt, today - timedelta(days=257 - offset), 30.0 + offset / 100)
+    config = RegisteredStrategyConfig(
+        eligibility=EligibilityLimits(min_history_days=1, min_avg_dollar_volume=0)
+    )
+
+    inputs = decision_inputs(session, today, config)
+
+    assert isinstance(inputs, DecisionInputs)
+    assert [c.symbol for c in inputs.eligible] == ["XEQT"]
+    assert inputs.latest_bar_date == today  # the two later bars are not seen
+    assert inputs.stale_days == 0
+    series = inputs.universe[xeqt.id]
+    assert series.dates[-1] == today
+    assert xeqt.id in inputs.features
+
+
+def test_decision_inputs_can_load_only_a_recent_window(session: Session):
+    today = date(2026, 7, 10)
+    xeqt = _instrument(session, "XEQT")
+    gone = _instrument(session, "GONE")
+    for offset in range(1_000):
+        _bar(session, xeqt, today - timedelta(days=999 - offset), 30.0 + offset / 100)
+    for offset in range(100):  # a delisted name whose bars all predate the window
+        _bar(session, gone, date(2023, 1, 1) + timedelta(days=offset), 10.0)
+    config = RegisteredStrategyConfig(
+        eligibility=EligibilityLimits(min_history_days=1, min_avg_dollar_volume=0)
+    )
+
+    full = decision_inputs(session, today, config)
+    window = decision_inputs(session, today, config, lookback_days=550)
+
+    assert set(full.universe) == {xeqt.id, gone.id}
+    assert set(window.universe) == {xeqt.id}
+    series = window.universe[xeqt.id]
+    assert series.dates[0] == today - timedelta(days=550)
+    assert series.dates[-1] == today
+    # the window caps history_days, as the feature pipeline's buffer does
+    assert window.features[xeqt.id]["history_days"] == 551
+    assert full.features[xeqt.id]["history_days"] == 1_000
+    # everything a 252-trading-day feature needs is still inside the window
+    assert window.features[xeqt.id]["return_12m"] == pytest.approx(
+        full.features[xeqt.id]["return_12m"]
+    )
+
+
+def test_a_series_with_a_malformed_bar_is_left_out_and_reported(session: Session):
+    """A placeholder row (close above its high) once aborted the whole monthly snapshot."""
+    today = date(2026, 7, 10)
+    xeqt = _instrument(session, "XEQT")
+    bad = _instrument(session, "JUNK")
+    for offset in range(260):
+        day = today - timedelta(days=259 - offset)
+        _bar(session, xeqt, day, 30.0 + offset / 100)
+        _bar(session, bad, day, 0.0001)
+    broken = session.scalars(
+        select(PriceBar).where(PriceBar.instrument_id == bad.id).order_by(PriceBar.ts.desc())
+    ).first()
+    broken.open = broken.high = broken.low = 0.000001  # close 0.0001 is now above the high
+    session.flush()
+    config = RegisteredStrategyConfig(
+        eligibility=EligibilityLimits(min_history_days=1, min_avg_dollar_volume=0)
+    )
+
+    universe, invalid = load_valid_universe(
+        session,
+        ["XEQT", "JUNK", "NOSUCH"],
+        datetime(2026, 1, 1, tzinfo=UTC),
+        datetime(2026, 7, 11, tzinfo=UTC),
+    )
+    inputs = decision_inputs(session, today, config)
+    result = run_snapshots(
+        session, strategies=["equal_weight"], asof=today, today=today, config=config
+    )
+
+    assert set(universe) == {xeqt.id}  # NOSUCH: no instrument, simply absent
+    assert list(invalid) == ["JUNK"]
+    assert "close_within_high_low" in invalid["JUNK"]
+    assert set(inputs.universe) == {xeqt.id}
+    assert list(inputs.invalid) == ["JUNK"]
+    assert list(result.invalid) == ["JUNK"]
+    assert result.snapshots[0].params["invalid_series"] == ["JUNK"]
+
+
+def test_decision_inputs_refuse_an_empty_database(session: Session):
+    with pytest.raises(ValueError, match="no daily price bars"):
+        decision_inputs(session, date(2026, 7, 10), RegisteredStrategyConfig())
 
 
 def test_historical_backfill_is_refused():

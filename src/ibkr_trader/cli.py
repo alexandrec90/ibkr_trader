@@ -1,6 +1,7 @@
 """Typer CLI — entry point `ibkr-trader` (see [project.scripts] in pyproject.toml)."""
 
 import csv
+import math
 import sys
 from enum import StrEnum
 from pathlib import Path
@@ -31,6 +32,8 @@ train_app = typer.Typer(help="Train the ML long-term model on stored data (needs
 app.add_typer(train_app, name="train")
 snapshot_app = typer.Typer(help="Record and score broker-free forward strategy snapshots.")
 app.add_typer(snapshot_app, name="snapshot")
+paper_app = typer.Typer(help="Trade the configured strategy on the IBKR paper account.")
+app.add_typer(paper_app, name="paper")
 archive_app = typer.Typer(
     help="Offload cold data (intraday bars, scored raw payloads) to object storage as Parquet, "
     "and restore it (docs/operations/remote-archive.md; needs the [archive] extra + "
@@ -256,19 +259,214 @@ def ingest_buybacks(
     typer.echo(f"upserted {count} SEC facts")
 
 
-@app.command()
-def ibkr_check():
-    """Connect to TWS/IB Gateway, print server time + account summary (read-only smoke test)."""
+#: Account-summary tags `ibkr-check` prints; the full summary is ~30 tags per currency.
+_CHECK_SUMMARY_TAGS = ("NetLiquidation", "TotalCashValue", "BuyingPower", "AvailableFunds")
+
+
+def _mask_account(account_id: str) -> str:
+    """``DU1234567`` -> ``DU…567``: enough to tell accounts apart, not enough to quote."""
+    if len(account_id) <= 5:
+        return "…"
+    return f"{account_id[:2]}…{account_id[-3:]}"
+
+
+def _format_price(value: float) -> str:
+    return "n/a" if math.isnan(value) or value <= 0 else f"{value:.2f}"
+
+
+def _connect_or_exit(*, readonly: bool):
+    """A connected ``IbkrBroker``, or exit 1 with the gateway watch's advice."""
     from ibkr_trader.config import get_settings
+    from ibkr_trader.execution.ibkr_broker import IbkrBroker
+    from ibkr_trader.gateway_watch import GatewayDown
 
     settings = get_settings()
     typer.echo(
         f"Connecting to {settings.ibkr_host}:{settings.ibkr_port} "
         f"(clientId={settings.ibkr_client_id}, env={settings.environment})"
     )
-    # TODO(skeleton): IB().connect(...); echo ib.reqCurrentTime(), managed accounts,
-    # and one delayed quote (reqMarketDataType(3)).
-    raise typer.Exit(code=1)
+    broker = IbkrBroker()
+    try:
+        broker.connect(readonly=readonly)
+    except GatewayDown as exc:
+        typer.echo(f"error: {exc.summary}: {exc}. {exc.advice}".rstrip(), err=True)
+        raise typer.Exit(code=1) from None
+    except RuntimeError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    return broker
+
+
+def _echo_plan(plan) -> None:
+    from ibkr_trader.paper import format_trade
+
+    typer.echo(
+        f"{plan.strategy} (model {plan.model_version}) as of {plan.asof}: bars to "
+        f"{plan.latest_bar_date} ({plan.stale_days} d old); sleeve {plan.value_cad:,.0f} CAD, "
+        f"cash {plan.cash_cad:,.0f} CAD; {len(plan.weights)} target name(s), "
+        f"{sum(plan.weights.values()):.0%} invested"
+    )
+    for trade in plan.trades:
+        typer.echo(f"  {format_trade(trade)}")
+    if not plan.trades:
+        typer.echo("  no trades: every holding is within the rebalance band")
+    for listing in plan.unmapped_positions:
+        typer.echo(
+            f"warning: position {listing} matches no stored instrument; left alone", err=True
+        )
+    for symbol, reason in plan.invalid_series.items():
+        typer.echo(f"warning: left out {symbol}, its bars failed validation: {reason}", err=True)
+
+
+@paper_app.command("plan")
+def paper_plan():
+    """Show the trades a rebalance would send now (read-only; sends nothing)."""
+    from ibkr_trader.config import get_settings
+    from ibkr_trader.db.session import get_session
+    from ibkr_trader.paper import PaperTradingBlocked, run_rebalance
+
+    broker = _connect_or_exit(readonly=True)
+    try:
+        result = run_rebalance(
+            broker, get_settings(), session_factory=get_session, force=True, dry_run=True
+        )
+    except (PaperTradingBlocked, KeyError, ValueError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    finally:
+        broker.disconnect()
+    if result.plan is None:
+        typer.echo(result.message)
+        return
+    _echo_plan(result.plan)
+
+
+@paper_app.command("rebalance")
+def paper_rebalance(
+    force: bool = typer.Option(False, help="rebalance even if this month is already done"),
+):
+    """Sync fills, then send this month's rebalance orders to the paper account."""
+    from ibkr_trader.config import get_settings
+    from ibkr_trader.db.session import get_session
+    from ibkr_trader.paper import PaperRebalanceIncomplete, PaperTradingBlocked, run_rebalance
+
+    broker = _connect_or_exit(readonly=False)
+    try:
+        sync = broker.sync_orders()
+        typer.echo(
+            f"synced: {sync.orders_updated} order(s) updated, "
+            f"{sync.executions_added} fill(s) recorded, {sync.working} working"
+        )
+        result = run_rebalance(broker, get_settings(), session_factory=get_session, force=force)
+    except (PaperRebalanceIncomplete, PaperTradingBlocked, KeyError, ValueError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    finally:
+        broker.disconnect()
+    if result.plan is not None:
+        _echo_plan(result.plan)
+    typer.echo(f"{result.status}: {result.message}")
+
+
+@paper_app.command("sync")
+def paper_sync():
+    """Record order statuses and fills from the gateway; list what is still working."""
+    from ibkr_trader.config import get_settings
+    from ibkr_trader.db.session import get_session
+    from ibkr_trader.execution.ledger import working_orders
+
+    broker = _connect_or_exit(readonly=False)
+    try:
+        sync = broker.sync_orders()
+    finally:
+        broker.disconnect()
+    typer.echo(
+        f"synced: {sync.orders_updated} order(s) updated, {sync.executions_added} fill(s) "
+        f"recorded, {sync.working} working, {sync.unmatched} unknown to the gateway"
+    )
+    with get_session() as session:
+        for row in working_orders(session, get_settings().environment):
+            symbol = (row.raw or {}).get("symbol", f"instrument {row.instrument_id}")
+            typer.echo(
+                f"  #{row.id} {row.side.value} {row.quantity:g} {symbol} {row.status} "
+                f"(filled {row.filled_quantity or 0:g})"
+            )
+
+
+@paper_app.command("cancel")
+def paper_cancel(order_id: int = typer.Argument(..., help="local orders.id")):
+    """Ask IBKR to cancel one working order (`paper sync` records the outcome)."""
+    broker = _connect_or_exit(readonly=False)
+    try:
+        broker.cancel_order(order_id)
+    except (RuntimeError, ValueError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    finally:
+        broker.disconnect()
+    typer.echo(f"cancel requested for order {order_id}")
+
+
+@paper_app.command("halt")
+def paper_halt():
+    """Emergency stop: create the halt file, which refuses every order until `paper resume`."""
+    from ibkr_trader.config import get_settings
+
+    path = Path(get_settings().trading_halt_file)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("halted by `ibkr-trader paper halt`\n", encoding="utf-8")
+    typer.echo(f"trading halted: {path} exists; `ibkr-trader paper resume` lifts it")
+
+
+@paper_app.command("resume")
+def paper_resume():
+    """Remove the halt file (TRADING_HALTED=true in .env still halts on its own)."""
+    from ibkr_trader.config import get_settings
+
+    settings = get_settings()
+    path = Path(settings.trading_halt_file)
+    path.unlink(missing_ok=True)
+    still = " (but TRADING_HALTED is still true)" if settings.trading_halted else ""
+    typer.echo(f"halt file removed{still}")
+
+
+@app.command()
+def ibkr_check(
+    symbol: str = typer.Option("SPY", help="stock to fetch one delayed quote for"),
+    currency: str = typer.Option("USD", help="currency of --symbol (CAD for a TSX listing)"),
+):
+    """Connect read-only to IB Gateway: server time, accounts, paper summary, a delayed quote.
+
+    Exits 1 when the gateway is stopped, logged out, or logged into anything but the
+    configured DU paper account. A missing quote is a warning only: the connection is the check.
+    """
+    broker = _connect_or_exit(readonly=True)
+    try:
+        typer.echo(f"server time:      {broker.server_time().isoformat()}")
+        accounts = ", ".join(_mask_account(a) for a in broker.managed_accounts())
+        typer.echo(f"managed accounts: {accounts}")
+        typer.echo(f"paper account:    {_mask_account(broker.account_id)}")
+        summary = broker.account_summary()
+        for key, value in sorted(summary.items()):
+            if key.split(":", 1)[0] in _CHECK_SUMMARY_TAGS:
+                typer.echo(f"  {key:<24} {value}")
+        typer.echo(f"positions:        {len(broker.positions())}")
+        try:
+            quote = broker.delayed_quote(symbol, currency)
+        except RuntimeError as exc:
+            typer.echo(f"warning: no quote: {exc}", err=True)
+        else:
+            if quote.has_price():
+                typer.echo(
+                    f"quote {quote.symbol} ({quote.currency}, market data type "
+                    f"{quote.market_data_type}): bid {_format_price(quote.bid)} "
+                    f"ask {_format_price(quote.ask)} last {_format_price(quote.last)} "
+                    f"close {_format_price(quote.close)}"
+                )
+            else:
+                typer.echo(f"warning: no delayed price for {symbol} arrived in time", err=True)
+    finally:
+        broker.disconnect()
 
 
 @ingest_app.command("news")
@@ -976,6 +1174,8 @@ def snapshot_run(
         )
     for name, reason in result.skipped.items():
         typer.echo(f"warning: skipped {name}: {reason}", err=True)
+    for symbol, reason in result.invalid.items():
+        typer.echo(f"warning: left out {symbol}, its bars failed validation: {reason}", err=True)
     typer.echo(
         f"saved {len(result.snapshots)} forward snapshot(s) for {result.snapshots[0].ts:%Y-%m-%d}"
         if result.snapshots

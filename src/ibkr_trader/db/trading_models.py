@@ -62,7 +62,7 @@ class Order(Base):
 
     __tablename__ = "orders"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    id: Mapped[int] = mapped_column(SqliteFriendlyBigInt, primary_key=True)
     environment: Mapped[str] = mapped_column(String(8))  # paper | live
     instrument_id: Mapped[int] = mapped_column(ForeignKey("instruments.id"))
     side: Mapped[OrderSide] = mapped_column(Enum(OrderSide))
@@ -85,7 +85,7 @@ class Execution(Base):
     __tablename__ = "executions"
     __table_args__ = (UniqueConstraint("ibkr_exec_id"),)
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    id: Mapped[int] = mapped_column(SqliteFriendlyBigInt, primary_key=True)
     order_id: Mapped[int] = mapped_column(ForeignKey("orders.id"))
     ibkr_exec_id: Mapped[str] = mapped_column(String(64))
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True))

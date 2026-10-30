@@ -32,7 +32,7 @@ States: `PendingSubmit → PreSubmitted → Submitted → Filled` / `Cancelled` 
 
 > ⚠️ "There are not guaranteed to be orderStatus callbacks for every change in order status" —
 > reconcile with `execDetails` and periodic `reqOpenOrders`/`reqPositions` instead of trusting
-> `orderStatus` alone. The skeleton's `OrderReconciler` stub exists for this.
+> `orderStatus` alone. `execution/reconcile.py` does this on every `paper sync` / `paper` job run.
 
 ## Contracts
 
@@ -52,10 +52,15 @@ table stores it).
   their own application to electronically submit orders for products traded on a Canadian
   exchange or other Canadian marketplace. A successful paper simulation does not remove that
   restriction. See the current
-  [IBKR TWS API limitations](https://www.interactivebrokers.com/campus/ibkr-api-page/twsapi-doc/#canadian-residents).
-- `whatIf=True` margin/commission preflight before real submission.
-- Per-order and per-day notional caps in `execution/risk.py` (stub — implement before any live use).
-- Read-Only API stays enabled in the Gateway until execution work actually starts.
+  [IBKR TWS API limitations](https://www.interactivebrokers.com/docs/tws-api/doc/notes-limitations/limitations/canadian-residents-restricted-from-programmatically-trading-canadian-products)
+  (re-confirmed 2026-10-26; it cites CIRO). The paper loop therefore trades US listings
+  only, and `RiskChecker` refuses non-USD orders.
+- `whatIf=True` margin/commission preflight before real submission (`IbkrBroker.place_order`).
+- Per-order, per-day and per-position notional caps, a quote-vs-plan price check, regular
+  hours for market orders, no short sales and a halt switch in `execution/risk.py`. See
+  [paper-trading.md](../../operations/paper-trading.md).
+- Read-Only API must be switched off in the Gateway (`READ_ONLY_API=no`) for orders; while it
+  is on, `ibkr-check` and `paper plan` still work.
 
 ## Sources
 
