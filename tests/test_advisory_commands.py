@@ -4,18 +4,20 @@ The Questrade client and the database are replaced at their seams; the planner a
 report run for real.
 """
 
+import json
 from contextlib import contextmanager
 from datetime import date
 
 import pytest
 import typer
+from sqlalchemy.exc import OperationalError
 from typer.testing import CliRunner
 
 from ibkr_trader import cli
 from ibkr_trader.accounts import AccountType
-from ibkr_trader.advisory import commands, sync, targets
+from ibkr_trader.advisory import commands, service, sync, targets
 from ibkr_trader.advisory import questrade as qt
-from ibkr_trader.advisory.planner import AccountState, Target
+from ibkr_trader.advisory.planner import AccountState, PlanConfig, Target
 from ibkr_trader.advisory.targets import StrategyTargets, TargetWeight
 from ibkr_trader.config import get_settings
 
@@ -89,6 +91,22 @@ def test_plan_prints_tickets_and_writes_the_csv(env, fake_questrade, fake_db, tm
     assert "Buy  XIC.TO" in result.output
     assert "! note A" in result.output
     assert (tmp_path / "o.csv").read_text().count("XIC.TO") == 3  # three rungs
+    plan = json.loads((tmp_path / "o.json").read_text())  # what `ibkr-trader ui` shows
+    assert plan["strategy"] == "core"
+    assert len(plan["accounts"][0]["orders"]) == 3
+
+
+def test_plan_on_a_stopped_database_says_how_to_start_it(env, fake_questrade, monkeypatch):
+    @contextmanager
+    def down():
+        raise OperationalError("SELECT 1", {}, Exception("refused"))
+        yield
+
+    monkeypatch.setattr("ibkr_trader.db.session.get_session", down)
+    result = runner.invoke(cli.app, ["questrade", "plan", "--strategy", "core"])
+    assert result.exit_code == 1
+    assert "docker compose up -d db" in result.output
+    assert fake_questrade == []
 
 
 def test_plan_called_directly_honours_its_limits(env, fake_questrade, fake_db, tmp_path, capsys):
@@ -144,6 +162,24 @@ def test_plan_without_a_snapshot_fails_before_touching_questrade(env, fake_quest
     assert result.exit_code == 1
     assert "no forward snapshot" in result.output
     assert fake_questrade == []
+
+
+def test_service_make_plan_returns_the_plans_and_book_notes(env, fake_questrade, fake_db):
+    """The path the UI takes: no typer, a PlanResult back, the token spent once."""
+    result = service.make_plan("core", PlanConfig(), date(2026, 10, 18))
+
+    assert result.snapshot_asof == date(2026, 10, 1)
+    assert result.notes == ["note A"]  # the book is fresh, so only the resolver's note
+    assert len(result.plans[0].orders) == 3
+    assert result.title.startswith("Questrade order plan · core (snapshot 2026-10-01)")
+    assert fake_questrade == ["tok-1"]
+
+
+def test_service_connect_raises_plan_error_not_exit(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("QUESTRADE_TOKEN", raising=False)
+    with pytest.raises(service.PlanError, match="QUESTRADE_TOKEN is not set"):
+        service.connect(tmp_path / ".env")
 
 
 def test_plan_requires_a_strategy():
