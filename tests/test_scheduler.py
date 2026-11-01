@@ -151,11 +151,21 @@ def test_a_restart_does_not_push_a_job_a_full_interval_out(tmp_path):
     job_health.write_artifact(artifact)
     last_run = datetime.fromisoformat(job_health.snapshot()["jobs"]["newsapi"]["last_run"])
     job_health.reset()
+    due = last_run + timedelta(hours=12)
+    # The daily prices slot is staggered against the interval jobs like any other first run,
+    # so one falling in the STARTUP_STAGGER_SECONDS before `due` would push `newsapi` behind
+    # it. With the default 18:00 New York slot that is every run started around 11:00 UTC in
+    # winter -- the nightly's own time from the November DST change on. Hold it half a day off.
+    prices_at = (due + timedelta(hours=12)).astimezone(scheduler.DAILY_JOB_TIMEZONE)
 
-    sched = scheduler.build_scheduler(settings=_settings(scheduler_health_file=str(artifact)))
+    sched = scheduler.build_scheduler(
+        settings=_settings(
+            scheduler_health_file=str(artifact), poll_prices_at=prices_at.strftime("%H:%M")
+        )
+    )
     newsapi = {job.id: job for job in sched.get_jobs()}["newsapi_poll"]
 
-    assert newsapi.next_run_time == last_run + timedelta(hours=12)
+    assert newsapi.next_run_time == due
 
 
 def test_a_job_the_restart_made_overdue_catches_up_shortly_after_start():
