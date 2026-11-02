@@ -39,5 +39,10 @@ unit_tests = "tests"
 enabled = false
 
 [frontend]
-# No frontend tier: this is a CLI + scheduler service.
-enabled = false
+# The local UI (`ibkr-trader ui`): a Vite + React app in frontend/, built to
+# frontend/dist and served by the loopback FastAPI app in src/ibkr_trader/web/. On, so
+# devkit vendors frontend/src/worktreePort.ts (the dev server's per-worktree port) and
+# gates it for drift, and lint-all/run-tests know where the vitest/tsc tier lives.
+enabled = true
+dir = "frontend"
+src = "frontend/src/"

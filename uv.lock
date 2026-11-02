@@ -1650,6 +1650,10 @@ sentiment = [
 tracking = [
     { name = "mlflow" },
 ]
+ui = [
+    { name = "fastapi" },
+    { name = "uvicorn" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -1669,6 +1673,7 @@ requires-dist = [
     { name = "data-lake", editable = "../data-lake" },
     { name = "data-lake", extras = ["archive"], marker = "extra == 'archive'", editable = "../data-lake" },
     { name = "data-lake", extras = ["research"], marker = "extra == 'research'", editable = "../data-lake" },
+    { name = "fastapi", marker = "extra == 'ui'", specifier = ">=0.115" },
     { name = "ib-async", specifier = ">=1.0" },
     { name = "lightgbm", marker = "extra == 'ml'", specifier = ">=4.5" },
     { name = "mlflow", marker = "extra == 'tracking'", specifier = ">=3.1" },
@@ -1687,9 +1692,10 @@ requires-dist = [
     { name = "torch", marker = "extra == 'sentiment'", specifier = ">=2.2", index = "https://download.pytorch.org/whl/cpu" },
     { name = "transformers", marker = "extra == 'sentiment'", specifier = ">=4.40" },
     { name = "typer", specifier = ">=0.12" },
+    { name = "uvicorn", marker = "extra == 'ui'", specifier = ">=0.30" },
     { name = "vadersentiment", specifier = ">=3.3" },
 ]
-provides-extras = ["ml", "tracking", "archive", "research", "sentiment", "report"]
+provides-extras = ["ml", "tracking", "archive", "research", "sentiment", "report", "ui"]
 
 [package.metadata.requires-dev]
 dev = [

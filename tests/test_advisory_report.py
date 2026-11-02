@@ -1,11 +1,20 @@
 """Rendering an order plan: terminal lines and the CSV the owner works through."""
 
 import csv
-from datetime import date
+import json
+from datetime import date, datetime
 
 from ibkr_trader.accounts import AccountType
-from ibkr_trader.advisory.planner import AccountPlan, AccountState, OrderTicket
-from ibkr_trader.advisory.report import account_line, format_plans, plan_notes, write_csv
+from ibkr_trader.advisory.planner import AccountPlan, AccountState, OrderTicket, PlanConfig
+from ibkr_trader.advisory.report import (
+    account_line,
+    format_plans,
+    plan_notes,
+    plan_payload,
+    write_csv,
+    write_json,
+)
+from ibkr_trader.advisory.service import PlanResult
 from ibkr_trader.advisory.targets import StrategyTargets, TargetWeight
 
 TODAY = date(2026, 10, 18)
@@ -66,3 +75,27 @@ def test_write_csv_has_one_row_per_ticket_with_order_entry_fields(tmp_path):
     assert rows[0]["order_type"] == "Limit"
     assert rows[0]["time_in_force"] == "GoodTillDate"
     assert rows[0]["notional"] == "1638.00"
+
+
+RESULT = PlanResult("core", date(2026, 10, 1), TODAY, [_plan([TICKET]), _plan([])], ["stale"])
+
+
+def test_plan_payload_masks_accounts_and_carries_tickets_notes_and_options():
+    payload = plan_payload(RESULT, PlanConfig(max_new_names=1), generated_at=datetime(2026, 1, 1))
+
+    assert payload["title"] == RESULT.title
+    assert payload["snapshot_asof"] == "2026-10-01"
+    assert payload["notes"] == ["stale"]
+    assert payload["config"]["max_new_names"] == 1
+    first = payload["accounts"][0]
+    assert first["account"] == "TFSA ...282" and first["kind"] == "tfsa"
+    assert first["orders"][0]["notional"] == 1638.0
+    assert first["orders"][0]["good_until"] == "2026-10-25"
+    assert payload["accounts"][1]["orders"] == []
+    assert "12345282" not in json.dumps(payload)
+
+
+def test_write_json_writes_what_it_returns(tmp_path):
+    path = tmp_path / "reports" / "plan.json"
+    payload = write_json(RESULT, path, PlanConfig())
+    assert json.loads(path.read_text(encoding="utf-8")) == payload

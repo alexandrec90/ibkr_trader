@@ -127,7 +127,7 @@ jobs:
         # optional dependencies, so without the extras CI can silently skip them.
         # The dev group installs by default.
         # Python comes from .python-version (3.12); numpy's stubs need >= 3.12 to parse.
-        run: uv sync --locked --extra ml --extra tracking --extra archive --extra research --extra sentiment --extra report
+        run: uv sync --locked --extra ml --extra tracking --extra archive --extra research --extra sentiment --extra report --extra ui
 
       - name: Ruff lint
         run: uv run ruff check src tests
@@ -140,3 +140,24 @@ jobs:
 
       - name: Pytest (with coverage floor — fail_under lives in pyproject.toml)
         run: uv run pytest -q --cov=ibkr_trader
+
+  # The local UI's React app (`.devkit.toml` [frontend]). Its own job: it needs neither
+  # data-lake nor uv, and a red frontend should not hide behind a red Python suite.
+  frontend:
+    name: Frontend tests and build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci --no-fund --no-audit
+      - run: npm run test:run
+      # `build` is `tsc --noEmit && vite build`: unit tests only reach imported modules,
+      # so the typecheck and the bundle catch a compile break anywhere in src/.
+      - run: npm run build

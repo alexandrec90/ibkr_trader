@@ -16,13 +16,25 @@
 #
 # Regenerate only when adopting the gate: python scripts/hooks/structure_check.py --seed
 complexity::src/ibkr_trader/backtest/engine.py::simulate = 19
-complexity::src/ibkr_trader/backtest/snapshot.py::build_snapshot_report = 16
 complexity::src/ibkr_trader/signals/features.py::_add_corporate_features = 19
 cycle::src/ibkr_trader/backtest/engine.py = 8
+dependency::frontend/package.json::@testing-library/react = 1
+dependency::frontend/package.json::@types/node = 1
+dependency::frontend/package.json::@types/react = 1
+dependency::frontend/package.json::@types/react-dom = 1
+dependency::frontend/package.json::@vitejs/plugin-react = 1
+dependency::frontend/package.json::happy-dom = 1
+dependency::frontend/package.json::react = 1
+dependency::frontend/package.json::react-dom = 1
+dependency::frontend/package.json::recharts = 1
+dependency::frontend/package.json::typescript = 1
+dependency::frontend/package.json::vite = 1
+dependency::frontend/package.json::vitest = 1
 dependency::pyproject.toml::alembic = 1
 dependency::pyproject.toml::alphalens-reloaded = 1
 dependency::pyproject.toml::apscheduler = 1
 dependency::pyproject.toml::data-lake = 1
+dependency::pyproject.toml::fastapi = 1
 dependency::pyproject.toml::ib-async = 1
 dependency::pyproject.toml::lightgbm = 1
 dependency::pyproject.toml::mlflow = 1
@@ -47,6 +59,7 @@ dependency::pyproject.toml::tenacity = 1
 dependency::pyproject.toml::torch = 1
 dependency::pyproject.toml::transformers = 1
 dependency::pyproject.toml::typer = 1
+dependency::pyproject.toml::uvicorn = 1
 dependency::pyproject.toml::vadersentiment = 1
 function_lines::src/ibkr_trader/backtest/engine.py::_run_with_session = 84
 function_lines::src/ibkr_trader/backtest/engine.py::simulate = 114
@@ -87,3 +100,19 @@ todos::src/ibkr_trader/signals/predictor.py = 1
 
 # 2026-10-11  recorded: not growth: run_oos_backtest's recorded 13 params moved with its body to run_oos_backtests (one fit, many holding floors); run_oos_backtest is now a 5-param wrapper and its entry is tightened away
 #   function_params::src/ibkr_trader/backtest/oos.py::run_oos_backtests -> 13
+
+# 2026-10-27  recorded: Local web UI (ibkr-trader ui): fastapi+uvicorn serve it, already in uv.lock via mlflow, behind the optional [ui] extra; frontend/ is the devkit [frontend] tier's stack - react/react-dom, recharts for the charts, vite/@vitejs/plugin-react/typescript to build, vitest/happy-dom/@testing-library/react to test, @types/* for tsc
+#   dependency::frontend/package.json::@testing-library/react -> 1
+#   dependency::frontend/package.json::@types/node -> 1
+#   dependency::frontend/package.json::@types/react -> 1
+#   dependency::frontend/package.json::@types/react-dom -> 1
+#   dependency::frontend/package.json::@vitejs/plugin-react -> 1
+#   dependency::frontend/package.json::happy-dom -> 1
+#   dependency::frontend/package.json::react -> 1
+#   dependency::frontend/package.json::react-dom -> 1
+#   dependency::frontend/package.json::recharts -> 1
+#   dependency::frontend/package.json::typescript -> 1
+#   dependency::frontend/package.json::vite -> 1
+#   dependency::frontend/package.json::vitest -> 1
+#   dependency::pyproject.toml::fastapi -> 1
+#   dependency::pyproject.toml::uvicorn -> 1

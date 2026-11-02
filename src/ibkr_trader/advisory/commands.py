@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING, NoReturn
 
 import typer
 
+from ibkr_trader.advisory.service import ENV_FILE, PlanError
+
 if TYPE_CHECKING:
     from ibkr_trader.advisory.questrade import QuestradeClient
 
@@ -17,9 +19,6 @@ questrade_app = typer.Typer(
     help="Read-only Questrade sync and limit-order recommendations. Never places an order."
 )
 
-#: The dotenv file the rotated token is written back to: the same relative path
-#: ``Settings`` reads, so the next run picks up the replacement.
-ENV_FILE = Path(".env")
 DEFAULT_CSV = "reports/questrade-plan.csv"
 
 
@@ -29,26 +28,11 @@ def _fail(message: str) -> NoReturn:
 
 
 def _connect() -> "QuestradeClient":
-    from ibkr_trader.advisory.questrade import (
-        TOKEN_HELP,
-        EnvTokenStore,
-        QuestradeClient,
-        QuestradeError,
-    )
-    from ibkr_trader.config import get_settings
+    from ibkr_trader.advisory.service import connect
 
-    store = EnvTokenStore(ENV_FILE)
-    token = get_settings().questrade_token.strip()
-    if not token:
-        _fail(f"QUESTRADE_TOKEN is not set; {TOKEN_HELP}")
-    if store.load() != token:
-        _fail(
-            f"QUESTRADE_TOKEN must be set in {ENV_FILE.resolve()}, not only in the shell: it "
-            "is replaced on every use and only that file can be rewritten"
-        )
     try:
-        return QuestradeClient.connect(store, token)
-    except (QuestradeError, OSError) as exc:
+        return connect(ENV_FILE)
+    except PlanError as exc:
         _fail(str(exc))
 
 
@@ -86,36 +70,25 @@ def questrade_plan(
     ),
     csv_path: str = typer.Option(DEFAULT_CSV, "--csv", help="where the order tickets are written"),
 ) -> None:
-    """Recommend laddered limit orders for every Questrade account. Advisory only."""
-    from sqlalchemy.exc import OperationalError
+    """Recommend laddered limit orders for every Questrade account. Advisory only.
 
-    from ibkr_trader.advisory.planner import PlanConfig, plan_all
-    from ibkr_trader.advisory.questrade import QuestradeError
-    from ibkr_trader.advisory.report import format_plans, plan_notes, write_csv
-    from ibkr_trader.advisory.sync import account_states, resolve_targets
-    from ibkr_trader.advisory.targets import latest_targets
-    from ibkr_trader.db.session import get_session
+    The full plan is also written as JSON beside the CSV, which is what `ibkr-trader ui`
+    shows without spending the token again.
+    """
+    from ibkr_trader.advisory.planner import PlanConfig
+    from ibkr_trader.advisory.report import format_plans, write_csv, write_json
+    from ibkr_trader.advisory.service import make_plan
 
-    today = datetime.now(tz=UTC).date()
-    try:
-        with get_session() as session:
-            targets = latest_targets(session, strategy, today=today)
-    except ValueError as exc:
-        _fail(str(exc))
-    except OperationalError:
-        _fail("cannot reach the database; start it with `docker compose up -d db`")
-    client = _connect()
-    try:
-        resolved, notes = resolve_targets(client, targets)
-        states = account_states(client)
-    except QuestradeError as exc:
-        _fail(str(exc))
     config = PlanConfig(
         min_order_cad=min_order, max_position_pct=max_position, max_new_names=max_new, exits=exits
     )
-    plans = plan_all(states, resolved, config, today)
-    title = f"Questrade order plan · {strategy} (snapshot {targets.asof}) · {today}"
-    for line in format_plans(plans, title, plan_notes(targets, today) + notes):
+    try:
+        result = make_plan(strategy, config, datetime.now(tz=UTC).date())
+    except PlanError as exc:
+        _fail(str(exc))
+    for line in format_plans(result.plans, result.title, result.notes):
         typer.echo(line)
-    count = write_csv(plans, Path(csv_path))
-    typer.echo(f"\n{count} order ticket(s) written to {csv_path}")
+    count = write_csv(result.plans, Path(csv_path))
+    json_path = Path(csv_path).with_suffix(".json")
+    write_json(result, json_path, config)
+    typer.echo(f"\n{count} order ticket(s) written to {csv_path} (full plan: {json_path})")

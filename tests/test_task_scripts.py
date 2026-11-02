@@ -60,6 +60,7 @@ CONTRACT_ENTRYPOINTS = (
     "backtest-task.py",  # Backtest: Run / Backtest: OOS
     "report-task.py",  # Report: Open Model & Strategy Views / Report: Run Strategy Lab
     "questrade-task.py",  # Questrade: Recommend Orders
+    "ui-task.py",  # IBKR: Open Trader UI (devkit's `trader-ui` action)
     "db-revision.py",  # DB: New Migration (Autogenerate)
     # Not a task: devkit's fix pass runs it every half hour (`fix_migrate.py` there).
     "db-upgrade.py",
@@ -707,6 +708,144 @@ def test_report_main_serves_mlflow_for_models_without_running_the_cli(monkeypatc
 
     assert script.main(["models"]) == 5
     assert served == [["uv", "run", "--extra", "tracking", "python"]]
+
+
+# --- ui-task.py ---------------------------------------------------------------------------
+
+
+def _frontend(tmp_path: Path, *, installed: bool, built_at: float | None, source_at: float):
+    frontend = tmp_path / "frontend"
+    (frontend / "src").mkdir(parents=True)
+    source = frontend / "src" / "App.tsx"
+    source.write_text("")
+    os.utime(source, (source_at, source_at))
+    if installed:
+        (frontend / "node_modules").mkdir()
+    if built_at is not None:
+        (frontend / "dist").mkdir()
+        index = frontend / "dist" / "index.html"
+        index.write_text("")
+        os.utime(index, (built_at, built_at))
+    return frontend
+
+
+def test_ui_installs_and_builds_a_fresh_checkout(tmp_path):
+    script = load_script("ui-task.py")
+    frontend = _frontend(tmp_path, installed=False, built_at=None, source_at=1_000)
+
+    assert script.npm_steps(frontend, "npm") == [
+        ["npm", "ci", "--no-fund", "--no-audit"],
+        ["npm", "run", "build"],
+    ]
+
+
+def test_ui_rebuilds_only_when_a_source_is_newer_than_the_bundle(tmp_path):
+    script = load_script("ui-task.py")
+    stale = _frontend(tmp_path / "a", installed=True, built_at=1_000, source_at=2_000)
+    current = _frontend(tmp_path / "b", installed=True, built_at=2_000, source_at=1_000)
+
+    assert script.npm_steps(stale, "npm") == [["npm", "run", "build"]]
+    assert script.npm_steps(current, "npm") == []
+
+
+def test_ui_build_inputs_are_the_sources_and_the_build_config(tmp_path):
+    script = load_script("ui-task.py")
+    frontend = _frontend(tmp_path, installed=True, built_at=None, source_at=1)
+    (frontend / "package.json").write_text("{}")
+    (frontend / "README.md").write_text("")  # not read by a build
+
+    names = {p.name for p in script.build_inputs(frontend)}
+
+    assert names == {"App.tsx", "package.json"}
+
+
+def test_ui_falls_back_to_the_running_interpreter_without_uv_or_a_venv(tmp_path):
+    script = load_script("ui-task.py")
+    assert script.python_exe(tmp_path) == sys.executable
+    assert script.server_prefix(None, tmp_path) == [sys.executable]
+
+
+def test_ui_treats_a_config_change_as_stale(tmp_path):
+    script = load_script("ui-task.py")
+    frontend = _frontend(tmp_path, installed=True, built_at=2_000, source_at=1_000)
+    config = frontend / "vite.config.ts"
+    config.write_text("")
+    os.utime(config, (3_000, 3_000))
+
+    assert script.needs_build(frontend)
+
+
+def test_ui_serves_through_uv_tied_to_its_launcher_and_passes_options():
+    script = load_script("ui-task.py")
+    prefix = script.server_prefix("uv")
+    args = script.parse_args(["--port", "8123", "--no-open"])
+
+    assert script.serve_argv(prefix, args, 4242) == [
+        "uv",
+        "run",
+        "--extra",
+        "ui",
+        "python",
+        "-m",
+        "ibkr_trader.cli",
+        "ui",
+        "--exit-with-pid",
+        "4242",
+        "--port",
+        "8123",
+        "--no-open",
+    ]
+    assert script.serve_argv(["py"], script.parse_args([]), 1)[-2:] == ["--exit-with-pid", "1"]
+
+
+def test_ui_main_hands_the_server_its_own_parent_pid(monkeypatch, tmp_path):
+    """Under the workspace task that parent is log-wrap.py, the process a terminal close
+    actually kills; the server watches it because nothing else would stop it."""
+    script = load_script("ui-task.py")
+    monkeypatch.setattr(
+        script, "FRONTEND", _frontend(tmp_path, installed=True, built_at=2, source_at=1)
+    )
+    monkeypatch.setattr(script.shutil, "which", lambda name: name)
+    monkeypatch.setattr(script.os, "getppid", lambda: 31337)
+    ran = []
+    monkeypatch.setattr(
+        script.subprocess,
+        "run",
+        lambda argv, **_kw: ran.append(argv) or SimpleNamespace(returncode=0),
+    )
+
+    assert script.main(["--no-open"]) == 0
+    (serve,) = ran  # the bundle is current: no npm step
+    assert serve[serve.index("--exit-with-pid") + 1] == "31337"
+
+
+def test_ui_stops_before_serving_when_the_build_fails(monkeypatch, tmp_path):
+    script = load_script("ui-task.py")
+    monkeypatch.setattr(
+        script, "FRONTEND", _frontend(tmp_path, installed=True, built_at=None, source_at=1)
+    )
+    monkeypatch.setattr(script.shutil, "which", lambda name: name)
+    ran = []
+    monkeypatch.setattr(
+        script.subprocess,
+        "run",
+        lambda argv, **_kw: ran.append(argv) or SimpleNamespace(returncode=2),
+    )
+
+    assert script.main(["--no-open"]) == 2
+    assert ran == [["npm", "run", "build"]]  # never reached `ibkr-trader ui`
+
+
+def test_ui_without_npm_says_what_to_install(monkeypatch, tmp_path, capsys):
+    script = load_script("ui-task.py")
+    monkeypatch.setattr(
+        script, "FRONTEND", _frontend(tmp_path, installed=False, built_at=None, source_at=1)
+    )
+    monkeypatch.setattr(script.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(script.subprocess, "run", pytest.fail)
+
+    assert script.main([]) == 1
+    assert "Node 24" in capsys.readouterr().out
 
 
 def test_db_revision_passes_the_message_as_its_own_argv_element():

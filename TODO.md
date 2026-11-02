@@ -71,6 +71,18 @@ those horizons mature). Automating this cadence in `serve` is a follow-up, not p
       `ibkr-trader backtest run`, then regenerate. Streamlit dep, `dashboard/app.py`, the
       `[dashboard]` extra and the vendored skill are gone; `dashboard/data.py` unchanged.
       VS Code task: `report: generate`. Tested (`tests/test_dashboard_report.py`, CLI tests).
+- [x] ~~*Local UI: models, order recommendations, paper decisions in one place*~~
+      [2026-10-26] — `ibkr-trader ui` (`[ui]` extra) / `python scripts/ui-task.py`: FastAPI
+      on 127.0.0.1:8001 (foreground, ends with its terminal) serving a Vite + React app in
+      `frontend/` (devkit `[frontend]` tier). Pages: backtest leaderboard with equity and
+      drawdown overlays plus the trained model's walk-forward ICs; the latest Questrade
+      plan and a form that builds a new one (advisory, via `advisory.service`); the
+      forward-shadow books, per-snapshot excess vs XEQT at 1/3/6/12 months, and the IBKR
+      `orders` log; links to `reports/*.html`. `questrade plan` now also writes
+      `reports/questrade-plan.json`. Tested (`tests/test_web_*.py`, `frontend/src/*.test.ts*`).
+  - [ ] devkit's `trader-ui` action ("IBKR: Open Trader UI") → `scripts/ui-task.py`, in a
+        devkit PR; merge this branch first, or the task reports a missing script. Stop it by
+        closing the terminal: the server watches its launcher (`web/lifetime.py`).
 - [x] ~~*ETF-floor universe (survivorship lower bound)*~~ [2026-07-18] — `tickers-etfs.txt`,
       24 broad-market ETFs (deep histories: SPY 1993, XIU 1999; US-listed ETFs added to
       `tickers-yahoo.txt` + aggregate). Quote ETF-floor results beside curated-stock upper

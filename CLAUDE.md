@@ -79,6 +79,9 @@ uv run mypy src
 uv run alembic upgrade head    # apply migrations
 uv run alembic revision --autogenerate -m "msg"
 uv run ibkr-trader --help      # CLI: ingest / backtest / ibkr-check / serve / health
+python scripts/ui-task.py      # local UI: builds frontend/ if stale, serves 127.0.0.1:8001
+npm --prefix frontend run test:run    # frontend tests (vitest); `run typecheck`, `run build`
+npm --prefix frontend run dev  # hot-reload dev server, proxies /api to a running `ibkr-trader ui`
 ```
 
 The initial schema migration exists and is applied to the dev DB (host port **5433**; 5432 is
@@ -91,7 +94,7 @@ and review it before upgrading.
   the whole test suite uses in-memory SQLite (no `conftest.py`, no testcontainers; see
   [.claude/rules/testing.md](.claude/rules/testing.md)). Never start Docker to run tests.
 - **`db`** — needed for `alembic upgrade head` / `--autogenerate` and any
-  `ibkr-trader ingest|backtest|serve` run against the real Postgres dataset.
+  `ibkr-trader ingest|backtest|serve|ui` run against the real Postgres dataset.
 - **`ib-gateway`** (the `ibkr` profile) — live IBKR API calls (`ibkr-check`, `serve` against the
   gateway).
 - **`app`** (the `app` profile) — the `ibkr-trader serve --migrate` scheduler. Rebuild with
@@ -165,7 +168,13 @@ Prefer `stop` over `down` so the `pgdata` volume and its schema survive.
   - data-lake also carries no scheduler machinery at all today: no apscheduler
     dependency, no `_guard`-equivalent. The `archive` and `research` extras are the
     pattern to copy for adding one.
-- `src/ibkr_trader/signals/` — features + `Predictor` ABC. Reads/writes DB only.
+- `src/ibkr_trader/web/` + `frontend/` — the local UI (`ibkr-trader ui`, `[ui]` extra):
+  backtest/model comparison, Questrade order recommendations, forward-shadow and IBKR paper
+  decisions. `web/views.py` is DB-in/JSON-out and fastapi-free; `web/app.py` routes to it
+  and serves the built `frontend/dist` (Vite + React, devkit's `[frontend]` tier, which
+  vendors `frontend/src/worktreePort.ts`). Loopback only and foreground like the MLflow
+  viewer: the resident Streamlit dashboard was retired for RAM. Its one action, `POST
+  /api/plan`, goes through `advisory.service` and never transmits an order.
 - `src/ibkr_trader/backtest/` — engine (costs are first-class, no look-ahead) + metrics.
   DB only, no network.
 - `src/ibkr_trader/execution/` — `Broker` ABC → `IbkrBroker` (ib_async), `risk.py` pre-trade
