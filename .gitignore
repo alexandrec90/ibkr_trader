@@ -53,3 +53,7 @@ Thumbs.db
 # `claude --worktree <name>` cuts a nested checkout here; git does not ignore a
 # linked worktree on its parent's behalf, so without this the repo reads as dirty.
 .claude/worktrees/
+
+# Claude Code links these into every `claude --worktree` tree (worktree.symlinkDirectories
+# in .claude/settings.json). A link is a file to git, which a `dir/` pattern never matches.
+/frontend/node_modules
