@@ -28,6 +28,10 @@ from ibkr_trader.signals.schemas import format_schema_errors
 
 MAX_BACKFILL_DAYS = 1
 STALE_BAR_DAYS = 7
+#: Calendar days of bars a decision loads: the margin ``signals.features`` gives its
+#: 252-trading-day windows. Loading all history instead ran a 16 GB desktop out of memory,
+#: and the paper job runs in a 1.5 GB container against a 768 MB database.
+DECISION_LOOKBACK_DAYS = 550
 
 
 @dataclass(frozen=True)
@@ -241,7 +245,7 @@ def run_snapshots(
     asof = asof or today
     assert_snapshot_date(asof, today=today)
     config = config or RegisteredStrategyConfig()
-    inputs = decision_inputs(session, asof, config)
+    inputs = decision_inputs(session, asof, config, lookback_days=DECISION_LOOKBACK_DAYS)
 
     names = strategies or available()
     saved: list[StrategySnapshot] = []

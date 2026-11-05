@@ -815,8 +815,84 @@ def test_ui_main_hands_the_server_its_own_parent_pid(monkeypatch, tmp_path):
     )
 
     assert script.main(["--no-open"]) == 0
-    (serve,) = ran  # the bundle is current: no npm step
+    _db, serve = ran  # the bundle is current: no npm step
     assert serve[serve.index("--exit-with-pid") + 1] == "31337"
+
+
+def test_ui_starts_the_database_before_serving(monkeypatch, tmp_path):
+    """One click has to be enough: with `db` stopped the page is nothing but 503s."""
+    script = load_script("ui-task.py")
+    monkeypatch.setattr(
+        script, "FRONTEND", _frontend(tmp_path, installed=True, built_at=2, source_at=1)
+    )
+    monkeypatch.setattr(script.shutil, "which", lambda name: name)
+    ran = []
+    monkeypatch.setattr(
+        script.subprocess,
+        "run",
+        lambda argv, **_kw: ran.append(argv) or SimpleNamespace(returncode=0),
+    )
+
+    assert script.main(["--no-open"]) == 0
+    assert ran[0] == ["docker", "compose", "up", "-d", "--wait", "db"]
+    assert "ibkr_trader.cli" in ran[1]
+
+
+@pytest.mark.parametrize("which", [lambda name: None if name == "docker" else name, str])
+def test_ui_still_serves_without_a_database_and_says_so(monkeypatch, tmp_path, capsys, which):
+    """No docker on PATH, or a compose that failed: the reports still work, so serve, and
+    leave the reason in the terminal instead of a page of 503s to puzzle over."""
+    script = load_script("ui-task.py")
+    monkeypatch.setattr(
+        script, "FRONTEND", _frontend(tmp_path, installed=True, built_at=2, source_at=1)
+    )
+    monkeypatch.setattr(script.shutil, "which", which)
+    ran = []
+
+    def run(argv, **_kw):
+        ran.append(argv)
+        return SimpleNamespace(returncode=1 if argv[0] == "docker" else 0)
+
+    monkeypatch.setattr(script.subprocess, "run", run)
+
+    assert script.main(["--no-open"]) == 0
+    assert "ibkr_trader.cli" in ran[-1]
+    assert "database" in capsys.readouterr().out
+
+
+def test_start_db_waits_for_the_healthcheck_from_the_compose_project(monkeypatch, tmp_path):
+    """`--wait` is what makes the first page load find a ready database, and compose
+    finds its file from the cwd, so both are part of the contract."""
+    script = load_script("ui-task.py")
+    calls = []
+    monkeypatch.setattr(
+        script.subprocess,
+        "run",
+        lambda argv, **kw: calls.append((argv, kw)) or SimpleNamespace(returncode=0),
+    )
+
+    assert script.start_db("docker", tmp_path) is True
+    assert calls == [
+        (["docker", "compose", "up", "-d", "--wait", "db"], {"cwd": tmp_path, "check": False})
+    ]
+
+
+def test_start_db_without_docker_reports_it_and_runs_nothing(monkeypatch, capsys):
+    script = load_script("ui-task.py")
+    monkeypatch.setattr(script.subprocess, "run", pytest.fail)
+
+    assert script.start_db(None) is False
+    assert "docker is not on PATH" in capsys.readouterr().out
+
+
+def test_start_db_names_the_exit_code_when_compose_fails(monkeypatch, tmp_path, capsys):
+    script = load_script("ui-task.py")
+    monkeypatch.setattr(
+        script.subprocess, "run", lambda _argv, **_kw: SimpleNamespace(returncode=17)
+    )
+
+    assert script.start_db("docker", tmp_path) is False
+    assert "docker compose exited 17" in capsys.readouterr().out
 
 
 def test_ui_stops_before_serving_when_the_build_fails(monkeypatch, tmp_path):

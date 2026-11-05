@@ -20,7 +20,10 @@ only `log-wrap.py`. So this script hands its own parent's PID to the server as
 `--exit-with-pid`, and the server stops when that process is gone
 (`src/ibkr_trader/web/lifetime.py`). Run by hand, that parent is your shell.
 
-It reads Postgres, so the `db` container must be up for anything but the empty states.
+  - **The `db` container**, because the UI reads Postgres and a stopped database leaves
+    a page of 503s. `up -d --wait` is a no-op when it is already healthy. If it cannot
+    start, the server starts anyway, since the static reports need no database, and the
+    terminal says why the data pages are down.
 
     python scripts/ui-task.py [--port N] [--no-open]
 """
@@ -83,6 +86,20 @@ def npm_steps(frontend: Path, npm: str) -> list[list[str]]:
     return steps
 
 
+def start_db(docker: str | None, root: Path = REPO_ROOT) -> bool:
+    """Bring up the `db` container and wait for its healthcheck; False if it did not."""
+    if docker is None:
+        print("[ui] docker is not on PATH; the database pages will be down", flush=True)
+        return False
+    print("[ui] starting the database", flush=True)
+    code = subprocess.run(
+        [docker, "compose", "up", "-d", "--wait", "db"], cwd=root, check=False
+    ).returncode
+    if code:
+        print(f"[ui] docker compose exited {code}; the database pages will be down", flush=True)
+    return code == 0
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build (if stale) and serve the local UI.")
     parser.add_argument("--port", type=int, help="loopback port (default: UI_PORT, else 8001)")
@@ -114,6 +131,7 @@ def main(argv: list[str] | None = None) -> int:
         code = subprocess.run(step, cwd=FRONTEND, check=False).returncode
         if code:
             return code
+    start_db(shutil.which("docker"))
     try:
         return subprocess.run(
             serve_argv(server_prefix(shutil.which("uv")), args, launcher),

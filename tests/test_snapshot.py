@@ -139,6 +139,28 @@ def test_decision_inputs_can_load_only_a_recent_window(session: Session):
     )
 
 
+def test_a_snapshot_loads_only_the_decision_window(session: Session):
+    """All history is 3.4M bars back to 1962: more Python objects than the desktop's free
+    memory, and no allocator reads past its 252-trading-day features."""
+    today = date(2026, 7, 10)
+    xeqt = _instrument(session, "XEQT")
+    gone = _instrument(session, "GONE")
+    for offset in range(300):
+        _bar(session, xeqt, today - timedelta(days=299 - offset), 30.0 + offset / 100)
+    for offset in range(100):  # bars that all predate the window
+        _bar(session, gone, date(2023, 1, 1) + timedelta(days=offset), 10.0)
+    config = RegisteredStrategyConfig(
+        eligibility=EligibilityLimits(min_history_days=1, min_avg_dollar_volume=0)
+    )
+
+    result = run_snapshots(
+        session, strategies=["equal_weight"], asof=today, today=today, config=config
+    )
+
+    (snapshot,) = result.snapshots
+    assert snapshot.params["universe_names"] == 1
+
+
 def test_a_series_with_a_malformed_bar_is_left_out_and_reported(session: Session):
     """A placeholder row (close above its high) once aborted the whole monthly snapshot."""
     today = date(2026, 7, 10)
