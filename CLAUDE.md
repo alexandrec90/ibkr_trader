@@ -79,7 +79,7 @@ uv run mypy src
 uv run alembic upgrade head    # apply migrations
 uv run alembic revision --autogenerate -m "msg"
 uv run ibkr-trader --help      # CLI: ingest / backtest / ibkr-check / serve / health
-python scripts/ui-task.py      # local UI: builds frontend/ if stale, serves 127.0.0.1:8001
+python scripts/ui-task.py      # local UI: builds frontend/ if stale, starts db, serves 127.0.0.1:8001
 npm --prefix frontend run test:run    # frontend tests (vitest); `run typecheck`, `run build`
 npm --prefix frontend run dev  # hot-reload dev server, proxies /api to a running `ibkr-trader ui`
 ```

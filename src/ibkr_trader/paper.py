@@ -29,7 +29,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ibkr_trader.backtest.engine import RegisteredStrategyConfig, Series, _fx_to_cad
-from ibkr_trader.backtest.snapshot import decision_inputs, upsert_snapshot
+from ibkr_trader.backtest.snapshot import (
+    DECISION_LOOKBACK_DAYS,
+    decision_inputs,
+    upsert_snapshot,
+)
 from ibkr_trader.db.models import StrategySnapshot
 from ibkr_trader.execution import ledger
 from ibkr_trader.execution.broker import OrderRequest, Position
@@ -49,10 +53,6 @@ CANADIAN_EXCHANGES = frozenset({"TSX", "TSE", "TSXV", "VENTURE", "CSE", "NEO", "
 REBALANCE_WINDOW = (time(10, 0), time(15, 30))
 #: Fills keep arriving for a moment after the bell; the job syncs until this, then stops.
 SYNC_UNTIL = time(16, 30)
-#: Calendar days of bars a decision loads: the margin ``signals.features`` gives its
-#: 252-trading-day windows. Loading all history instead ran a 16 GB desktop out of memory,
-#: and the job runs in a 1.5 GB container against a 768 MB database.
-DECISION_LOOKBACK_DAYS = 550
 
 
 class PaperTradingBlocked(RuntimeError):
