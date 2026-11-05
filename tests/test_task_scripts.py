@@ -860,6 +860,41 @@ def test_ui_still_serves_without_a_database_and_says_so(monkeypatch, tmp_path, c
     assert "database" in capsys.readouterr().out
 
 
+def test_start_db_waits_for_the_healthcheck_from_the_compose_project(monkeypatch, tmp_path):
+    """`--wait` is what makes the first page load find a ready database, and compose
+    finds its file from the cwd, so both are part of the contract."""
+    script = load_script("ui-task.py")
+    calls = []
+    monkeypatch.setattr(
+        script.subprocess,
+        "run",
+        lambda argv, **kw: calls.append((argv, kw)) or SimpleNamespace(returncode=0),
+    )
+
+    assert script.start_db("docker", tmp_path) is True
+    assert calls == [
+        (["docker", "compose", "up", "-d", "--wait", "db"], {"cwd": tmp_path, "check": False})
+    ]
+
+
+def test_start_db_without_docker_reports_it_and_runs_nothing(monkeypatch, capsys):
+    script = load_script("ui-task.py")
+    monkeypatch.setattr(script.subprocess, "run", pytest.fail)
+
+    assert script.start_db(None) is False
+    assert "docker is not on PATH" in capsys.readouterr().out
+
+
+def test_start_db_names_the_exit_code_when_compose_fails(monkeypatch, tmp_path, capsys):
+    script = load_script("ui-task.py")
+    monkeypatch.setattr(
+        script.subprocess, "run", lambda _argv, **_kw: SimpleNamespace(returncode=17)
+    )
+
+    assert script.start_db("docker", tmp_path) is False
+    assert "docker compose exited 17" in capsys.readouterr().out
+
+
 def test_ui_stops_before_serving_when_the_build_fails(monkeypatch, tmp_path):
     script = load_script("ui-task.py")
     monkeypatch.setattr(
