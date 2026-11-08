@@ -43,10 +43,12 @@ and the pointer to it.
 
 ## 3 · Backtesting
 
-**Monthly forward-shadow ritual:** run the VS Code task `Snapshot: Run Monthly`. It runs the price
-ingestion chain first, then `snapshot run --all`; do not backfill a missed historical month.
+**Monthly forward-shadow snapshot:** `serve`'s `snapshot` job takes it on the first check of
+each month (every 6 h) that finds bars no more than `STALE_BAR_DAYS` old, and `health` goes red
+while a due month stays untaken. The VS Code task `Snapshot: Run Monthly` (ingestion chain, then
+`snapshot run --all`) remains for a PC with no collector; do not backfill a missed month.
 Review matured evidence with `ibkr-trader snapshot report --horizon-months 1` (then 3/6/12 as
-those horizons mature). Automating this cadence in `serve` is a follow-up, not part of ML-07.
+those horizons mature).
 
 - [ ] Validate cost model numbers against IBKR Canada's actual fee schedule (commission,
       spread/slippage bps) — currently conservative placeholders in `backtest/costs.py`

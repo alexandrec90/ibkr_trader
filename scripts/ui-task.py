@@ -23,7 +23,9 @@ only `log-wrap.py`. So this script hands its own parent's PID to the server as
   - **The `db` container**, because the UI reads Postgres and a stopped database leaves
     a page of 503s. `up -d --wait` is a no-op when it is already healthy. If it cannot
     start, the server starts anyway, since the static reports need no database, and the
-    terminal says why the data pages are down.
+    terminal says why the data pages are down. Only when `DATABASE_URL` names this
+    machine: a research PC reads the collector PC's database over the tailnet, and a
+    local container there would serve nothing.
 
     python scripts/ui-task.py [--port N] [--no-open]
 """
@@ -35,8 +37,9 @@ import os
 import shutil
 import subprocess
 import sys
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from pathlib import Path
+from urllib.parse import urlsplit
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FRONTEND = REPO_ROOT / "frontend"
@@ -86,6 +89,31 @@ def npm_steps(frontend: Path, npm: str) -> list[list[str]]:
     return steps
 
 
+LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def database_url(root: Path = REPO_ROOT, environ: Mapping[str, str] | None = None) -> str:
+    """`DATABASE_URL` as `Settings` resolves it: the environment, then `.env`; "" if unset."""
+    env = os.environ if environ is None else environ
+    if env.get("DATABASE_URL"):
+        return env["DATABASE_URL"]
+    try:
+        lines = (root / ".env").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ""
+    for line in lines:
+        key, sep, value = line.partition("=")
+        if sep and key.strip() == "DATABASE_URL":
+            return value.strip().strip("\"'")
+    return ""
+
+
+def database_is_local(url: str) -> bool:
+    """Whether the UI's database is on this machine. Unset is: `Settings`' default is
+    127.0.0.1. A compose service name (`db`) is not: that URL is the container's view."""
+    return not url or urlsplit(url).hostname in LOCAL_HOSTS
+
+
 def start_db(docker: str | None, root: Path = REPO_ROOT) -> bool:
     """Bring up the `db` container and wait for its healthcheck; False if it did not."""
     if docker is None:
@@ -131,7 +159,11 @@ def main(argv: list[str] | None = None) -> int:
         code = subprocess.run(step, cwd=FRONTEND, check=False).returncode
         if code:
             return code
-    start_db(shutil.which("docker"))
+    url = database_url()
+    if database_is_local(url):
+        start_db(shutil.which("docker"))
+    else:
+        print(f"[ui] the database is on {urlsplit(url).hostname}; not starting a local one")
     try:
         return subprocess.run(
             serve_argv(server_prefix(shutil.which("uv")), args, launcher),

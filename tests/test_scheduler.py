@@ -1,4 +1,5 @@
 import logging
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -85,6 +86,7 @@ def test_build_scheduler_registers_all_jobs_with_configured_intervals():
         "archive_raw",
         "gateway_watch",
         "paper_trading",
+        "forward_snapshot",
         "ipo_calendar_poll",
         "ipo_filings_poll",
         "ipo_alerts",
@@ -96,6 +98,7 @@ def test_build_scheduler_registers_all_jobs_with_configured_intervals():
     }
     assert jobs["social_poll"].trigger.interval == timedelta(minutes=30)
     assert jobs["paper_trading"].trigger.interval == timedelta(minutes=15)
+    assert jobs["forward_snapshot"].trigger.interval == timedelta(hours=6)
     assert jobs["ipo_prices_poll"].trigger.interval == timedelta(minutes=60)
     assert jobs["fundamentals_poll"].trigger.interval == timedelta(hours=24)
     assert jobs["earnings_calendar_poll"].trigger.interval == timedelta(hours=24)
@@ -113,6 +116,36 @@ def test_build_scheduler_registers_all_jobs_with_configured_intervals():
     assert str(jobs["prices_poll"].trigger.timezone) == "America/New_York"
     assert jobs["archive_bars"].trigger.interval == timedelta(hours=24)
     assert jobs["archive_raw"].trigger.interval == timedelta(hours=24)
+
+
+def test_the_forward_snapshot_does_not_fire_on_startup():
+    """When it is due it loads 550 days of bars for every instrument; that must not land in
+    the burst of jobs a restart fires."""
+    job_health.reset()
+    before = datetime.now(UTC)
+    sched = scheduler.build_scheduler(settings=_settings())
+    job = {job.id: job for job in sched.get_jobs()}["forward_snapshot"]
+    assert job.next_run_time >= before + timedelta(hours=6)
+
+
+def test_the_forward_snapshot_job_takes_the_month_in_one_session(monkeypatch):
+    """One session, so a refused snapshot (stale bars) rolls back everything it upserted."""
+    sessions = []
+
+    @contextmanager
+    def fake_session():
+        sessions.append(object())
+        yield sessions[-1]
+
+    taken = []
+    monkeypatch.setattr(scheduler, "get_session", fake_session)
+    monkeypatch.setattr(
+        "ibkr_trader.backtest.snapshot.take_monthly_snapshot",
+        lambda session: taken.append(session) or 7,
+    )
+
+    assert scheduler.run_forward_snapshot() == 7
+    assert taken == sessions and len(sessions) == 1
 
 
 def test_archive_jobs_are_registered_even_when_the_backend_is_off():

@@ -807,6 +807,7 @@ def test_ui_main_hands_the_server_its_own_parent_pid(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(script.shutil, "which", lambda name: name)
     monkeypatch.setattr(script.os, "getppid", lambda: 31337)
+    monkeypatch.setattr(script, "database_url", lambda: "")
     ran = []
     monkeypatch.setattr(
         script.subprocess,
@@ -826,6 +827,7 @@ def test_ui_starts_the_database_before_serving(monkeypatch, tmp_path):
         script, "FRONTEND", _frontend(tmp_path, installed=True, built_at=2, source_at=1)
     )
     monkeypatch.setattr(script.shutil, "which", lambda name: name)
+    monkeypatch.setattr(script, "database_url", lambda: "postgresql://u:p@127.0.0.1:5433/db")
     ran = []
     monkeypatch.setattr(
         script.subprocess,
@@ -847,6 +849,7 @@ def test_ui_still_serves_without_a_database_and_says_so(monkeypatch, tmp_path, c
         script, "FRONTEND", _frontend(tmp_path, installed=True, built_at=2, source_at=1)
     )
     monkeypatch.setattr(script.shutil, "which", which)
+    monkeypatch.setattr(script, "database_url", lambda: "")
     ran = []
 
     def run(argv, **_kw):
@@ -858,6 +861,62 @@ def test_ui_still_serves_without_a_database_and_says_so(monkeypatch, tmp_path, c
     assert script.main(["--no-open"]) == 0
     assert "ibkr_trader.cli" in ran[-1]
     assert "database" in capsys.readouterr().out
+
+
+def test_ui_leaves_the_local_database_alone_when_the_url_points_elsewhere(
+    monkeypatch, tmp_path, capsys
+):
+    """A research PC reads the collector PC's database over the tailnet; starting its own
+    768 MB container would serve nothing and cost the RAM the desktop is short of."""
+    script = load_script("ui-task.py")
+    monkeypatch.setattr(
+        script, "FRONTEND", _frontend(tmp_path, installed=True, built_at=2, source_at=1)
+    )
+    monkeypatch.setattr(script.shutil, "which", lambda name: name)
+    monkeypatch.setattr(
+        script, "database_url", lambda: "postgresql+psycopg://u:secret@collector.ts.net:5433/db"
+    )
+    ran = []
+    monkeypatch.setattr(
+        script.subprocess,
+        "run",
+        lambda argv, **_kw: ran.append(argv) or SimpleNamespace(returncode=0),
+    )
+
+    assert script.main(["--no-open"]) == 0
+    (serve,) = ran
+    assert "ibkr_trader.cli" in serve
+    out = capsys.readouterr().out
+    assert "collector.ts.net" in out
+    assert "secret" not in out
+
+
+@pytest.mark.parametrize(
+    ("url", "local"),
+    [
+        ("", True),  # Settings' default is 127.0.0.1:5433
+        ("postgresql+psycopg://u:p@127.0.0.1:5433/db", True),
+        ("postgresql+psycopg://u:p@localhost:5433/db", True),
+        ("postgresql+psycopg://u:p@[::1]:5433/db", True),
+        ("postgresql+psycopg://u:p@desktop-x.tail1.ts.net:5433/db", False),
+        ("postgresql+psycopg://u:p@db:5432/db", False),  # the compose network, not this host
+    ],
+)
+def test_database_is_local(url, local):
+    assert load_script("ui-task.py").database_is_local(url) is local
+
+
+def test_database_url_prefers_the_environment_then_the_env_file(tmp_path):
+    script = load_script("ui-task.py")
+    (tmp_path / ".env").write_text(
+        '# comment\nOTHER=1\nDATABASE_URL="postgresql://u:p@file-host/db"\n', encoding="utf-8"
+    )
+
+    assert script.database_url(tmp_path, {}) == "postgresql://u:p@file-host/db"
+    assert script.database_url(tmp_path, {"DATABASE_URL": "postgresql://env/db"}) == (
+        "postgresql://env/db"
+    )
+    assert script.database_url(tmp_path / "missing", {}) == ""
 
 
 def test_start_db_waits_for_the_healthcheck_from_the_compose_project(monkeypatch, tmp_path):
