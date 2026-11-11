@@ -1000,10 +1000,14 @@ def test_db_revision_never_applies_the_migration():
     assert "upgrade" not in script.build_argv("whatever")
 
 
-def test_db_revision_prefers_the_environment_database_url():
+def test_db_revision_prefers_the_environment_then_the_env_file(tmp_path):
     script = load_script("db-revision.py")
-    assert script.database_url({"DATABASE_URL": "postgresql://real/url"}) == "postgresql://real/url"
-    assert script.database_url({}) == script.DEFAULT_DATABASE_URL
+    env = {"DATABASE_URL": "postgresql://real/url"}
+    assert script.database_url(env, tmp_path) == "postgresql://real/url"
+    assert script.database_url({}, tmp_path) == script.DEFAULT_DATABASE_URL
+    (tmp_path / ".env").write_text("DATABASE_URL='postgresql://u:p@file/db'\n", encoding="utf-8")
+    assert script.database_url({}, tmp_path) == "postgresql://u:p@file/db"
+    assert script.database_url(env, tmp_path) == "postgresql://real/url"
     # 5432 is taken by another local Postgres on this machine.
     assert "5433" in script.DEFAULT_DATABASE_URL
 

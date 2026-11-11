@@ -56,12 +56,74 @@ def db(monkeypatch, tmp_path):
     return world
 
 
-def test_the_default_database_is_the_one_db_revision_diffs_against():
+def test_the_default_database_is_the_one_db_revision_diffs_against(tmp_path):
     """Two copies of one URL: an upgrade of a different database than autogenerate reads
     would leave the drift this script exists to remove."""
-    assert up.DEFAULT_DATABASE_URL == load_script("db-revision.py").DEFAULT_DATABASE_URL
-    assert up.database_url({"DATABASE_URL": "postgresql://real/url"}) == "postgresql://real/url"
-    assert up.database_url({}) == up.DEFAULT_DATABASE_URL
+    revision = load_script("db-revision.py")
+    assert up.DEFAULT_DATABASE_URL == revision.DEFAULT_DATABASE_URL
+    env = {"DATABASE_URL": "postgresql://real/url"}
+    assert up.database_url(env, tmp_path) == "postgresql://real/url"
+    assert up.database_url({}, tmp_path) == up.DEFAULT_DATABASE_URL
+    (tmp_path / ".env").write_text("DATABASE_URL=postgresql://u:p@file/db\n", encoding="utf-8")
+    for env in ({}, {"DATABASE_URL": "postgresql://real/url"}):
+        assert up.database_url(env, tmp_path) == revision.database_url(env, tmp_path)
+
+
+def test_the_env_file_is_read_when_the_environment_names_no_database(tmp_path):
+    """Regression (devkit ledger a7f7c321): the fix pass runs this with no `.env`
+    loaded, and the script handed Alembic the default's `trader:trader`, overriding the
+    real password `Settings` would have read from `.env`. The server refused it."""
+    (tmp_path / ".env").write_text(
+        '# db\nOTHER=1\nDATABASE_URL="postgresql+psycopg://trader:real@127.0.0.1:5433/x"\n',
+        encoding="utf-8",
+    )
+    assert up.database_source({}, tmp_path) == (
+        "postgresql+psycopg://trader:real@127.0.0.1:5433/x",
+        ".env",
+    )
+    env = {"DATABASE_URL": "postgresql://env/db"}
+    assert up.database_source(env, tmp_path) == ("postgresql://env/db", "the environment")
+
+
+def test_a_missing_or_blank_env_file_entry_falls_back_to_the_default(tmp_path):
+    expected = (up.DEFAULT_DATABASE_URL, "the built-in default")
+    assert up.database_source({}, tmp_path / "missing") == expected
+    (tmp_path / ".env").write_text("DATABASE_URL=\n", encoding="utf-8")
+    assert up.database_source({}, tmp_path) == expected
+    assert up.database_source({"DATABASE_URL": ""}, tmp_path) == expected
+
+
+def test_refused_reads_the_servers_credential_refusal():
+    said = 'FATAL:  password authentication failed for user "trader"'
+    assert up.refused(["psycopg.OperationalError: connection failed", said])
+    assert not up.refused(["connection refused"])
+    assert not up.refused([])
+
+
+def test_a_refused_credential_is_a_failure_that_names_the_url_source(db, capsys):
+    """Not "cannot tell": the server is up and answering, and waiting cures nothing.
+    Exiting 2 would let the database fall behind in silence, so it is filed -- by a line
+    that says what was refused instead of only "alembic current exited 1"."""
+    db["answers"][("current",)] = (
+        ['FATAL:  password authentication failed for user "trader"'],
+        1,
+    )
+    assert up.check("postgresql://u:p@h/x", "the built-in default") == up.FAILED
+    last = capsys.readouterr().err.strip().splitlines()[-1]
+    assert last.startswith(
+        "error: alembic current exited 1: the database refused the password in "
+        "DATABASE_URL from the built-in default -- details in "
+    )
+    assert "password authentication failed" in up.ARTIFACT.read_text(encoding="utf-8")
+
+
+def test_main_resolves_the_url_from_the_env_file(db, monkeypatch, tmp_path):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    (tmp_path / ".env").write_text("DATABASE_URL=postgresql://u:real@h:5433/x\n", "utf-8")
+    seen = []
+    monkeypatch.setattr(up, "check", lambda url, where: seen.append((url, where)) or 0)
+    assert up.main(["--check"]) == 0
+    assert seen == [("postgresql://u:real@h:5433/x", ".env")]
 
 
 def test_address_reads_the_host_and_port_out_of_a_driver_url():
