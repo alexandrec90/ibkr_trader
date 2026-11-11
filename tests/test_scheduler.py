@@ -1884,6 +1884,95 @@ def test_poll_fundamentals_fetches_only_todays_slice(monkeypatch):
     assert total == 2 * len(fetched)
 
 
+class _Killed(BaseException):
+    """A container recreated mid-run: nothing in the job gets to catch it."""
+
+
+def _fundamentals_fetch_recorder(monkeypatch, symbols, *, die_after=None, bad=()):
+    from data_lake.ingestion.market.yahoo_fundamentals import YahooFundamentalsConnector
+
+    monkeypatch.setattr(scheduler, "get_session", _sqlite_session_scope())
+    monkeypatch.setattr(
+        "data_lake.ingestion.market.yahoo_common.tracked_yahoo_symbols", lambda session: symbols
+    )
+    fetched: list[str] = []
+
+    def fetch(self, symbol="", **kw):
+        if die_after is not None and len(fetched) == die_after:
+            raise _Killed
+        fetched.append(symbol)
+        if symbol in bad:
+            raise RuntimeError("yahoo said no")
+        return 1
+
+    monkeypatch.setattr(YahooFundamentalsConnector, "fetch", fetch)
+    return fetched
+
+
+def test_poll_fundamentals_resumes_a_slice_a_restart_cut_short(monkeypatch, tmp_path):
+    """ibkr_trader on 2026-11-11: today's slice is 319 symbols, about 2 h 10 min of throttled
+    Yahoo calls. The run that started after 17:28 was 1.5 h in when a merge redeploy recreated
+    the container at 20:02, and the new process began the slice again from its first symbol --
+    so a run only ever counted if it got 2 h with no restart, `fundamentals` had none in its
+    record, and `ibkr-trader health` reported it never-run."""
+    today = datetime(2026, 10, 10).date()
+    settings = _settings(
+        fundamentals_rotation_days=7, scheduler_health_file=str(tmp_path / "health.json")
+    )
+    due = scheduler.rotation_slice(_SYMBOLS, 7, today)
+    first = _fundamentals_fetch_recorder(monkeypatch, _SYMBOLS, die_after=10)
+    with pytest.raises(_Killed):
+        scheduler.poll_fundamentals(settings, today=today)
+    assert first == due[:10]
+
+    resumed = _fundamentals_fetch_recorder(monkeypatch, _SYMBOLS)
+    total = scheduler.poll_fundamentals(settings, today=today)
+
+    assert resumed == due[10:]
+    assert total == len(due) - 10
+
+
+def test_poll_fundamentals_starts_a_new_days_slice_from_its_first_symbol(monkeypatch, tmp_path):
+    today = datetime(2026, 10, 10).date()
+    settings = _settings(
+        fundamentals_rotation_days=7, scheduler_health_file=str(tmp_path / "health.json")
+    )
+    _fundamentals_fetch_recorder(monkeypatch, _SYMBOLS)
+    scheduler.poll_fundamentals(settings, today=today)
+
+    # The same slot a rotation later is a new day: yesterday's progress must not empty it.
+    later = today + timedelta(days=7)
+    again = _fundamentals_fetch_recorder(monkeypatch, _SYMBOLS)
+    scheduler.poll_fundamentals(settings, today=later)
+
+    assert again == scheduler.rotation_slice(_SYMBOLS, 7, later)
+
+
+def test_poll_fundamentals_retries_a_failed_symbol_on_resume(monkeypatch, tmp_path):
+    """Only a symbol that landed counts as done: a database that was down for the whole first
+    run must not leave the resumed one with nothing to do."""
+    settings = _settings(
+        fundamentals_rotation_days=1, scheduler_health_file=str(tmp_path / "health.json")
+    )
+    _fundamentals_fetch_recorder(monkeypatch, ["AAPL", "BAD", "MSFT"], bad={"BAD"})
+    assert scheduler.poll_fundamentals(settings) == 2
+
+    again = _fundamentals_fetch_recorder(monkeypatch, ["AAPL", "BAD", "MSFT"])
+    assert scheduler.poll_fundamentals(settings) == 1
+    assert again == ["BAD"]
+
+
+def test_poll_fundamentals_survives_an_unreadable_progress_file(monkeypatch, tmp_path):
+    (tmp_path / scheduler.FUNDAMENTALS_PROGRESS_FILE).write_text("{not json", encoding="utf-8")
+    settings = _settings(
+        fundamentals_rotation_days=1, scheduler_health_file=str(tmp_path / "health.json")
+    )
+    fetched = _fundamentals_fetch_recorder(monkeypatch, ["AAPL", "MSFT"])
+
+    assert scheduler.poll_fundamentals(settings) == 2
+    assert fetched == ["AAPL", "MSFT"]
+
+
 def test_poll_fundamentals_skips_a_bad_symbol_but_fails_when_all_fail(monkeypatch):
     from data_lake.ingestion.market.yahoo_fundamentals import YahooFundamentalsConnector
 
