@@ -85,10 +85,12 @@ refresh.
   by the collector's `db` container, which is capped by `DB_MEM_LIMIT`. Decisions load
   only `paper.DECISION_LOOKBACK_DAYS` of bars. The forward-shadow `snapshot run` still
   loads all history, so run it with the collector PC's memory in mind.
-- **One gateway session.** IBKR allows one session per username, so only the collector
-  PC's `ib-gateway` logs in. On the research PC, `paper plan` and `ibkr-check` need that
-  gateway, so run them on the collector PC, or skip the gateway and use `snapshot` and
-  `backtest` from the research PC.
+- **One gateway session, on any PC.** IBKR allows one session per username, so run
+  `ib-gateway` on one PC at a time; a second login displaces the first. The gateway's
+  API port is published on `127.0.0.1` only, so `ibkr-check`, `paper plan` and `paper
+  rebalance` run on whichever PC holds the gateway. The table above is the usual layout,
+  not a requirement: a research PC with its own gateway and `DATABASE_URL` pointing at
+  the collector trades into the one database.
 - **Remove it:** `tailscale serve --tcp=5433 off` on the collector PC.
 
 ## Day to day
