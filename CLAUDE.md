@@ -79,7 +79,7 @@ uv run mypy src
 uv run alembic upgrade head    # apply migrations
 uv run alembic revision --autogenerate -m "msg"
 uv run ibkr-trader --help      # CLI: ingest / backtest / ibkr-check / serve / health
-python scripts/ui-task.py      # local UI: builds frontend/ if stale, starts db, serves 127.0.0.1:8001
+python scripts/ui-task.py      # local UI: builds frontend/ if stale, starts db if DATABASE_URL is local, serves 127.0.0.1:8001
 npm --prefix frontend run test:run    # frontend tests (vitest); `run typecheck`, `run build`
 npm --prefix frontend run dev  # hot-reload dev server, proxies /api to a running `ibkr-trader ui`
 ```
@@ -140,7 +140,9 @@ Prefer `stop` over `down` so the `pgdata` volume and its schema survive.
     (`ibkr_trader.gateway_watch`: read-only IB Gateway login probe → ntfy phone alert), the
     `ipo_alerts` job (`ibkr_trader.ipo_watch`: major-IPO ntfy alert over `ipo_events`) and
     the `paper` job (`ibkr_trader.paper`: the paper-trading loop, reading the
-    `PaperTradingSettings` fields) are trading-side too and stay here in any split.
+    `PaperTradingSettings` fields) and the `snapshot` job (`backtest.snapshot`: the monthly
+    forward-shadow snapshot, checked every 6 h, taken once per month) are trading-side too
+    and stay here in any split.
   - The real cost is config, not code: `build_scheduler()` and its jobs read thirty-nine
     fields off `Settings` (`poll_*`, `newsapi_*`, `finnhub_backfill_*`, `prune_raw_*`,
     `score_sentiment_minutes`, `news_universe_file`, `trends_*`, `fx_pairs`,

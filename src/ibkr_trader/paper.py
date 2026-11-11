@@ -31,6 +31,7 @@ from sqlalchemy.orm import Session
 from ibkr_trader.backtest.engine import RegisteredStrategyConfig, Series, _fx_to_cad
 from ibkr_trader.backtest.snapshot import (
     DECISION_LOOKBACK_DAYS,
+    PAPER_PREFIX,
     decision_inputs,
     upsert_snapshot,
 )
@@ -43,8 +44,6 @@ from ibkr_trader.signals.portfolio import get_allocator
 
 logger = logging.getLogger(__name__)
 
-#: Prefix of the strategy name the paper loop's monthly decisions are recorded under.
-PAPER_PREFIX = "paper:"
 #: Canadian marketplaces as ``instruments.exchange`` spells them (TSX is what ingestion
 #: stores today; the rest guard listings a later connector may add).
 CANADIAN_EXCHANGES = frozenset({"TSX", "TSE", "TSXV", "VENTURE", "CSE", "NEO", "CBOE CANADA"})

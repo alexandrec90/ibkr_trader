@@ -82,9 +82,8 @@ refresh.
   `DATABASE_URL`, then `docker compose --profile app up -d db app`, since the app's URL
   is built from `POSTGRES_PASSWORD`.
 - **Memory is spent where the database is.** Heavy reads from the research PC are served
-  by the collector's `db` container, which is capped by `DB_MEM_LIMIT`. Decisions load
-  only `paper.DECISION_LOOKBACK_DAYS` of bars. The forward-shadow `snapshot run` still
-  loads all history, so run it with the collector PC's memory in mind.
+  by the collector's `db` container, which is capped by `DB_MEM_LIMIT`. Paper decisions
+  and forward-shadow snapshots load only `snapshot.DECISION_LOOKBACK_DAYS` of bars.
 - **One gateway session, on any PC.** IBKR allows one session per username, so run
   `ib-gateway` on one PC at a time; a second login displaces the first. The gateway's
   API port is published on `127.0.0.1` only, so `ibkr-check`, `paper plan` and `paper

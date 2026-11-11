@@ -13,15 +13,20 @@ from typer.testing import CliRunner
 from ibkr_trader import cli
 from ibkr_trader.backtest.engine import RegisteredStrategyConfig
 from ibkr_trader.backtest.snapshot import (
+    STALE_BAR_DAYS,
     DecisionInputs,
+    SnapshotNotTaken,
     SnapshotOutcome,
     SnapshotRunResult,
     assert_snapshot_date,
     build_snapshot_report,
     decision_inputs,
     load_valid_universe,
+    monthly_snapshot_due,
     run_snapshots,
     snapshot_outcomes,
+    take_monthly_snapshot,
+    upsert_snapshot,
 )
 from ibkr_trader.db.models import Base, Instrument, PriceBar, StrategySnapshot
 from ibkr_trader.signals.eligibility import EligibilityLimits
@@ -159,6 +164,93 @@ def test_a_snapshot_loads_only_the_decision_window(session: Session):
 
     (snapshot,) = result.snapshots
     assert snapshot.params["universe_names"] == 1
+
+
+def _monthly_fixture(session: Session, today: date, *, bars_end: date | None = None):
+    xeqt = _instrument(session, "XEQT")
+    last = bars_end or today
+    for offset in range(300):
+        _bar(session, xeqt, last - timedelta(days=299 - offset), 30.0 + offset / 100)
+    return RegisteredStrategyConfig(
+        eligibility=EligibilityLimits(min_history_days=1, min_avg_dollar_volume=0)
+    )
+
+
+def _forward_rows(session: Session) -> list[StrategySnapshot]:
+    return list(session.scalars(select(StrategySnapshot).order_by(StrategySnapshot.strategy)))
+
+
+def test_monthly_snapshot_due_reads_the_calendar_month(session: Session):
+    def snap(strategy: str, day: date) -> None:
+        upsert_snapshot(
+            session, strategy=strategy, asof=day, model_version="v", weights={}, params={}
+        )
+
+    assert monthly_snapshot_due(session, date(2026, 7, 10))  # empty table
+    snap("equal_weight", date(2026, 6, 30))  # last day of the previous month
+    snap("paper:momentum_lt", date(2026, 7, 1))  # the paper loop's own row
+    assert monthly_snapshot_due(session, date(2026, 7, 10))
+    snap("equal_weight", date(2026, 7, 1))
+    assert not monthly_snapshot_due(session, date(2026, 7, 31))
+    assert monthly_snapshot_due(session, date(2026, 8, 1))
+
+
+def test_the_monthly_job_records_a_month_that_has_no_snapshot(session: Session):
+    today = date(2026, 7, 10)
+    config = _monthly_fixture(session, today)
+
+    saved = take_monthly_snapshot(session, today=today, config=config)
+
+    rows = _forward_rows(session)
+    assert saved == len(rows) > 0
+    assert {row.ts.date() for row in rows} == {today}
+
+
+def test_the_monthly_job_leaves_a_month_that_already_has_one(session: Session):
+    """It checks several times a day; only the first check of a month may decide."""
+    config = _monthly_fixture(session, date(2026, 8, 3))  # each check sees bars <= its day
+    take_monthly_snapshot(session, today=date(2026, 7, 2), config=config)
+    before = len(_forward_rows(session))
+
+    assert take_monthly_snapshot(session, today=date(2026, 7, 10), config=config) == 0
+    assert len(_forward_rows(session)) == before
+    # a new month is due again
+    assert take_monthly_snapshot(session, today=date(2026, 8, 3), config=config) > 0
+
+
+def test_a_paper_decision_does_not_count_as_the_months_forward_snapshot(session: Session):
+    """The paper loop writes `paper:<strategy>` rows into the same table every month."""
+    today = date(2026, 7, 10)
+    config = _monthly_fixture(session, today)
+    upsert_snapshot(
+        session,
+        strategy="paper:momentum_lt",
+        asof=date(2026, 7, 3),
+        model_version="v",
+        weights={},
+        params={},
+    )
+
+    assert take_monthly_snapshot(session, today=today, config=config) > 0
+
+
+def test_the_monthly_job_refuses_stale_bars(session: Session):
+    """A forward snapshot is dated the day it is taken, so it must not be decided on prices
+    weeks old; failing turns `health` red, and the next check retries."""
+    today = date(2026, 7, 10)
+    config = _monthly_fixture(session, today, bars_end=today - timedelta(days=STALE_BAR_DAYS + 1))
+
+    with pytest.raises(SnapshotNotTaken, match="stale"):
+        take_monthly_snapshot(session, today=today, config=config)
+
+
+def test_the_monthly_job_fails_when_no_strategy_resolves(session: Session, monkeypatch):
+    today = date(2026, 7, 10)
+    config = _monthly_fixture(session, today)
+    monkeypatch.setattr("ibkr_trader.backtest.snapshot.available", lambda: [])
+
+    with pytest.raises(SnapshotNotTaken, match="no strategy"):
+        take_monthly_snapshot(session, today=today, config=config)
 
 
 def test_a_series_with_a_malformed_bar_is_left_out_and_reported(session: Session):

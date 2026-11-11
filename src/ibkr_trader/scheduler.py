@@ -65,6 +65,12 @@ STARTUP_STAGGER_SECONDS = 180
 #: 2026-10-12 was mid-session — each day's newest bar was an unfinished snapshot.
 DAILY_JOB_TIMEZONE = ZoneInfo("America/New_York")
 
+#: How often `serve` asks whether this month's forward snapshot is still owed. Asking is one
+#: count query; the snapshot itself (about 2.5 minutes and 400 MB, measured 2026-11-07) runs
+#: once, on the first check of a month that finds fresh bars. A failed one retries at the
+#: next check rather than waiting a month.
+FORWARD_SNAPSHOT_CHECK_SECONDS = 6 * 3600
+
 #: A daily job owed a run at startup leaves it to its slot when that is this close, so two runs
 #: of one label never overlap (a full price refresh is throttled per symbol and runs long).
 DAILY_CATCH_UP_MIN_LEAD = timedelta(hours=2)
@@ -1180,6 +1186,32 @@ def _register_paper_job(register: Callable[..., None], settings: Settings) -> No
     )
 
 
+def run_forward_snapshot() -> int:
+    """This month's forward snapshot, if it is still owed (``snapshot.take_monthly_snapshot``).
+
+    One session, so a snapshot refused for stale bars rolls back what it upserted.
+    """
+    from ibkr_trader.backtest import snapshot
+
+    with get_session() as session:
+        return snapshot.take_monthly_snapshot(session)
+
+
+def _register_snapshot_job(register: Callable[..., None]) -> None:
+    """The monthly forward-shadow snapshot, through `build_scheduler`'s ``register``.
+
+    Trading-side like the paper job: it reads ``ibkr_trader.signals`` allocators, so it stays
+    here in any split. Not start_now: when due it loads every instrument's 550-day window,
+    which must not land in a restart's burst of jobs.
+    """
+    register(
+        "forward_snapshot",
+        "snapshot",
+        run_forward_snapshot,
+        seconds=FORWARD_SNAPSHOT_CHECK_SECONDS,
+    )
+
+
 def _first_run(label: str, *, start_now: bool = False, now: datetime | None = None) -> datetime:
     """When a freshly registered job should first fire: its cadence carries over a restart.
 
@@ -1363,6 +1395,7 @@ def build_scheduler(
     _register_archive_jobs(register, settings)
     _register_gateway_job(register, settings)
     _register_paper_job(register, settings)
+    _register_snapshot_job(register)
     _register_ipo_jobs(register, settings)
     _register_event_jobs(register, settings)
     _add_staggered(scheduler, pending)

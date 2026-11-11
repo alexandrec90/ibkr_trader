@@ -32,6 +32,13 @@ STALE_BAR_DAYS = 7
 #: 252-trading-day windows. Loading all history instead ran a 16 GB desktop out of memory,
 #: and the paper job runs in a 1.5 GB container against a 768 MB database.
 DECISION_LOOKBACK_DAYS = 550
+#: Prefix of the paper loop's own monthly decisions (``paper.py``). They share this table
+#: but are not the forward shadow's record, so they never stand in for its month.
+PAPER_PREFIX = "paper:"
+
+
+class SnapshotNotTaken(RuntimeError):
+    """This month's forward snapshot was due but could not be taken honestly."""
 
 
 @dataclass(frozen=True)
@@ -281,6 +288,51 @@ def run_snapshots(
     return SnapshotRunResult(
         saved, skipped, inputs.latest_bar_date, inputs.stale_days, inputs.invalid
     )
+
+
+def monthly_snapshot_due(session: Session, today: date) -> bool:
+    """True while ``today``'s calendar month (UTC) has no forward snapshot yet."""
+    taken = session.scalar(
+        select(func.count())
+        .select_from(StrategySnapshot)
+        .where(
+            StrategySnapshot.ts >= _midnight(today.replace(day=1)),
+            StrategySnapshot.strategy.not_like(f"{PAPER_PREFIX}%"),
+        )
+    )
+    return not taken
+
+
+def take_monthly_snapshot(
+    session: Session,
+    *,
+    today: date | None = None,
+    config: RegisteredStrategyConfig | None = None,
+) -> int:
+    """Record every resolvable strategy once a month: the `serve` job's whole decision.
+
+    Returns how many snapshots were saved, 0 when the month already has its own. Monthly
+    is the evidence's unit, not a convenience: ``snapshot_outcomes`` charges turnover
+    between consecutive snapshots and scores each one as a sample, so a tighter cadence
+    would price these low-turnover strategies as daily rebalancers and fill the hit rate
+    with overlapping windows.
+
+    Raises ``SnapshotNotTaken`` after upserting when the bars are stale or nothing
+    resolved. The caller's session must roll back on it, as ``get_session`` does, so a
+    month is never recorded on prices the snapshot's date would misrepresent.
+    """
+    today = today or datetime.now(tz=UTC).date()
+    if not monthly_snapshot_due(session, today):
+        return 0
+    result = run_snapshots(session, today=today, config=config)
+    if result.stale_days > STALE_BAR_DAYS:
+        raise SnapshotNotTaken(
+            f"latest daily bar is {result.latest_bar_date} ({result.stale_days} days stale); "
+            f"not recording {today:%Y-%m} on it"
+        )
+    if not result.snapshots:
+        raise SnapshotNotTaken(f"no strategy resolved: {result.skipped}")
+    return len(result.snapshots)
 
 
 def _return_over_horizon(series: Series, fx: Series | None, start: date, end: date) -> float | None:
