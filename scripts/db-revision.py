@@ -40,7 +40,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 ARTIFACT = REPO_ROOT / "artifacts" / "tasks" / "db-revision.log"
 
 # Host port 5433, not 5432: another local Postgres already owns the default. The
-# environment wins so a machine with a real `.env` is not overridden by this default.
+# environment wins, then the checkout's `.env`, so a machine's real password is not
+# overridden by this default.
 DEFAULT_DATABASE_URL = (
     "postgresql+psycopg://trader:trader@127.0.0.1:5433/ibkr_trader?connect_timeout=5"
 )
@@ -57,10 +58,29 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def database_url(env: dict[str, str] | None = None) -> str:
-    """The connection string, environment first. Pure, so the precedence is testable."""
+def database_url(env: dict[str, str] | None = None, root: Path | None = None) -> str:
+    """The connection string: the environment, then `root/.env`, then the default.
+
+    `Settings` reads `.env` itself, but `main` hands Alembic `DATABASE_URL` explicitly
+    and an environment variable beats `.env` there, so skipping the file would put the
+    default's password in front of the machine's real one. `db-upgrade.py` resolves the
+    same way, and a test holds the two equal."""
     source = os.environ if env is None else env
-    return source.get("DATABASE_URL") or DEFAULT_DATABASE_URL
+    if source.get("DATABASE_URL"):
+        return source["DATABASE_URL"]
+    try:
+        lines = (
+            ((REPO_ROOT if root is None else root) / ".env")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        )
+    except OSError:
+        lines = []
+    for line in lines:
+        key, sep, value = line.partition("=")
+        if sep and key.strip() == "DATABASE_URL" and value.strip().strip("\"'"):
+            return value.strip().strip("\"'")
+    return DEFAULT_DATABASE_URL
 
 
 def python_exe(root: Path = REPO_ROOT) -> str:
