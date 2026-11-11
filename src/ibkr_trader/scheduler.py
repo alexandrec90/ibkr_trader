@@ -14,7 +14,9 @@ outage (the database was stopped; every run logged "executed successfully" anywa
   itself in five minutes, so retrying it would just be noise.
 """
 
+import json
 import logging
+import os
 import threading
 import time
 import zlib
@@ -554,6 +556,45 @@ def rotation_slice(symbols: Sequence[str], rotation_days: int, today: date) -> l
     return [s for s in symbols if zlib.crc32(s.encode("utf-8")) % rotation_days == slot]
 
 
+#: Which of the day's fundamentals slice have already landed, beside the health artifact (in
+#: the container, the ``applogs`` volume, which outlives a recreate).
+FUNDAMENTALS_PROGRESS_FILE = "fundamentals-progress.json"
+
+
+def _fundamentals_progress_path(settings: Settings) -> Path | None:
+    """The progress file, or ``None`` when the health artifact is disabled (so is this)."""
+    health = getattr(settings, "scheduler_health_file", "")
+    return Path(health).with_name(FUNDAMENTALS_PROGRESS_FILE) if health else None
+
+
+def _load_slice_progress(path: Path | None, day: date) -> set[str]:
+    """The symbols already done in ``day``'s slice; empty for another day's or a bad file."""
+    if path is None:
+        return set()
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    if not isinstance(loaded, dict) or loaded.get("day") != day.isoformat():
+        return set()
+    done = loaded.get("done")
+    return {str(s) for s in done} if isinstance(done, list) else set()
+
+
+def _save_slice_progress(path: Path | None, day: date, done: set[str]) -> None:
+    """Record ``done`` for ``day``. Never raises: losing it costs a re-fetch, not the run."""
+    if path is None:
+        return
+    payload = json.dumps({"day": day.isoformat(), "done": sorted(done)})
+    temp = path.with_name(path.name + ".tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp.write_text(payload, encoding="utf-8")
+        os.replace(temp, path)
+    except OSError:
+        logger.warning("could not record fundamentals progress to %s", path, exc_info=True)
+
+
 def poll_fundamentals(settings: Settings, today: date | None = None) -> int:
     """Refresh today's slice of tracked symbols' Yahoo corporate data.
 
@@ -562,29 +603,44 @@ def poll_fundamentals(settings: Settings, today: date | None = None) -> int:
     tracked universe is spread over ``fundamentals_rotation_days`` (see ``rotation_slice``).
     Upcoming earnings dates are also caught daily by the market-wide Finnhub calendar, so a
     slice whose day was missed costs freshness, not coverage.
+
+    A slice is still two hours of calls (319 symbols on 2026-11-11), longer than `serve`
+    reliably lives between redeploys and engine restarts. So each symbol that lands is
+    recorded (``FUNDAMENTALS_PROGRESS_FILE``) and a run started later the same day fetches only
+    the rest: the restart's catch-up run finishes the slice instead of beginning it again, and
+    the job records a run at all.
     """
     from data_lake.ingestion.market.yahoo_common import tracked_yahoo_symbols
     from data_lake.ingestion.market.yahoo_fundamentals import YahooFundamentalsConnector
 
     with get_session() as session:
         symbols = tracked_yahoo_symbols(session)
-    due = rotation_slice(
-        symbols, settings.fundamentals_rotation_days, today or datetime.now(UTC).date()
-    )
+    day = today or datetime.now(UTC).date()
+    due = rotation_slice(symbols, settings.fundamentals_rotation_days, day)
+    progress = _fundamentals_progress_path(settings)
+    done = _load_slice_progress(progress, day) & set(due)
+    todo = [symbol for symbol in due if symbol not in done]
     connector = YahooFundamentalsConnector()
-    results, errors = _run_each(
-        due, lambda symbol: connector.fetch(symbol=symbol), "fundamentals poll failed for %s"
-    )
+
+    def fetch(symbol: str) -> int:
+        count = connector.fetch(symbol=symbol)
+        done.add(symbol)
+        _save_slice_progress(progress, day, done)
+        return count
+
+    results, errors = _run_each(todo, fetch, "fundamentals poll failed for %s")
     total = sum(count for _, count in results)
     logger.info(
-        "fundamentals poll upserted %d rows across %d of %d symbols (%d failed)",
+        "fundamentals poll upserted %d rows across %d of %d symbols "
+        "(%d done earlier today, %d failed)",
         total,
-        len(due),
+        len(todo),
         len(symbols),
+        len(due) - len(todo),
         len(errors),
     )
     _fail_if_every_item_failed(
-        "fundamentals poll", len(due), len(errors), errors[-1] if errors else None
+        "fundamentals poll", len(todo), len(errors), errors[-1] if errors else None
     )
     return total
 
