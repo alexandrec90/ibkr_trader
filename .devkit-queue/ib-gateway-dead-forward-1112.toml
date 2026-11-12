@@ -1,0 +1,18 @@
+# Docker Desktop restarted uncleanly at 2026-11-12 13:19 UTC on this PC, and every
+# 127.0.0.1-bound host port forward of the ibkr_trader stack came back dead: the port
+# accepts and closes at once. `db` was restarted by the fixer that found it (devkit
+# ledger fc1f3937); the gateway was left alone because restarting it near the US open
+# could drop its session.
+when = "merged"
+on = "desktop-b9fc8vp"
+agent = """
+Check the ibkr_trader IB gateway's host port forwards on this PC. From the ibkr_trader
+checkout, open a TCP connection to 127.0.0.1:5900 (VNC) and read for 3 seconds: a live
+VNC server sends a banner starting `RFB`, and a dead Docker forward returns no bytes and
+closes at once. If 5900 still answers with no bytes, the forwards that Docker Desktop
+left dead are still dead. Then, only outside US regular trading hours (09:30-16:00
+America/New_York, Monday to Friday), run `docker restart ibkr_trader-ib-gateway-1`,
+wait for it to come up, and check again that 5900 sends `RFB`. During trading hours,
+queue a fresh task with the same text rather than restarting. Finished is 5900
+answering `RFB`, or it answering already, which means somebody else restarted it.
+"""
