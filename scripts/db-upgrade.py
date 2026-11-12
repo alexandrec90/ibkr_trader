@@ -39,6 +39,9 @@ DEFAULT_DATABASE_URL = (
 # What psycopg says when the server is up and refuses the credential.
 _REFUSED = "password authentication failed"
 CONNECT_TIMEOUT = 3.0
+# `probe`'s answers, and the request it sends: length 8, then code 80877103.
+ANSWERS, SILENT, ABSENT = "answers", "silent", "absent"
+_SSL_REQUEST = (8).to_bytes(4, "big") + (80877103).to_bytes(4, "big")
 ALEMBIC_TIMEOUT = 600
 
 # `f7b8c9d0e1f2 (head)`, `f7b8c9d0e1f2 (head) (mergepoint)`: an id and its tags alone on
@@ -88,16 +91,44 @@ def address(url: str) -> tuple[str, int]:
     return parts.hostname or "127.0.0.1", parts.port or 5432
 
 
-def reachable(url: str, timeout: float = CONNECT_TIMEOUT) -> bool:
-    """Whether anything accepts a connection where the database should be.
+def probe(url: str, timeout: float = CONNECT_TIMEOUT) -> str:
+    """`ANSWERS` when a Postgres server replies where the database should be, `SILENT`
+    when something accepts the connection and never replies, `ABSENT` when nothing does.
 
-    Asked before Alembic so a stopped `db` container is "cannot tell" (2), which the
-    pass reads as nothing to do yet, rather than a connection error it would file."""
+    Asked before Alembic so a database the host cannot reach is "cannot tell" (2), which
+    the pass reads as nothing to do yet, rather than a connection error it would file. A
+    TCP accept alone does not show that: Docker Desktop's port forward keeps accepting on
+    `127.0.0.1:5433` after an unclean engine restart while handing nothing on to the
+    container, and Alembic then died on "server closed the connection unexpectedly"
+    (devkit ledger fc1f3937). So the probe sends the SSLRequest a client opens with,
+    which every Postgres answers with one byte (`S` or `N`) before any credential."""
     try:
-        with socket.create_connection(address(url), timeout=timeout):
-            return True
+        conn = socket.create_connection(address(url), timeout=timeout)
     except OSError:
-        return False
+        return ABSENT
+    with conn:
+        try:
+            conn.sendall(_SSL_REQUEST)
+            return ANSWERS if conn.recv(1) else SILENT
+        except OSError:
+            return SILENT
+
+
+def reachable(url: str, timeout: float = CONNECT_TIMEOUT) -> bool:
+    """Whether a Postgres server answers where the database should be (`probe`)."""
+    return probe(url, timeout) == ANSWERS
+
+
+def unreachable_message(state: str, url: str) -> str:
+    """What `main` prints for a database the probe found no server at. Pure."""
+    host, port = address(url)
+    if state == SILENT:
+        return (
+            f"{host}:{port} accepts connections but no Postgres answers there -- a Docker"
+            " port forward left dead by an engine restart reads this way;"
+            " `docker compose restart db` re-creates it"
+        )
+    return f"nothing accepts connections on {host}:{port}; is `db` up?"
 
 
 def python_exe(root: Path = REPO_ROOT) -> str:
@@ -190,9 +221,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--check", action="store_true", help="report, apply nothing")
     args = parser.parse_args(argv)
     url, where = database_source()
-    if not reachable(url):
-        host, port = address(url)
-        print(f"nothing accepts connections on {host}:{port}; is `db` up?")
+    state = probe(url)
+    if state != ANSWERS:
+        print(unreachable_message(state, url))
         return UNKNOWN
     return check(url, where) if args.check else upgrade(url, where)
 

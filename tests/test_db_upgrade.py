@@ -10,6 +10,7 @@ import importlib.util
 import socket
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
@@ -36,7 +37,7 @@ up = load_script("db-upgrade.py")
 def db(monkeypatch, tmp_path):
     """The database reachable, Alembic answering from `answers`, every call kept."""
     world = {
-        "up": True,
+        "up": up.ANSWERS,
         "answers": {
             ("current",): (["INFO  [alembic.runtime.migration] Context impl PostgresqlImpl."], 0),
             ("heads",): (["f7b8c9d0e1f2 (head)"], 0),
@@ -49,7 +50,7 @@ def db(monkeypatch, tmp_path):
         world["ran"].append(args)
         return world["answers"][args]
 
-    monkeypatch.setattr(up, "reachable", lambda url: world["up"])
+    monkeypatch.setattr(up, "probe", lambda url: world["up"])
     monkeypatch.setattr(up, "alembic", alembic)
     monkeypatch.setattr(up, "ARTIFACT", tmp_path / "artifacts" / "tasks" / "db-upgrade.log")
     monkeypatch.setattr(up, "REPO_ROOT", tmp_path)
@@ -131,19 +132,73 @@ def test_address_reads_the_host_and_port_out_of_a_driver_url():
     assert up.address("postgresql://u:p@db/x") == ("db", 5432)
 
 
-def test_reachable_is_false_where_nothing_listens():
+def serve_once(reply: bytes | None) -> tuple[int, threading.Thread, list[bytes]]:
+    """A one-connection server on a free port: it reads the client's request, then sends
+    `reply` and closes, or closes at once when `reply` is None. What it read is kept."""
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    heard: list[bytes] = []
+
+    def run() -> None:
+        with server:
+            conn, _ = server.accept()
+            with conn:
+                if reply is not None:
+                    heard.append(conn.recv(8))
+                    conn.sendall(reply)
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    return server.getsockname()[1], thread, heard
+
+
+def test_probe_is_absent_where_nothing_listens():
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
-    assert not up.reachable(f"postgresql://u:p@127.0.0.1:{port}/x", timeout=0.5)
+    url = f"postgresql://u:p@127.0.0.1:{port}/x"
+    assert up.probe(url, timeout=0.5) == up.ABSENT
+    assert not up.reachable(url, timeout=0.5)
 
 
-def test_reachable_is_true_where_something_listens():
+@pytest.mark.parametrize("reply", [b"N", b"S"])
+def test_probe_answers_where_a_postgres_replies_to_the_ssl_request(reply):
+    port, thread, heard = serve_once(reply)
+    url = f"postgresql://u:p@127.0.0.1:{port}/x"
+    assert up.probe(url, timeout=2) == up.ANSWERS
+    thread.join(2)
+    assert heard == [bytes([0, 0, 0, 8, 4, 210, 22, 47])]
+
+
+def test_a_listener_that_closes_without_answering_is_silent_not_reachable():
+    """Docker Desktop's dead forward after an unclean engine restart (devkit fc1f3937):
+    the accept succeeds, and Alembic then died on "server closed the connection"."""
+    port, thread, _ = serve_once(None)
+    url = f"postgresql://u:p@127.0.0.1:{port}/x"
+    assert up.probe(url, timeout=2) == up.SILENT
+    thread.join(2)
+
+
+def test_a_listener_that_never_answers_is_silent():
     with socket.socket() as server:
         server.bind(("127.0.0.1", 0))
         server.listen(1)
         port = server.getsockname()[1]
-        assert up.reachable(f"postgresql://u:p@127.0.0.1:{port}/x", timeout=0.5)
+        assert up.probe(f"postgresql://u:p@127.0.0.1:{port}/x", timeout=0.5) == up.SILENT
+
+
+def test_reachable_is_true_only_where_postgres_answers():
+    port, thread, _ = serve_once(b"N")
+    assert up.reachable(f"postgresql://u:p@127.0.0.1:{port}/x", timeout=2)
+    thread.join(2)
+
+
+def test_the_unreachable_message_names_the_dead_forward_and_its_remedy():
+    url = up.DEFAULT_DATABASE_URL
+    silent = up.unreachable_message(up.SILENT, url)
+    assert "127.0.0.1:5433" in silent and "docker compose restart db" in silent
+    assert "is `db` up?" in up.unreachable_message(up.ABSENT, url)
 
 
 def test_revisions_reads_ids_and_ignores_alembics_log_lines():
@@ -245,10 +300,18 @@ def test_check_reports_current(db):
 
 def test_a_database_that_is_not_up_is_unknown_not_a_failure(db):
     """The pass reads 2 as "nothing to do until `db` starts"."""
-    db["up"] = False
+    db["up"] = up.ABSENT
     assert up.main(["--check"]) == up.UNKNOWN
     assert up.main([]) == up.UNKNOWN
     assert db["ran"] == []
+
+
+def test_a_port_that_accepts_but_no_postgres_answers_is_unknown_not_a_failure(db, capsys):
+    """The 2026-11-12 shape: a dead Docker forward, which the pass filed as a failure."""
+    db["up"] = up.SILENT
+    assert up.main(["--check"]) == up.UNKNOWN
+    assert db["ran"] == []
+    assert "docker compose restart db" in capsys.readouterr().out
 
 
 def test_a_check_alembic_could_not_answer_is_a_failure_with_its_artifact(db, capsys):
