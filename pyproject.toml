@@ -3,7 +3,9 @@ name = "ibkr-trader"
 version = "0.1.0"
 description = "Cloud-hosted service for programmatic trading via Interactive Brokers: news/social/market data ingestion, prediction, backtesting, paper trading."
 readme = "README.md"
-requires-python = ">=3.11"
+# 3.11.5, not 3.11: soupsieve 4 (the fix for GHSA ReDoS/recursion advisories) needs it, and a
+# lower floor makes uv keep a vulnerable soupsieve 2.x fork in uv.lock for 3.11.0-3.11.4.
+requires-python = ">=3.11.5"
 dependencies = [
     # Shared ingestion + archive layer (docs/plans/active/data-lake.md, Phase 2). Brings the
     # provider clients with it — httpx/praw/pytrends/yfinance are its dependencies now, not ours.
@@ -148,7 +150,7 @@ ignore = ["E101", "E401", "E501", "E701", "E702", "E703", "E731", "E741", "E742"
 [tool.mypy]
 # Analysis target must be >= the highest stub floor of our installed deps: numpy 2.5's bundled
 # stubs use 3.12+ syntax, so a 3.11 target makes mypy choke parsing them before it reaches our
-# code. 3.12 is a safe floor (the venv runs 3.14) while `requires-python = ">=3.11"` still holds.
+# code. 3.12 is a safe floor (the venv runs 3.14) while `requires-python = ">=3.11.5"` still holds.
 python_version = "3.12"
 mypy_path = "src"
 ignore_missing_imports = true
