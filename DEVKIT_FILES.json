@@ -1,5 +1,5 @@
 {
-  "devkit_tag": "v0.11.100",
+  "devkit_tag": "v0.11.101",
   "files": {
     ".claude/engineering-evidence.md": "c0cc4b984fe4c0f211ab848b23126a458f2a0d49c557524f64cc805a3c451827",
     ".claude/fixer.md": "7317e2f2189c057784a0be7c8cfe4fe6c8aafb82f2b0cfeebb649460fcd1d213",
@@ -50,7 +50,7 @@
     "scripts/hooks/tests/test_invoke_capped.py": "ce50d6a670ab0e0a65d12ca1e2cf878064e587993a5136488efc43e93deb3a4d",
     "scripts/hooks/tests/test_land.py": "3b7fa3c6b842be04555490d566edc895faab5aca898b5b0b3a16d33c9a1e001b",
     "scripts/hooks/tests/test_lint_fix.py": "deb89c25df49464aacf13e128ca82e01e1f0aa50fa50d46eb186caf7e0343ae9",
-    "scripts/hooks/tests/test_log_wrap.py": "1dfd10d864ba464e443df5ae387488ade9b74c2a315c3181a74a6c9c037cd4ab",
+    "scripts/hooks/tests/test_log_wrap.py": "83578b9e0fde8cda79588f72dd5b19daaea4296ee47daf174c4206fd0c0020f4",
     "scripts/hooks/tests/test_merge_dependabot_prs.py": "950240918d791f148ea6b4f3dafcf03fce7819de6f2f4e2c1c306f13b4387f7d",
     "scripts/hooks/tests/test_project_dependabot.py": "2cfb053b7eef00023f981f44c0b5a97252ca803fe6626ba613659fb1972980fa",
     "scripts/hooks/tests/test_project_settings.py": "0cb3ba7d02be8dcd14f5cd901d0b02f4779fb10f5c9c65d3ca5d3fcf460c66b7",
@@ -80,8 +80,8 @@
     "scripts/hooks/worktree-guard-launch.py": "7c34894440410860abf967df118f3b58feeca323ae54e6659c409497b88c5911",
     "scripts/hooks/worktree_tiers.py": "11dd71d6e92a0dacf2488c3cc4c937911b60bda4a99e5d2383a64b452d0fc9f5",
     "scripts/land.py": "f05beab0d8ec42aa318ea9c1602606a102bcc70cf74b245dbb4ecceda23dd255",
-    "scripts/log-wrap.py": "39b1eeb23c45ebd82b4af31af1d3be014849a6d182e3510a24c040d5bf9194e1",
-    "scripts/merge-dependabot-prs.py": "0a774b5c458289121da341993af91c2342ad81462e558e93271d59698fa4ff39",
+    "scripts/log-wrap.py": "5197dcd82bca35b7930945d3ee94860baa7fa664208099855452915475d9e2f4",
+    "scripts/merge-dependabot-prs.py": "606c177b113e2e9c48ea103015be8adad1daff082e63d31680a3cb6176cc915a",
     "scripts/project_dependabot.py": "1e9ef22a1ddafd4e00524f8f9d06d72645119a3485ec582f3906c4724f224d11",
     "scripts/project_settings.py": "d8205d3e71b83e88648c9b7f6f5fdd9266c7168e98bfd78ede4b00935e57e114",
     "scripts/pytest-plugins/devkit_temproot.py": "e0abf56391913ebbac48607d649857defe4979f838e5fb929491578ee863c2d6",
