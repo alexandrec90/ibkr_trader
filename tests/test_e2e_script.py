@@ -78,68 +78,9 @@ def test_the_tier_is_deselected_by_default_and_selected_by_its_own_run():
     really replace the one in `addopts`: pytest is the only witness to both."""
     default = _collect()
     assert default.returncode == 5, default.stdout + default.stderr  # 5: nothing collected
-    tier = _collect("-m", "ci_e2e")
+    tier = _collect("-m", "local")
     assert tier.returncode == 0, tier.stdout + tier.stderr
     assert "test_the_chain_migrates_an_empty_postgres" in tier.stdout
-    # It needs a server, not this PC, so the local tier does not hold it.
-    assert _collect("-m", "local").returncode == 5
-
-
-def test_no_local_test_is_left_so_the_pc_leaves_the_project_to_ci():
-    """`[delivery] e2e = "ci"` tells devkit's PC job to skip this project; it must not
-    say so while a `local` test still exists, or that test would never run."""
-    import tomllib
-
-    config = tomllib.loads((REPO_ROOT / ".devkit.toml").read_text(encoding="utf-8"))
-    assert config["delivery"]["e2e"] == "ci"
-    mark = "pytest.mark." + "local"  # spelled apart, so this file does not match itself
-    marked = [
-        path.name
-        for path in (REPO_ROOT / "tests").rglob("test_*.py")
-        if mark in path.read_text(encoding="utf-8")
-    ]
-    assert marked == []
-
-
-@pytest.mark.parametrize(
-    ("argv", "expected"),
-    [
-        ([], ("local", [])),
-        (["tests/test_x.py::test_y"], ("local", ["tests/test_x.py::test_y"])),
-        (["--ci"], ("ci_e2e", [])),
-        (["--ci", "tests/test_x.py::test_y"], ("ci_e2e", ["tests/test_x.py::test_y"])),
-        (["tests/test_x.py::test_y", "--ci"], ("ci_e2e", ["tests/test_x.py::test_y"])),
-    ],
-)
-def test_ci_flag_picks_the_tier_and_keeps_the_ids(argv, expected):
-    assert load_script().split_args(argv) == expected
-
-
-def test_main_with_ci_selects_the_ci_tier(e2e, capsys):
-    code, seen = run_e2e(e2e, junit(passed(), ended("failure", "bad", "boom")), 1, argv=["--ci"])
-    assert code == 1
-    assert seen[0][seen[0].index("-m", 9) + 1] == "ci_e2e"
-    assert "--ci" not in seen[0]
-    assert "FAILED tests/test_x.py::test_bad - boom" in capsys.readouterr().out
-
-
-def test_main_with_ci_fails_a_skip_under_devkit_e2e(e2e):
-    report = junit(passed(), ended("skipped", "away", "no db"))
-    assert run_e2e(e2e, report, env={e2e.ENV_FLAG: "1"}, argv=["--ci"])[0] == 1
-
-
-def test_main_with_ci_is_red_when_nothing_ran(e2e, capsys):
-    assert run_e2e(e2e, None, argv=["--ci"])[0] == 1
-    assert "no ci_e2e test executed, which is not a pass" in capsys.readouterr().out
-
-
-def test_the_pr_gate_runs_the_ci_tier_on_the_default_branch_only():
-    gate = (REPO_ROOT / ".github" / "workflows" / "pr-gate.yml").read_text(encoding="utf-8")
-    job = gate[gate.index("\n  e2e:") :]
-    assert "scripts/e2e.py --ci" in job
-    assert "github.event_name != 'pull_request'" in job
-    assert "needs: devkit" in job
-    assert "mirror.gcr.io/timescale/timescaledb" in job
 
 
 def test_the_tier_installs_the_ui_extra_and_leaves_the_lock_and_venv_alone():

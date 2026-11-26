@@ -1,8 +1,4 @@
-"""The schema and the UI against a real TimescaleDB server: the tier `scripts/e2e.py --ci` runs.
-
-`ci_e2e`, not `local`: all it needs is the server, which the `PR Gate`'s `E2E` job runs as
-a service container (the `db` image, from `mirror.gcr.io`) on each default-branch commit.
-By hand, `docker compose up -d db` then `python scripts/e2e.py --ci`.
+"""The schema and the UI against the real TimescaleDB container: the tier `scripts/e2e.py` runs.
 
 Everything else under `tests/` runs on in-memory SQLite (`.claude/rules/testing.md`), so
 nothing there can say whether the migration chain applies on the Postgres this project
@@ -47,7 +43,7 @@ from sqlalchemy.orm import Session
 from ibkr_trader.db.adoption import include_object
 from ibkr_trader.db.models import Base
 
-pytestmark = pytest.mark.ci_e2e
+pytestmark = pytest.mark.local
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRATCH_PREFIX = "ibkr_trader_e2e_"
@@ -149,9 +145,8 @@ def test_the_chain_migrates_an_empty_postgres_to_the_schema_the_models_declare(m
 
 
 def test_price_bars_is_a_hypertable_on_the_timescaledb_image(migrated):
-    """`f7b8c9d0e1f2` converts only where the extension is available, which the SQLite
-    suite never is: the `db` image ships it, so a silent no-op here would leave production
-    uncompressed."""
+    """`f7b8c9d0e1f2` converts only where the extension is available, which CI never is:
+    the `db` image ships it, so a silent no-op here would leave production uncompressed."""
     with migrated.connect() as connection:
         found = connection.execute(
             sa.text(
