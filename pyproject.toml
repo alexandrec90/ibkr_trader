@@ -156,11 +156,13 @@ mypy_path = "src"
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
-# `local` is deselected so the suite stays the hermetic SQLite one CI runs: those tests need
-# this workstation's Docker `db`, and `scripts/e2e.py` is the one run that selects them.
-addopts = '-m "not local" -p devkit_temproot'
+# Both end-to-end markers are deselected so the suite stays the hermetic SQLite one: `ci_e2e`
+# tests need a TimescaleDB server, `local` ones this workstation, and `scripts/e2e.py` (with
+# `--ci` for the first) is the one run that selects them.
+addopts = '-m "not local and not ci_e2e" -p devkit_temproot'
 markers = [
-  "local: needs this workstation (the Docker db), not a runner; run nightly by scripts/e2e.py",
+  "local: needs this workstation (a live IB Gateway or login, say), not a runner; run by scripts/e2e.py",
+  "ci_e2e: needs a TimescaleDB server, which the PR Gate's E2E job runs as a service container; run by scripts/e2e.py --ci",
 ]
 pythonpath = ["scripts/pytest-plugins"]
 testpaths = ["tests"]

@@ -93,10 +93,14 @@ and review it before upgrading.
 - **The standard gate needs none of them.** `uv run pytest`, `ruff`, and `mypy` all run natively —
   the whole test suite uses in-memory SQLite (no `conftest.py`, no testcontainers; see
   [.claude/rules/testing.md](.claude/rules/testing.md)). Never start Docker to run tests.
-  The one exception is the `local` marker, which `addopts` deselects: `python scripts/e2e.py`
-  runs those nightly against `db` (`.claude/rules/local-e2e.md`).
-- **`db`** — needed for `alembic upgrade head` / `--autogenerate`, the `local` e2e tier
-  (it migrates a scratch database there and drops it), and any
+  The one exception is the `ci_e2e` marker, which `addopts` deselects with `local`:
+  `scripts/e2e.py --ci` runs those against a real TimescaleDB, which the `PR Gate`'s `E2E`
+  job provides as a service container on each default-branch commit
+  (`.claude/rules/local-e2e.md`). No test is `local`, so `.devkit.toml`'s
+  `[delivery] e2e = "ci"` leaves the PC's nightly job nothing to run here; a test that
+  needs a live IB Gateway or login would be the first `local` one.
+- **`db`** — needed for `alembic upgrade head` / `--autogenerate`, a by-hand
+  `python scripts/e2e.py --ci` (it migrates a scratch database there and drops it), and any
   `ibkr-trader ingest|backtest|serve|ui` run against the real Postgres dataset.
 - **`ib-gateway`** (the `ibkr` profile) — live IBKR API calls (`ibkr-check`, `serve` against the
   gateway).
