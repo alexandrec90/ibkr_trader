@@ -47,6 +47,13 @@ def test_pr_gate_pins_data_lake_to_a_full_commit_sha():
     )
 
 
+def test_every_pr_gate_checkout_of_data_lake_names_one_commit():
+    """The `check` and `E2E` jobs each check data-lake out; a bump that moves one pin
+    and not the other leaves the second job syncing a lock against the wrong pair."""
+    refs = data_lake_refs((WORKFLOWS / "pr-gate.yml").read_text(encoding="utf-8"))
+    assert len(set(refs)) == 1, f"pr-gate.yml pins data-lake at {refs}; move them together"
+
+
 def test_nightly_follows_data_lake_default_branch():
     refs = data_lake_refs((WORKFLOWS / "nightly.yml").read_text(encoding="utf-8"))
     assert refs, "nightly.yml no longer checks out data-lake; update this test with it"
